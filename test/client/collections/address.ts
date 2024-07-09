@@ -1,5 +1,6 @@
 import { Record } from '@anupheaus/common';
-import { defineCollection, useCollection } from '../../../src';
+import { defineCollection } from '../../../src';
+import { fakerEN_GB as faker } from '@faker-js/faker';
 
 export interface AddressRecord extends Record {
   firstLine: string;
@@ -15,10 +16,6 @@ export const address = defineCollection<AddressRecord>({
   indexes: [
     { name: 'first-line-index', fields: ['firstLine'] }
   ],
-  onSeed() {
-    const { upsert } = useCollection(address);
-    upsert(officeAddress);
-  },
 });
 
 export const officeAddress: AddressRecord = {
@@ -29,3 +26,15 @@ export const officeAddress: AddressRecord = {
   county: 'Fakeshire',
   postcode: 'FA1 2KE',
 };
+
+export const allAddresses: AddressRecord[] = [
+  officeAddress,
+  ...Array.ofSize(10000).map(() => ({
+    id: Math.uniqueId(),
+    firstLine: faker.location.streetAddress(),
+    secondLine: faker.location.secondaryAddress(),
+    townOrCity: faker.location.city(),
+    county: faker.location.county(),
+    postcode: faker.location.zipCode(),
+  })),
+];

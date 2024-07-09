@@ -25,8 +25,9 @@ export function createUseGet<RecordType extends Record>(name: string, get: Get<R
         }
       })();
 
-      return onCollectionEvent<RecordType>(name, ({ type, record }) => {
-        if (record.id !== id) return;
+      return onCollectionEvent<RecordType>(name, ({ type, records }) => {
+        if (id == null) return;
+        const record = records.findById(id);
         switch (type) {
           case 'upsert': setState({ record, isLoading: false }); break;
           case 'remove': setState({ record: undefined, isLoading: false }); break;

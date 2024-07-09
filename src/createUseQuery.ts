@@ -28,21 +28,19 @@ export function createUseQuery<RecordType extends Record>(name: string, query: Q
       };
       getRecords();
 
-      return onCollectionEvent<RecordType>(name, ({ type, record }) => {
+      return onCollectionEvent<RecordType>(name, ({ type, records }) => {
         switch (type) {
           case 'upsert': {
             getRecords();
             break;
           }
           case 'remove': {
-            if (!idsRef.current.includes(record.id)) return;
             setState(s => {
-              const newRecords = s.records.removeById(record.id);
+              const newRecords = s.records.slice();
+              records.forEach(({ id }) => newRecords.splice(newRecords.findIndex(r => r.id === id), 1));
+              if (newRecords.length === s.records.length) return s;
               idsRef.current = newRecords.ids();
-              return {
-                ...s,
-                records: newRecords,
-              };
+              return { ...s, records: newRecords, };
             });
             break;
           }

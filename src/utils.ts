@@ -1,7 +1,7 @@
 import { collectionConfigs } from './collectionConfigs';
-import { Collection } from './models';
+import { MXDBCollection } from './models';
 
-function hashCollections(collections: Collection[]) {
+function hashCollections(collections: MXDBCollection[]) {
   return collections
     .map(collection => {
       const config = collectionConfigs.get(collection);

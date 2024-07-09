@@ -1,9 +1,9 @@
 import { Logger } from '@anupheaus/common';
-import { Collection, CollectionConfig, CollectionIndex } from './models';
+import { MXDBCollection, MXDBCollectionConfig, MXDBCollectionIndex } from './models';
 import { collectionConfigs } from './collectionConfigs';
 import { utils } from './utils';
 
-function updateIndexes(store: IDBObjectStore, indexes: CollectionIndex[]) {
+function updateIndexes(store: IDBObjectStore, indexes: MXDBCollectionIndex[]) {
   store.createIndex('primary-key', ['id'], { unique: true });
   const existingIndexes = Array.from(store.indexNames);
   indexes.forEach(index => {
@@ -14,12 +14,12 @@ function updateIndexes(store: IDBObjectStore, indexes: CollectionIndex[]) {
   if (existingIndexes.length > 0) existingIndexes.forEach(indexName => store.deleteIndex(indexName));
 }
 
-async function seedCollection(config: CollectionConfig) {
+async function seedCollection(config: MXDBCollectionConfig) {
   if (config.onSeed == null) return;
   await config.onSeed?.();
 }
 
-export function openDb(name: string, collections: Collection[], logger: Logger) {
+export function openDb(name: string, collections: MXDBCollection[], logger: Logger) {
   const request = window.indexedDB.open(name, 1);
   request.onupgradeneeded = event => {
     logger.debug(`Upgrading database "${name}"...`);

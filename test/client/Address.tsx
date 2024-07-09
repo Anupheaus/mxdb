@@ -4,8 +4,7 @@ import { address } from './collections';
 
 export const Address = createComponent('Address', () => {
   const { useQuery } = useCollection(address);
-  // const { record: addr, isLoading } = useGet(officeAddress.id);
-  const { records: addresses, isLoading } = useQuery({ filter: { firstLine: { $ne: 'boo' } }, sort: { field: 'firstLine', direction: 'asc' }, pagination: { limit: 10 } });
+  const { records: addresses, isLoading } = useQuery({ filter: { secondLine: { $regex: /^fake/i } }, sort: { field: 'firstLine', direction: 'asc' }, pagination: { limit: 10 } });
 
   return (
     <UIState isLoading={isLoading}>

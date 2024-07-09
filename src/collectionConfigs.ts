@@ -1,3 +1,3 @@
-import { Collection, CollectionConfig } from './models';
+import { MXDBCollection, MXDBCollectionConfig } from './models';
 
-export const collectionConfigs = new WeakMap<Collection<any>, CollectionConfig<any>>();
+export const collectionConfigs = new WeakMap<MXDBCollection<any>, MXDBCollectionConfig<any>>();

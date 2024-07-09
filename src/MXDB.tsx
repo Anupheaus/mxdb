@@ -1,13 +1,13 @@
 import { LoggerProvider, createComponent } from '@anupheaus/react-ui';
 import { ReactNode, useLayoutEffect, useState } from 'react';
-import { Collection } from './models';
+import { MXDBCollection } from './models';
 import { DbContext, DbContextProps, createDbContext } from './DbContext';
 import { Logger } from '@anupheaus/common';
 import { InternalDbContext } from './internalModels';
 
 interface Props {
   name: string;
-  collections: Collection[];
+  collections: MXDBCollection[];
   children?: ReactNode;
 }
 
