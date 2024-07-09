@@ -1,5 +1,5 @@
 import { Logger } from '@anupheaus/common';
-import { MXDBCollection, MXDBCollectionConfig, MXDBCollectionIndex } from './models';
+import { MXDBCollection, MXDBCollectionIndex } from './models';
 import { collectionConfigs } from './collectionConfigs';
 import { utils } from './utils';
 
@@ -14,11 +14,6 @@ function updateIndexes(store: IDBObjectStore, indexes: MXDBCollectionIndex[]) {
   if (existingIndexes.length > 0) existingIndexes.forEach(indexName => store.deleteIndex(indexName));
 }
 
-async function seedCollection(config: MXDBCollectionConfig) {
-  if (config.onSeed == null) return;
-  await config.onSeed?.();
-}
-
 export function openDb(name: string, collections: MXDBCollection[], logger: Logger) {
   const request = window.indexedDB.open(name, 1);
   request.onupgradeneeded = event => {
@@ -29,7 +24,6 @@ export function openDb(name: string, collections: MXDBCollection[], logger: Logg
       if (config == null) return;
       const store = db.createObjectStore(config.name, { keyPath: 'id' });
       updateIndexes(store, config.indexes);
-      seedCollection(config);
     });
   };
   return utils.wrap(request);
