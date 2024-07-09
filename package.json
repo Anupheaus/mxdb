@@ -1,5 +1,5 @@
 {
-  "name": "@anupheaus/mongoza",
+  "name": "@anupheaus/mxdb",
   "version": "0.0.1",
   "main": "./dist/index.js",
   "exports": {
@@ -24,8 +24,8 @@
       ]
     }
   },
-  "repository": "https://github.com/Anupheaus/mongoza.git",
-  "description": "Mongoza",
+  "repository": "https://github.com/Anupheaus/mxdb.git",
+  "description": "MXDB",
   "author": "Anupheaus",
   "license": "Apache-2.0",
   "publishConfig": {
