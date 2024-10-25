@@ -1,9 +1,9 @@
-import { LoggerProvider, createComponent } from '@anupheaus/react-ui';
-import { ReactNode, useLayoutEffect, useState } from 'react';
+import { createComponent } from '@anupheaus/react-ui';
+import { ReactNode, useContext, useLayoutEffect, useState } from 'react';
 import { MXDBCollection } from './models';
-import { DbContext, DbContextProps, createDbContext } from './DbContext';
-import { Logger } from '@anupheaus/common';
-import { InternalDbContext } from './internalModels';
+import { DbsContext, DbsContextProps, createDbContext } from './DbContext';
+import { InternalError } from '@anupheaus/common';
+import { logger, LoggerProvider } from './logger';
 
 interface Props {
   name: string;
@@ -11,29 +11,32 @@ interface Props {
   children?: ReactNode;
 }
 
-const logger = new Logger('MXDB');
-
 export const MXDB = createComponent('MXDB', ({
   name,
   collections,
   children = null,
 }: Props) => {
+  const existingContext = useContext(DbsContext);
+  const [context, setContext] = useState<DbsContextProps>();
 
-  const [context, setContext] = useState<DbContextProps>();
+  if (existingContext.dbs.has(name)) throw new InternalError(`Database "${name}" already exists in the MXDB contexts.`);
 
   useLayoutEffect(() => {
-    (async () => setContext(await createDbContext(name, collections, logger)))();
+    (async () => {
+      const db = await createDbContext(name, collections, logger);
+      const dbs = new Map(existingContext.dbs);
+      dbs.set(name, db);
+      setContext({ dbs, lastDb: name });
+    })();
   }, [name, collections]);
 
   if (context == null) return null;
 
-  (window as any)[InternalDbContext] = context.db;
-
   return (
-    <LoggerProvider logger={logger}>
-      <DbContext.Provider value={context}>
+    <LoggerProvider>
+      <DbsContext.Provider value={context}>
         {children}
-      </DbContext.Provider>
+      </DbsContext.Provider>
     </LoggerProvider>
   );
 });

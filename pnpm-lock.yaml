@@ -4,16 +4,13 @@ settings:
   autoInstallPeers: true
   excludeLinksFromLockfile: false
 
-overrides:
-  '@anupheaus/common': file:../common
-
 dependencies:
   '@anupheaus/common':
-    specifier: file:C:\code\personal\common
-    version: file:../common
+    specifier: ^0.1.17
+    version: 0.1.17
   '@anupheaus/react-ui':
-    specifier: file:../react-ui
-    version: file:../react-ui(@types/react@18.3.3)
+    specifier: ^0.0.55
+    version: 0.0.55(@types/react@18.3.3)
   dotenv:
     specifier: ^16.4.5
     version: 16.4.5
@@ -190,6 +187,53 @@ packages:
   /@adobe/css-tools@4.4.0:
     resolution: {integrity: sha512-Ff9+ksdQQB3rMncgqDK78uLznstjyfIf2Arnh22pW8kBpLs6rpKDwgnZT46hin5Hl1WzazzK64DOrhSwYpS7bQ==}
     dev: true
+
+  /@anupheaus/common@0.1.17:
+    resolution: {integrity: sha512-RuX0pMrUxmXpU4GmG8LGiAJG5Q630ZS1N0MQ1Gb5WYSvAunNgiSYWAOnrMw32HTqhjyLj5UkEheG1U6PZsEEAw==}
+    dependencies:
+      chalk: 5.3.0
+      dotenv: 16.4.5
+      fast-equals: 4.0.3
+      inflection: 3.0.0
+      luxon: 3.4.4
+      numeral: 2.0.6
+      object-hash: 3.0.0
+      uuid: 9.0.1
+    dev: false
+
+  /@anupheaus/react-ui@0.0.55(@types/react@18.3.3):
+    resolution: {integrity: sha512-GMZG7owm3sgM2FM7yIl3oGp0D/FejhmG/d+Yx4OJfH5gkuFn+jqzsTUVwCv4hj0VGHNIbIvuz1VVYWabqtDFhQ==}
+    dependencies:
+      '@anupheaus/common': 0.1.17
+      '@emotion/react': 11.11.4(@types/react@18.3.3)(react@18.3.1)
+      '@emotion/styled': 11.11.5(@emotion/react@11.11.4)(@types/react@18.3.3)(react@18.3.1)
+      '@mui/material': 5.16.0(@emotion/react@11.11.4)(@emotion/styled@11.11.5)(@types/react@18.3.3)(react-dom@18.3.1)(react@18.3.1)
+      '@mui/x-date-pickers': 7.9.0(@emotion/react@11.11.4)(@emotion/styled@11.11.5)(@mui/material@5.16.0)(@types/react@18.3.3)(luxon@3.4.4)(react-dom@18.3.1)(react@18.3.1)
+      color: 4.2.3
+      crypto-js: 4.2.0
+      csstype: 3.1.3
+      flatted: 3.3.1
+      luxon: 3.4.4
+      react: 18.3.1
+      react-async-script: 1.2.0(react@18.3.1)
+      react-dom: 18.3.1(react@18.3.1)
+      react-google-recaptcha-enterprise: 1.0.3(react@18.3.1)
+      react-hot-toast: 2.4.1(csstype@3.1.3)(react-dom@18.3.1)(react@18.3.1)
+      react-icons: 4.12.0(react@18.3.1)
+      react-toastify: 9.1.3(react-dom@18.3.1)(react@18.3.1)
+      tss-react: 4.9.10(@emotion/react@11.11.4)(@mui/material@5.16.0)(react@18.3.1)
+      use-resize-observer: 9.1.0(react-dom@18.3.1)(react@18.3.1)
+    transitivePeerDependencies:
+      - '@emotion/server'
+      - '@types/react'
+      - date-fns
+      - date-fns-jalali
+      - dayjs
+      - moment
+      - moment-hijri
+      - moment-jalaali
+      - supports-color
+    dev: false
 
   /@babel/code-frame@7.24.7:
     resolution: {integrity: sha512-BcYH1CVJBO9tvyIZ2jVeXgSIMvGZ2FDRvDdOIVQyuklNKSsx+eppDEBq/g47Ayw+RqNFE+URvOShmf+f/qwAlA==}
@@ -6516,54 +6560,4 @@ packages:
       memoizee: 0.4.17
       object-hash: 1.3.1
       q: 1.5.1
-    dev: false
-
-  file:../common:
-    resolution: {directory: ../common, type: directory}
-    name: '@anupheaus/common'
-    dependencies:
-      chalk: 5.3.0
-      dotenv: 16.4.5
-      fast-equals: 4.0.3
-      inflection: 3.0.0
-      luxon: 3.4.4
-      numeral: 2.0.6
-      object-hash: 3.0.0
-      uuid: 9.0.1
-    dev: false
-
-  file:../react-ui(@types/react@18.3.3):
-    resolution: {directory: ../react-ui, type: directory}
-    id: file:../react-ui
-    name: '@anupheaus/react-ui'
-    dependencies:
-      '@anupheaus/common': file:../common
-      '@emotion/react': 11.11.4(@types/react@18.3.3)(react@18.3.1)
-      '@emotion/styled': 11.11.5(@emotion/react@11.11.4)(@types/react@18.3.3)(react@18.3.1)
-      '@mui/material': 5.16.0(@emotion/react@11.11.4)(@emotion/styled@11.11.5)(@types/react@18.3.3)(react-dom@18.3.1)(react@18.3.1)
-      '@mui/x-date-pickers': 7.9.0(@emotion/react@11.11.4)(@emotion/styled@11.11.5)(@mui/material@5.16.0)(@types/react@18.3.3)(luxon@3.4.4)(react-dom@18.3.1)(react@18.3.1)
-      color: 4.2.3
-      crypto-js: 4.2.0
-      csstype: 3.1.3
-      flatted: 3.3.1
-      luxon: 3.4.4
-      react: 18.3.1
-      react-async-script: 1.2.0(react@18.3.1)
-      react-dom: 18.3.1(react@18.3.1)
-      react-google-recaptcha-enterprise: 1.0.3(react@18.3.1)
-      react-hot-toast: 2.4.1(csstype@3.1.3)(react-dom@18.3.1)(react@18.3.1)
-      react-icons: 4.12.0(react@18.3.1)
-      react-toastify: 9.1.3(react-dom@18.3.1)(react@18.3.1)
-      tss-react: 4.9.10(@emotion/react@11.11.4)(@mui/material@5.16.0)(react@18.3.1)
-      use-resize-observer: 9.1.0(react-dom@18.3.1)(react@18.3.1)
-    transitivePeerDependencies:
-      - '@emotion/server'
-      - '@types/react'
-      - date-fns
-      - date-fns-jalali
-      - dayjs
-      - moment
-      - moment-hijri
-      - moment-jalaali
-      - supports-color
     dev: false

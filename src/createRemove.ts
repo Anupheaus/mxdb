@@ -1,9 +1,11 @@
-import { InternalError, Logger, Record, is } from '@anupheaus/common';
+import type { Logger, Record } from '@anupheaus/common';
+import { is } from '@anupheaus/common';
 import { utils } from './utils';
 import { useDb } from './DbContext';
+import type { Get } from './createGet';
 
-export function createRemove<RecordType extends Record>(name: string, logger: Logger) {
-  const { db, raiseCollectionEvent } = useDb();
+export function createRemove<RecordType extends Record>(name: string, get: Get<RecordType>, dbName: string | undefined, logger: Logger) {
+  const { db, raiseCollectionEvent } = useDb(dbName);
 
   async function remove(id: string): Promise<void>;
   async function remove(ids: string[]): Promise<void>;
@@ -15,9 +17,9 @@ export function createRemove<RecordType extends Record>(name: string, logger: Lo
       return remove([records]);
     } else {
       let collection = db.transaction(name, 'readonly').objectStore(name);
-      const [actualRecords, errors] = await Promise.whenAllSettled(records.map(async record => is.string(record) ? utils.wrap(collection.get(record)) : record));
-      if (errors.length > 0) throw new InternalError('Some records could not be found to be removed', { meta: { errors } });
-      logger.debug('Removing records...', actualRecords);
+      if (records.length === 0) return;
+      const actualRecords = await get(records.map(record => is.string(record) ? record : record.id));
+      logger.debug('Removing records...', { count: actualRecords.length });
       const transaction = db.transaction(name, 'readwrite');
       collection = transaction.objectStore(name);
       await Promise.allSettled(actualRecords.map(async record => utils.wrap(collection.delete(record.id))));

@@ -48,6 +48,7 @@ module.exports = {
         code: 210
       }
     ],
+    '@typescript-eslint/consistent-type-imports': 'error',
     'arrow-parens': ['error', 'as-needed'],
     'sort-imports': 'off',
     'no-unused-vars': 'off',

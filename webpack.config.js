@@ -20,6 +20,7 @@ const generateSettings = (name, isDev) => ({
     path: path.resolve(__dirname, './dist'),
     ...(isDev ? {} : { libraryTarget: 'umd' }),
     hashFunction: 'xxhash64',
+    clean: true,
   },
   module: {
     rules: [{
@@ -28,10 +29,8 @@ const generateSettings = (name, isDev) => ({
       options: {
         onlyCompileBundledFiles: true,
         compilerOptions: {
-          ...(isDev ? {} : {
-            declaration: true,
-            declarationDir: './dist',
-          }),
+          declaration: true,
+          declarationDir: './dist',
           noEmit: false,
         },
       },
@@ -94,9 +93,7 @@ module.exports = (env, argv) => {
   const config = [{
     /* Client */
     ...clientSettings,
-    entry: {
-      client: isDev ? './test/client/index.tsx' : './src/client/index.ts',
-    },
+    entry: (isDev ? { client: './test/client/index.tsx' } : { index: './src/index.ts' }),
     resolve: {
       ...clientSettings.resolve,
       fallback: {
@@ -120,23 +117,25 @@ module.exports = (env, argv) => {
         Buffer: ['buffer', 'Buffer'],
       }),*/
     ],
-    optimization: {
-      splitChunks: {
-        cacheGroups: {
-          vendor: {
-            name: 'vendors',
-            test: /[\\/]node_modules[\\/]/,
-            chunks: 'all',
+    ...(isDev ? {
+      optimization: {
+        splitChunks: {
+          cacheGroups: {
+            vendor: {
+              name: 'vendors',
+              test: /[\\/]node_modules[\\/]/,
+              chunks: 'all',
+            },
           },
         },
       },
-    },
-  }, {
+    } : {}),
+  }, (isDev ? {
 
     /* Server */
     ...serverSettings,
     entry: {
-      server: isDev ? './test/server/start.ts' : './src/server/index.ts',
+      server: './test/server/start.ts',
     },
     target: 'node',
     externals: [
@@ -158,7 +157,17 @@ module.exports = (env, argv) => {
       //   generatedControllerTypesFileName: path.resolve(__dirname, './test/common/ControllerTypes.ts'),
       // }),      
     ],
-  }];
+  } : {
+    /* Common */
+    ...serverSettings,
+    entry: {
+      common: './src/defineCollection.ts',
+    },
+    target: 'node',
+    externals: [
+      nodeExternals(),
+    ],
+  })].filter(v => v != null);
 
   if (argv.name != null) return config.find(({ name }) => name.toLowerCase() === argv.name.toLowerCase());
   return config;

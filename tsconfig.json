@@ -23,15 +23,7 @@
     ],
     "target": "es6",
     "sourceMap": true,
-    "jsx": "react-jsx",
-    "paths": {
-      "@anupheaus/common": [
-        "../common/src",
-      ],
-      "@anupheaus/react-ui": [
-        "../react-ui/src",
-      ],
-    }
+    "jsx": "react-jsx"
   },
   "include": [
     "src/**/*",

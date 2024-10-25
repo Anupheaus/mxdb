@@ -1,13 +1,13 @@
-import { collectionConfigs } from './collectionConfigs';
-import { MXDBCollection } from './models';
+import { configRegistry } from './configRegistry';
+import type { MXDBCollection } from './models';
 
 function hashCollections(collections: MXDBCollection[]) {
   return collections
     .map(collection => {
-      const config = collectionConfigs.get(collection);
+      const config = configRegistry.get(collection);
       if (config == null) return '';
       const indexes = config.indexes.map(index => `${index.name}|${index.fields.join('|')}-${index.isUnique === true}`).join('#');
-      return `${config.name}${indexes}`;
+      return `${config.name}#${indexes}`;
     })
     .join(',')
     .hash({ algorithm: 'md5' });

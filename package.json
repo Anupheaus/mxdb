@@ -3,15 +3,15 @@
   "version": "0.0.1",
   "main": "./dist/index.js",
   "exports": {
-    "./server": {
-      "require": "./dist/server.js",
-      "import": "./dist/server.js",
-      "types": "./dist/server/index.d.ts"
+    ".": {
+      "require": "./dist/index.js",
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
     },
-    "./client": {
-      "require": "./dist/client.js",
-      "import": "./dist/client.js",
-      "types": "./dist/client/index.d.ts"
+    "./common": {
+      "require": "./dist/common.js",
+      "import": "./dist/common.js",
+      "types": "./dist/common/index.d.ts"
     }
   },
   "typesVersions": {
@@ -44,8 +44,8 @@
   ],
   "typings": "dist/index",
   "dependencies": {
-    "@anupheaus/common": "file:../common",
-    "@anupheaus/react-ui": "file:../react-ui",
+    "@anupheaus/common": "^0.1.17",
+    "@anupheaus/react-ui": "^0.0.55",
     "luxon": "^3.2.1",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
@@ -104,10 +104,5 @@
     "webpack-inject-plugin": "^1.5.5",
     "webpack-node-externals": "^3.0.0",
     "@faker-js/faker": "^8.4.1"
-  },
-  "pnpm": {
-    "overrides": {
-      "@anupheaus/common": "file:../common"
-    }
   }
 }

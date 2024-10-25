@@ -1,13 +1,12 @@
-import { Record } from '@anupheaus/common';
-import { MXDBCollection, MXDBCollectionConfig } from './models';
-import { collectionConfigs } from './collectionConfigs';
+import type { Record } from '@anupheaus/common';
+import type { MXDBCollection, MXDBCollectionConfig } from './models';
+import { configRegistry } from './configRegistry';
 
-export function defineCollection<RecordType extends Record>(config: MXDBCollectionConfig<RecordType>) {
-  const collection = {
+export function defineCollection<RecordType extends Record>(config: MXDBCollectionConfig<RecordType>): MXDBCollection<RecordType> {
+  const collection: MXDBCollection<RecordType> = {
     name: config.name,
     type: null as unknown as RecordType,
-    sortableFields: config.indexes.flatMap(index => index.fields),
-  } as const satisfies MXDBCollection<RecordType>;
-  collectionConfigs.set(collection, config);
+  };
+  configRegistry.add(collection, config);
   return collection;
 }
