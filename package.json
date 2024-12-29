@@ -44,8 +44,8 @@
   ],
   "typings": "dist/index",
   "dependencies": {
-    "@anupheaus/common": "^0.1.17",
-    "@anupheaus/react-ui": "^0.0.55",
+    "@anupheaus/common": "^0.1.19",
+    "@anupheaus/react-ui": "^0.0.56",
     "luxon": "^3.2.1",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",

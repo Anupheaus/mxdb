@@ -4,6 +4,7 @@ const NodemonPlugin = require('nodemon-webpack-plugin');
 const CopyWebpackConfig = require('copy-webpack-plugin');
 const ProgressPlugin = require('progress-webpack-plugin');
 const HotModulePlugin = require('./WebpackHotReloadPlugin');
+const { execSync } = require('child_process');
 // const { ProvidePlugin } = require('webpack');
 // const SocketAPIPlugin = require('./SocketAPIPlugin');
 // const dotenv = require('dotenv');
@@ -20,7 +21,6 @@ const generateSettings = (name, isDev) => ({
     path: path.resolve(__dirname, './dist'),
     ...(isDev ? {} : { libraryTarget: 'umd' }),
     hashFunction: 'xxhash64',
-    clean: true,
   },
   module: {
     rules: [{
@@ -89,6 +89,9 @@ module.exports = (env, argv) => {
   const isDev = argv.mode === 'development';
   const clientSettings = generateSettings('client', isDev);
   const serverSettings = generateSettings('server', isDev);
+  const commonSettings = generateSettings('common', isDev);
+
+  execSync('rm -rf dist');
 
   const config = [{
     /* Client */
@@ -159,7 +162,7 @@ module.exports = (env, argv) => {
     ],
   } : {
     /* Common */
-    ...serverSettings,
+    ...commonSettings,
     entry: {
       common: './src/defineCollection.ts',
     },
@@ -168,7 +171,6 @@ module.exports = (env, argv) => {
       nodeExternals(),
     ],
   })].filter(v => v != null);
-
   if (argv.name != null) return config.find(({ name }) => name.toLowerCase() === argv.name.toLowerCase());
   return config;
 };

@@ -10,6 +10,8 @@ import { createClear } from './createClear';
 import { useLogger } from './logger';
 import { configRegistry } from './configRegistry';
 import { createGetRecordCount } from './createGetRecordCount';
+import { createDistinct } from './createDistinct';
+import { createUseDistinct } from './createUseDistinct';
 
 export function useCollection<RecordType extends Record>(collection: MXDBCollection<RecordType>, dbName?: string) {
   const logger = useLogger(collection.name);
@@ -22,6 +24,8 @@ export function useCollection<RecordType extends Record>(collection: MXDBCollect
   const useQuery = createUseQuery<RecordType>(query);
   const clear = createClear(collection.name, dbName);
   const getCount = createGetRecordCount(collection.name, dbName);
+  const distinct = createDistinct(collection, config, dbName, logger);
+  const useDistinct = createUseDistinct(distinct);
 
   return {
     get,
@@ -32,5 +36,7 @@ export function useCollection<RecordType extends Record>(collection: MXDBCollect
     useQuery,
     clear,
     getCount,
+    distinct,
+    useDistinct,
   };
 }

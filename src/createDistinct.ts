@@ -1,5 +1,6 @@
 import type { DataRequest, Logger, Record } from '@anupheaus/common';
-import { DataSorts, is, SortDirections } from '@anupheaus/common';
+import { DataSorts } from '@anupheaus/common';
+import { is, SortDirections } from '@anupheaus/common';
 import type { CollectionEvent } from './DbContext';
 import { useDb } from './DbContext';
 import type { Query as Filter } from 'sift';
@@ -11,16 +12,12 @@ import { useRef } from 'react';
 import { useOnUnmount } from '@anupheaus/react-ui';
 import { deserialise } from './transforms';
 
-export interface QueryProps<RecordType extends Record> extends DataRequest<RecordType> {
+export interface DistinctProps<RecordType extends Record> extends Omit<DataRequest<RecordType>, 'pagination'> {
+  field: keyof RecordType;
   disable?: boolean;
 }
 
-export interface QueryResponse<RecordType extends Record> {
-  records: RecordType[];
-  total: number;
-}
-
-export function createQuery<RecordType extends Record>(collection: MXDBCollection<RecordType>, config: MXDBCollectionConfig<RecordType>, dbName: string | undefined, logger: Logger) {
+export function createDistinct<RecordType extends Record>(collection: MXDBCollection<RecordType>, config: MXDBCollectionConfig<RecordType>, dbName: string | undefined, logger: Logger) {
   const { db, onCollectionEvent } = useDb(dbName);
   const handleCollectionEventRef = useRef<(event: CollectionEvent<RecordType>) => void>();
   const unsubscribeFomCollectionEventsRef = useRef<() => void>(() => void 0);
@@ -37,13 +34,14 @@ export function createQuery<RecordType extends Record>(collection: MXDBCollectio
 
   useOnUnmount(() => unsubscribeFomCollectionEventsRef.current());
 
-  return async (props?: QueryProps<RecordType>, response?: (response: QueryResponse<RecordType>) => void) => {
+  return async <T = unknown>(propsOrField: DistinctProps<RecordType> | keyof RecordType, response?: (values: T[]) => void) => {
+    const props = (is.string(propsOrField) ? { field: propsOrField } : propsOrField) as DistinctProps<RecordType>;
     logger.debug(`Querying collection "${collection.name}"...`, props);
-    const { filters, pagination, sorts, disable = false } = props ?? {};
+    const { filters, field, sorts, disable = false } = props;
     if (response != null) signUpToCollectionEvents();
 
-    const processRecords = async () => {
-      if (disable) return { records: [], total: 0 };
+    const processRecords = async (): Promise<T[]> => {
+      if (disable) return [];
       const transaction = db.transaction(collection.name, 'readonly');
       const store = transaction.objectStore(collection.name);
       let records = await onRead((await utils.wrap<RecordType[]>(store.getAll())).map(deserialise));
@@ -56,43 +54,34 @@ export function createQuery<RecordType extends Record>(collection: MXDBCollectio
           records = records.orderBy(record => record[sort[0]], sort[1] === 'desc' ? SortDirections.Descending : SortDirections.Ascending);
         });
       }
-      const total = records.length;
-      if (pagination) {
-        const start = pagination.offset ?? 0;
-        const end = start + pagination.limit;
-        records = records.slice(start, end);
-      }
+      const values = records.map(record => record[field] as T);
       const timeTaken = DateTime.now().diff(startTime).milliseconds;
       if (timeTaken > 1500) {
         logger.warn(`Query on collection "${collection.name}" took ${timeTaken}ms`, props);
       } else {
         logger.debug(`Query on collection "${collection.name}" completed (time taken: ${timeTaken}ms).`);
       }
-      if (disable) return { records: [], total: 0 };
-      return { records, total };
+      if (disable) return [];
+      return values;
     };
 
-    let { records, total } = await processRecords();
+    let values = await processRecords();
 
     if (response != null) {
-      response({ records, total });
+      response(values);
       handleCollectionEventRef.current = async () => {
-        const { records: newRecords, total: newTotal } = await processRecords();
-        if (newTotal !== total || !is.deepEqual(records, newRecords)) {
-          records = newRecords;
-          total = newTotal;
-          response({ records: newRecords, total: newTotal });
+        const newValues = await processRecords();
+        if (!is.deepEqual(values, newValues)) {
+          values = newValues;
+          response(values);
         }
       };
     } else {
       handleCollectionEventRef.current = undefined;
     }
 
-    return {
-      records,
-      total,
-    };
+    return values;
   };
 }
 
-export type Query<RecordType extends Record> = ReturnType<typeof createQuery<RecordType>>;
+export type Distinct<RecordType extends Record> = ReturnType<typeof createDistinct<RecordType>>;
