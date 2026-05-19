@@ -65,11 +65,11 @@ describe('isActiveRecordState', () => {
     ['state with recordId', makeDeletedState('r1')],
   ];
 
-  test.each(activeCases)('returns true for %s', (_label, state) => {
+  it.each(activeCases)('returns true for %s', (_label, state) => {
     expect(isActiveRecordState(state)).toBe(true);
   });
 
-  test.each(deletedCases)('returns false for %s', (_label, state) => {
+  it.each(deletedCases)('returns false for %s', (_label, state) => {
     expect(isActiveRecordState(state)).toBe(false);
   });
 });
@@ -84,11 +84,11 @@ describe('isDeletedRecordState', () => {
     ['state with record only (no name)', makeActiveState('r2')],
   ];
 
-  test.each(deletedCases)('returns true for %s', (_label, state) => {
+  it.each(deletedCases)('returns true for %s', (_label, state) => {
     expect(isDeletedRecordState(state)).toBe(true);
   });
 
-  test.each(activeCases)('returns false for %s', (_label, state) => {
+  it.each(activeCases)('returns false for %s', (_label, state) => {
     expect(isDeletedRecordState(state)).toBe(false);
   });
 });
@@ -103,11 +103,11 @@ describe('isActiveCursor', () => {
     ['cursor with recordId', makeDeletedCursor('r1', ULID_EARLIER)],
   ];
 
-  test.each(activeCases)('returns true for %s', (_label, cursor) => {
+  it.each(activeCases)('returns true for %s', (_label, cursor) => {
     expect(isActiveCursor(cursor)).toBe(true);
   });
 
-  test.each(deletedCases)('returns false for %s', (_label, cursor) => {
+  it.each(deletedCases)('returns false for %s', (_label, cursor) => {
     expect(isActiveCursor(cursor)).toBe(false);
   });
 });
@@ -122,11 +122,11 @@ describe('isDeletedCursor', () => {
     ['cursor with record and no name', makeActiveCursor('r2', ULID_EARLIER)],
   ];
 
-  test.each(deletedCases)('returns true for %s', (_label, cursor) => {
+  it.each(deletedCases)('returns true for %s', (_label, cursor) => {
     expect(isDeletedCursor(cursor)).toBe(true);
   });
 
-  test.each(activeCases)('returns false for %s', (_label, cursor) => {
+  it.each(activeCases)('returns false for %s', (_label, cursor) => {
     expect(isDeletedCursor(cursor)).toBe(false);
   });
 });
@@ -309,8 +309,9 @@ describe('squashCursors', () => {
       makeBatch(COLLECTION_ITEMS, [deleted]),
     ]);
 
-    const record = result[0]!.records[0]!;
+    const record = result[0]!.records[0]! as MXDBDeletedRecordCursor;
     expect(isDeletedCursor(record)).toBe(true);
+    expect(record.lastAuditEntryId).toBe(ULID_LATER);
   });
 
   it('delete wins even when the active cursor has a newer ULID', () => {
@@ -321,8 +322,9 @@ describe('squashCursors', () => {
       makeBatch(COLLECTION_ITEMS, [active]),
     ]);
 
-    const record = result[0]!.records[0]!;
+    const record = result[0]!.records[0]! as MXDBDeletedRecordCursor;
     expect(isDeletedCursor(record)).toBe(true);
+    expect(record.lastAuditEntryId).toBe(ULID_EARLIER);
   });
 
   it('preserves multiple collections independently', () => {
