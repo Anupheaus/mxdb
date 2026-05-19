@@ -11,6 +11,7 @@ import {
   type AuditRestoredEntry,
 } from '..';
 import { recordDiff } from './diff';
+import { replayHistoryEndState } from './replay';
 
 type TestRecord = MXDBRecord & { name?: string; value?: number; phase?: string };
 
@@ -109,6 +110,45 @@ describe('auditor replay — real-world lifecycles', () => {
     audit = auditor.updateAuditWith({ id: 'doc-c', name: 'done', value: 102, phase: 'final' } as TestRecord, audit);
 
     expectReplayMatches(audit, { id: 'doc-c', name: 'done', value: 102, phase: 'final' });
+  });
+
+  it('update after delete does not restore live — delete is final', () => {
+    // Build a hand-crafted entries array: Created → Updated → Deleted → Updated (post-delete)
+    // All ULIDs must be in strictly ascending lex order so the replay sorts them correctly.
+    const ids = orderedUlids(4);
+    const s0 = { id: 'doc-final', name: 'original', value: 0 } as TestRecord;
+    const s1 = { id: 'doc-final', name: 'updated', value: 1 } as TestRecord;
+    // The post-delete update bumps `name` to 'post-delete' — this must advance shadow but NOT restore live.
+    const s2 = { id: 'doc-final', name: 'post-delete', value: 2 } as TestRecord;
+
+    const created: AuditCreatedEntry<TestRecord> = {
+      type: AuditEntryType.Created,
+      id: ids[0]!,
+      record: cloneRecord(s0),
+    };
+    const updated: AuditUpdateEntry = {
+      type: AuditEntryType.Updated,
+      id: ids[1]!,
+      ops: recordDiff(s0, s1),
+    };
+    const deleted: AuditDeletedEntry = { type: AuditEntryType.Deleted, id: ids[2]! };
+    const postDeleteUpdate: AuditUpdateEntry = {
+      type: AuditEntryType.Updated,
+      id: ids[3]!,
+      ops: recordDiff(s1, s2),
+    };
+
+    const entries = [created, updated, deleted, postDeleteUpdate] as AuditEntry<TestRecord>[];
+    const audit: AuditOf<TestRecord> = { id: 'doc-final', entries };
+
+    // live must be tombstoned — the post-delete update must NOT resurrect it
+    expect(auditor.createRecordFrom(audit)).toBeUndefined();
+    expect(auditor.isDeleted(audit)).toBe(true);
+
+    // shadow must have advanced: the post-delete update is applied to shadow
+    const { shadow } = replayHistoryEndState<TestRecord>(entries, undefined);
+    expect(shadow).toBeDefined();
+    expect(shadow!.name).toBe('post-delete');
   });
 
   it('replays alternating field edits (name vs value) without cross-talk', () => {
