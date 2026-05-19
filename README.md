@@ -276,10 +276,10 @@ The only mechanism is **ULID-ordered last-write-wins** on the audit entry. The a
 
 | Requirement | Detail |
 |-------------|--------|
-| **Node.js** | 18+ (ESM, `AsyncLocalStorage`) |
+| **Node.js** | 20+ (ESM, `AsyncLocalStorage`) |
 | **MongoDB** | 4.4+ with change streams enabled — requires a **replica set** or MongoDB Atlas. A standalone `mongod` will not work. |
-| **Browser** | Chrome 116+ / Edge 116+ for full support. Requires OPFS (`navigator.storage.getDirectory`) for persistent SQLite and WebAuthn PRF extension for hardware-backed encryption. Firefox supports WebAuthn but not PRF — users on Firefox fall back to Google OAuth or unencrypted storage. |
-| **Socket.IO** | Peer dependency — the `server` parameter to `startServer` must be a Node HTTP/HTTPS server with Socket.IO already attached. |
+| **Browser** | Chrome 116+ / Edge 116+ for full support. Requires OPFS (`navigator.storage.getDirectory`) for persistent SQLite and WebAuthn PRF extension for hardware-backed encryption. Firefox supports WebAuthn but not the PRF extension. If the server is configured for WebAuthn mode, Firefox users cannot use the app. Google OAuth mode is an alternative that works across all browsers but stores local data unencrypted. |
+| **Socket.IO / Nexus** | Bundled — the networking layer is provided by `@anupheaus/nexus` and included in the package. No manual Socket.IO setup required. |
 
 ## Environment variables
 
@@ -289,7 +289,7 @@ These are used at runtime or in the test harness. None are required by the packa
 |----------|---------|-------------|
 | `NODE_ENV` | Server | When `production`, the dev-auth bypass route (`POST /{name}/dev/signin`) is **not** registered. Always set `NODE_ENV=production` in deployed environments. |
 | `MONGO_URI` | Test app / e2e | MongoDB connection URI used in the manual test app and e2e setup. Passed as `mongoDbUrl` to `startServer`. |
-| `MXDB_E2E_*` | E2e test suite | A family of variables injected into the forked test server process (`MXDB_E2E_PORT`, `MXDB_E2E_MONGO_URI`, etc.). See `tests/e2e/setup/mongoConstants.ts`. |
+| `MXDB_E2E_*` | E2e test suite | A family of variables injected into the forked test server process (`MXDB_E2E_SERVER_PORT`, `MXDB_E2E_MONGO_URI`, etc.). See `tests/e2e/setup/mongoConstants.ts`. |
 
 ## Known limitations and non-goals
 
@@ -306,11 +306,10 @@ These are used at runtime or in the test harness. None are required by the packa
 
 | Code | Severity | Trigger | What to do |
 |------|----------|---------|------------|
-| `SYNC_FAILED` | recoverable | A C2S sync batch was rejected by the server (e.g. network error, timeout, or server returned an error for one or more records). | The sync engine will retry on the next tick. Log for visibility; surface to the user only if it persists. |
-| `TIMEOUT` | recoverable | A socket action (get, upsert, etc.) did not receive a response within 5 000 ms. | Typically a transient network issue. The client will retry the action on reconnect. |
+| `SYNC_FAILED` | error | A C2S sync batch was rejected by the server (e.g. network error, timeout, or server returned an error for one or more records). | The sync engine will retry on the next tick. Log for visibility; surface to the user only if it persists. |
+| `TIMEOUT` | error | A socket action (get, upsert, etc.) did not receive a response within 5 000 ms. | Typically a transient network issue. The client will retry the action on reconnect. |
 | `DB_NOT_OPEN` | fatal | A collection operation was attempted before the SQLite database finished opening, or after it was closed. | Check that `useCollection` is only called inside the `MXDBSync` provider tree. |
 | `ENCRYPTION_FAILED` | fatal | The WebAuthn PRF key derivation failed (e.g. the platform rejected the ceremony). | The local database cannot be decrypted. The user must re-register the device via the invite-link flow. |
-| `INVALID_TOKEN` | fatal | The stored auth token was rejected by the server. | Call `onInvalidToken` on `MXDBSync` to trigger re-authentication (re-run the invite flow). |
 
 ## Development
 
