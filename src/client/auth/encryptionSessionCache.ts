@@ -9,6 +9,17 @@ function buildSessionKey(appName: string, userId: string): string {
   return `${SESSION_KEY_PREFIX}:${appName}:${userId}`;
 }
 
+/**
+ * Caches the PRF-derived encryption key in sessionStorage so a page refresh skips the WebAuthn ceremony.
+ *
+ * Uses sessionStorage (tab-scoped) intentionally — the key is lost when the tab closes, limiting the
+ * exposure window. Storage errors are silently ignored so auth flow is never interrupted by storage limits.
+ *
+ * @param appName - Application identifier for the session key
+ * @param userId - User identifier for the session key
+ * @param key - Raw AES key bytes derived from the WebAuthn PRF output
+ * @param dbName - SQLite DB name to open alongside the key (userId or accountId)
+ */
 export function saveEncryptionToSession(appName: string, userId: string, key: Uint8Array, dbName: string): void {
   try {
     const data: CachedEncryption = {
@@ -19,6 +30,16 @@ export function saveEncryptionToSession(appName: string, userId: string, key: Ui
   } catch { /* ignore storage errors */ }
 }
 
+/**
+ * Restores a previously cached encryption key from sessionStorage.
+ *
+ * Returns undefined if no cached key exists or if parsing fails (e.g. corrupted storage entry).
+ * Call after sign-in to avoid re-running the WebAuthn ceremony on every page load.
+ *
+ * @param appName - Application identifier for the session key
+ * @param userId - User identifier for the session key
+ * @returns The cached encryption key and database name, or undefined if not found or invalid
+ */
 export function loadEncryptionFromSession(appName: string, userId: string): { key: Uint8Array; dbName: string } | undefined {
   try {
     const raw = sessionStorage.getItem(buildSessionKey(appName, userId));
@@ -28,6 +49,14 @@ export function loadEncryptionFromSession(appName: string, userId: string): { ke
   } catch { return undefined; }
 }
 
+/**
+ * Removes the cached encryption key from sessionStorage.
+ *
+ * Call on sign-out or before starting a fresh WebAuthn ceremony. Storage errors are silently ignored.
+ *
+ * @param appName - Application identifier for the session key
+ * @param userId - User identifier for the session key
+ */
 export function clearEncryptionFromSession(appName: string, userId: string): void {
   try { sessionStorage.removeItem(buildSessionKey(appName, userId)); } catch { /* ignore */ }
 }
