@@ -80,10 +80,12 @@ const instance = await startServer({
   server: httpServer,
   mongoDbName: 'mydb',
   mongoDbUrl: process.env.MONGO_URI,
-  onGetUserDetails: async (userId) => myDb.getUserById(userId),
+  auth: {
+    mode: 'webauthn',
+    onGetUserDetails: async (userId) => myDb.getUserById(userId),
+  },
   shouldSeedCollections: true,
   changeStreamDebounceMs: 20,
-  inviteLinkTTLMs: 24 * 60 * 60 * 1000,
 });
 ```
 
@@ -94,13 +96,26 @@ const instance = await startServer({
 | `collections` | `MXDBCollection[]` | ✓ | Collections returned from `defineCollection()`. |
 | `mongoDbUrl` | `string` | ✓ | MongoDB connection URI. |
 | `mongoDbName` | `string` | ✓ | Database name. |
-| `onGetUserDetails` | `(userId: string) => Promise<MXDBUserDetails>` | ✓ | Called during invite redemption to fetch user details. |
-| `server` | HTTP/HTTPS/HTTP2 server | ✓ | Node HTTP server to attach the socket to. |
+| `auth` | `ServerAuthConfig` | ✓ | Authentication configuration — see **Auth modes** below. |
 | `name` | `string` | ✓ | App name — used in invite-link routes (`/<name>/register`). |
+| `server` | HTTP/HTTPS/HTTP2 server | | Node HTTP server to attach the socket to. Mutually exclusive with `ssl`. |
 | `shouldSeedCollections` | `boolean` | | If true, runs `onSeed` hooks at startup. |
 | `changeStreamDebounceMs` | `number` | | Idle window (ms) before change-stream events are dispatched; events within the window are batched. Default `20`. |
-| `inviteLinkTTLMs` | `number` | | Invite link lifetime in ms. Default `86 400 000` (24 h). |
 | `clearDatabase` | `boolean` | | Drops and re-creates all collections on startup. **Destructive.** |
+
+**Auth modes (`auth: ServerAuthConfig`):**
+
+`ServerAuthConfig` is a discriminated union on `mode`. Supply one of:
+
+| `auth.mode` | Required fields | Optional fields |
+|-------------|-----------------|-----------------|
+| `'webauthn'` | — | `rpId`, `onGetUserDetails`, `onGetInviteDetails` |
+| `'google-oauth'` | `clientId`, `clientSecret`, `redirectUri`, `baseScopes`, `onCreateUser` | `capacitorCallbackUrl`, `syncUserToClient`, `onGetUserDetails` |
+
+- `rpId` — WebAuthn relying party domain (defaults to `'localhost'` in development).
+- `onGetUserDetails(userId)` — called to fetch user data during authentication.
+- `onGetInviteDetails(userId, accountId?)` — called during invite redemption (WebAuthn only).
+- `onCreateUser(profile)` — called once when a new Google OAuth user first signs in.
 
 Additional props (`actions`, `subscriptions`, `onStartup`, `onClientConnected`, `onClientDisconnected`, `onRegisterRoutes`, …) are passed through to the underlying socket server.
 
@@ -109,7 +124,7 @@ Additional props (`actions`, `subscriptions`, `onStartup`, `onClientConnected`, 
 ```ts
 interface ServerInstance {
   app: Koa;
-  createInvite(userId: string, baseUrl: string): Promise<string>;
+  createInvite?(options: { userId: string; baseUrl: string; accountId?: string }): Promise<string>; // webauthn mode only
   getDevices(userId: string): Promise<MXDBDeviceInfo[]>;
   enableDevice(requestId: string): Promise<void>;
   disableDevice(requestId: string): Promise<void>;
@@ -200,7 +215,7 @@ await signOut();
 ```
 
 **Flow:**
-1. Server calls `instance.createInvite(userId, baseUrl)` and sends the URL to the user.
+1. Server calls `instance.createInvite({ userId, baseUrl })` and sends the URL to the user.
 2. Client calls `useMXDBInvite()(url)` — opens a WebAuthn prompt, registers a credential with the PRF extension, and exchanges a registration token with the server.
 3. The server calls `onGetUserDetails(userId)` to associate the new device with user data and issues an auth token.
 4. The token is stored encrypted in IndexedDB; `MXDBSync` uses it on subsequent loads.
