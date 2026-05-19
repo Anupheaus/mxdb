@@ -302,7 +302,7 @@ These are used at runtime or in the test harness. None are required by the packa
 
 ## Errors and what they mean
 
-`MXDBError` is passed to the `onError` callback on `MXDBSync`. Each error has a `code`, `message`, and `severity` (`'fatal' | 'recoverable'`).
+`MXDBError` is passed to the `onError` callback on `MXDBSync`. Each error has a `code`, `message`, and `severity` (`'warning' | 'error' | 'fatal'`).
 
 | Code | Severity | Trigger | What to do |
 |------|----------|---------|------------|
