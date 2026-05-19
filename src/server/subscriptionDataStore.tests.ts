@@ -6,9 +6,13 @@ import {
   subscriptionDataSet,
 } from './subscriptionDataStore';
 
+// All subscription IDs used anywhere in this suite — cleared before each test
+// so no test can bleed state into another.
+const allTestIds = ['sub-a', 'sub-b', 'sub-x', 's1', 'never-set-key'] as const;
+
 describe('subscriptionDataStore', () => {
   beforeEach(() => {
-    for (const id of ['sub-a', 'sub-b', 'sub-x', 's1'] as const) {
+    for (const id of allTestIds) {
       clearSubscriptionDataKeys(id);
     }
   });
@@ -28,5 +32,9 @@ describe('subscriptionDataStore', () => {
     clearSubscriptionDataKeys('s1');
     expect(subscriptionDataGet('subscription-data.s1')).toBeUndefined();
     expect(subscriptionDataGet('subscription-data.additional.s1')).toBeUndefined();
+  });
+
+  it('returns undefined for a key that was never set', () => {
+    expect(subscriptionDataGet('subscription-data.never-set-key')).toBeUndefined();
   });
 });

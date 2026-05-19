@@ -200,7 +200,7 @@ await signOut();
 ```
 
 **Flow:**
-1. Server calls `instance.createInviteLink(userId, domain)` and sends the URL to the user.
+1. Server calls `instance.createInvite(userId, baseUrl)` and sends the URL to the user.
 2. Client calls `useMXDBInvite()(url)` — opens a WebAuthn prompt, registers a credential with the PRF extension, and exchanges a registration token with the server.
 3. The server calls `onGetUserDetails(userId)` to associate the new device with user data and issues an auth token.
 4. The token is stored encrypted in IndexedDB; `MXDBSync` uses it on subsequent loads.
@@ -271,6 +271,45 @@ When an `onAfter` hook writes to **another** collection, that write produces a s
 The only mechanism is **ULID-ordered last-write-wins** on the audit entry. The audit entry with the highest ULID wins; record fields have no effect on conflict resolution. When `disableAudit: true`, last-write-wins by timestamp is used instead.
 
 **Deletion and restoration:** an `Updated` entry with a higher ULID than a `Deleted` entry does **not** restore the record. Restoration requires an explicit `Restored` audit entry. There is no automatic restoration pathway.
+
+## Requirements
+
+| Requirement | Detail |
+|-------------|--------|
+| **Node.js** | 20+ (ESM, `AsyncLocalStorage`) |
+| **MongoDB** | 4.4+ with change streams enabled — requires a **replica set** or MongoDB Atlas. A standalone `mongod` will not work. |
+| **Browser** | Chrome 116+ / Edge 116+ for full support. Requires OPFS (`navigator.storage.getDirectory`) for persistent SQLite and WebAuthn PRF extension for hardware-backed encryption. Firefox supports WebAuthn but not the PRF extension. If the server is configured for WebAuthn mode, Firefox users cannot use the app. Google OAuth mode is an alternative that works across all browsers but stores local data unencrypted. |
+| **Socket.IO / Nexus** | Bundled — the networking layer is provided by `@anupheaus/nexus` and included in the package. No manual Socket.IO setup required. |
+
+## Environment variables
+
+These are used at runtime or in the test harness. None are required by the package itself — they are conventions used in the test app (`test/`) and e2e suite (`tests/`).
+
+| Variable | Used by | Description |
+|----------|---------|-------------|
+| `NODE_ENV` | Server | When `production`, the dev-auth bypass route (`POST /{name}/dev/signin`) is **not** registered. Always set `NODE_ENV=production` in deployed environments. |
+| `MONGO_URI` | Test app / e2e | MongoDB connection URI used in the manual test app and e2e setup. Passed as `mongoDbUrl` to `startServer`. |
+| `MXDB_E2E_*` | E2e test suite | A family of variables injected into the forked test server process (`MXDB_E2E_SERVER_PORT`, `MXDB_E2E_MONGO_URI`, etc.). See `tests/e2e/setup/mongoConstants.ts`. |
+
+## Known limitations and non-goals
+
+- **No record restoration.** An `Updated` audit entry after a `Deleted` entry does not restore the record. Restoration requires an explicit `Restored` audit entry. There is currently no API to create one — deletion is effectively permanent until this is implemented.
+- **`onAfterClear` is not change-stream driven.** Unlike `onAfterUpsert` and `onAfterDelete`, `onAfterClear` runs only on the server instance that performed the clear — not on all instances watching the change stream.
+- **No cross-collection ordering guarantee.** When an `onAfterUpsert` hook writes to another collection, clients may briefly see a deleted record's reference intact in the related collection until the cascade-update notification arrives.
+- **Google OAuth data is unencrypted at rest.** WebAuthn uses the PRF extension to derive a hardware-backed AES key for the local SQLite database. Google OAuth has no equivalent hardware primitive — a zero-filled placeholder key is used, meaning the SQLite database is not encrypted. This is a known trade-off.
+- **`ServerOnly` collections have no client-side storage.** `syncMode: 'ServerOnly'` means no local SQLite table is created; all reads go to the server. `useGet`, `useGetAll`, `useQuery` etc. will use the subscription/action path rather than local state.
+- **ESM only.** The package ships ESM modules. CJS consumers require a bundler with ESM interop (Vite, esbuild, webpack 5+).
+
+## Errors and what they mean
+
+`MXDBError` is passed to the `onError` callback on `MXDBSync`. Each error has a `code`, `message`, and `severity` (`'warning' | 'error' | 'fatal'`).
+
+| Code | Severity | Trigger | What to do |
+|------|----------|---------|------------|
+| `SYNC_FAILED` | error | A C2S sync batch was rejected by the server (e.g. network error, timeout, or server returned an error for one or more records). | The sync engine will retry on the next tick. Log for visibility; surface to the user only if it persists. |
+| `TIMEOUT` | error | A socket action (get, upsert, etc.) did not receive a response within 5 000 ms. | Typically a transient network issue. The client will retry the action on reconnect. |
+| `DB_NOT_OPEN` | fatal | A collection operation was attempted before the SQLite database finished opening, or after it was closed. | Check that `useCollection` is only called inside the `MXDBSync` provider tree. |
+| `ENCRYPTION_FAILED` | fatal | The WebAuthn PRF key derivation failed (e.g. the platform rejected the ceremony). | The local database cannot be decrypted. The user must re-register the device via the invite-link flow. |
 
 ## Development
 

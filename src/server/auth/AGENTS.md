@@ -21,11 +21,11 @@ This auth layer is intentionally isolated from the sync collection system: `Auth
 ### Device management
 - `deviceManagement.ts` — `getDevices(db, userId)`, `enableDevice(db, requestId)`, `disableDevice(db, requestId)`. Called by the `ServerInstance` surface exposed from `startServer`.
 
-### Context hook
-- `useAuth.ts` — `useAuth()` — socket-context hook; returns `userId` and `token` for the currently connected client. Use inside socket action handlers and subscriptions.
-
 ### Dev tooling
 - `registerDevAuthRoute.ts` — registers a `POST /{name}/dev/signin` Koa route that issues a dev auth token without WebAuthn. **Excluded in `NODE_ENV=production`** — this is the server-side counterpart to `setupBrowserTools`'s `setDevAuth`.
+
+### Auth context within handlers
+Auth context (userId, token for the current socket client) is not a file in this directory. Access it via `useClient()` in [`../hooks/useClient.ts`](../hooks/useClient.ts) — see [hooks/AGENTS.md](../hooks/AGENTS.md).
 
 ## Architecture
 
@@ -55,5 +55,6 @@ SocketAPIAuthStore (socket-api interface)
 ## Related
 
 - [../AGENTS.md](../AGENTS.md) — parent server directory
+- [../hooks/AGENTS.md](../hooks/AGENTS.md) — `useClient()` provides auth context (userId, token) inside handlers
 - [../providers/db/AGENTS.md](../providers/db/AGENTS.md) — `ServerDb` passed to `AuthCollection` constructor
 - [../../client/auth/deriveKey.ts](../../client/auth/deriveKey.ts) — client-side PRF key derivation (counterpart to WebAuthn server auth)
