@@ -200,7 +200,7 @@ await signOut();
 ```
 
 **Flow:**
-1. Server calls `instance.createInviteLink(userId, domain)` and sends the URL to the user.
+1. Server calls `instance.createInvite(userId, baseUrl)` and sends the URL to the user.
 2. Client calls `useMXDBInvite()(url)` — opens a WebAuthn prompt, registers a credential with the PRF extension, and exchanges a registration token with the server.
 3. The server calls `onGetUserDetails(userId)` to associate the new device with user data and issues an auth token.
 4. The token is stored encrypted in IndexedDB; `MXDBSync` uses it on subsequent loads.
