@@ -73,5 +73,22 @@ describe('dbUtils', () => {
       const deserialized = dbUtils.deserialize(serialized);
       expect(deserialized!.id).toBe('org:123/dept~45');
     });
+
+    it('preserves array-valued fields on serialize', () => {
+      const record = { id: 's2', tags: ['a', 'b', 'c'] } as Record;
+      const serialized = dbUtils.serialize(record) as MongoDocOf<Record> & { tags: string[] };
+      expect(serialized.tags).toEqual(['a', 'b', 'c']);
+    });
+  });
+
+  describe('deserialize edge cases', () => {
+    it('preserves all extra properties on deserialize', () => {
+      const wire = { _id: 'e1', a: 1, b: 'two', nested: { x: 42 } } as MongoDocOf<Record>;
+      const result = dbUtils.deserialize(wire) as Record & { a: number; b: string; nested: { x: number } };
+      expect(result.id).toBe('e1');
+      expect(result.a).toBe(1);
+      expect(result.b).toBe('two');
+      expect(result.nested).toEqual({ x: 42 });
+    });
   });
 });
