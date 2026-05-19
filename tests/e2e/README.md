@@ -7,6 +7,7 @@ Vitest e2e specs run in Node with JSDOM + fake IndexedDB, a MongoDB Memory ReplS
 | Location | Purpose |
 |----------|---------|
 | **`setup/`** | **Generic** infrastructure only: lifecycle (`setupE2E`, `useClient`, `useServer`, …), shared types (`E2eTestRecord`), generic waits, logging, TLS, server child. Documented in [setup/README.md](setup/README.md). |
+| **`crud-operations/`** | CRUD and performance suite: `updates`, `deletions`, `subscriptions`, and `performance` specs plus `utils.ts` for shared test helpers. All use `setupE2E` / `resetE2E` / `teardownE2E` from `./setup`. |
 | **`<suite>/`** (e.g. `stress/`) | **Suite-specific** code co-located with that area: config, fixtures, harness state, custom assertions, helpers used only by tests in that tree. |
 | **Repo root of `e2e/`** (e.g. `deletions.e2e.test.ts`, `harness.smoke.test.ts`) | Specs that do not need their own folder; keep them small and depend on `./setup` for shared plumbing. |
 
