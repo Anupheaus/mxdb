@@ -7,8 +7,8 @@ import {
   startServer as startSocketServer,
   useAction,
   useAuthentication as useSocketAuthentication,
-} from '@anupheaus/socket-api/server';
-import { defineAuthentication } from '@anupheaus/socket-api/server';
+} from '@anupheaus/nexus/server';
+import { defineAuthentication } from '@anupheaus/nexus/server';
 import { internalSubscriptions } from './subscriptions';
 import { addClientWatches, removeClientWatches } from './clientDbWatches';
 import { ServerToClientSynchronisation } from './ServerToClientSynchronisation';
@@ -19,7 +19,7 @@ import { mxdbServerToClientSyncAction } from '../common/internalActions';
 import type { Socket } from 'socket.io';
 import type { ServerAuthConfig, ServerConfig } from './internalModels';
 import type { AuthCollection } from './auth/AuthCollection';
-import type { SocketAPIAuthRecord } from '@anupheaus/socket-api/common/auth';
+import type { SocketAPIAuthRecord } from '@anupheaus/nexus/common/auth';
 import { Logger } from '@anupheaus/common';
 import type { MXDBAccount, MXDBUser } from '../common/models';
 

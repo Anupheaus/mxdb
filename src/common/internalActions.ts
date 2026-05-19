@@ -1,4 +1,4 @@
-import { defineAction } from '@anupheaus/socket-api/common';
+import { defineAction } from '@anupheaus/nexus/common';
 import type {
   DistinctRequest,
   DistinctResponse,

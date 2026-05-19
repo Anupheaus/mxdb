@@ -1,8 +1,8 @@
 import { is, type AnyObject, type Logger, type PromiseMaybe, type Record } from '@anupheaus/common';
 import type { DbCollection } from '../../providers';
-import { useAction, useSocketAPI } from '@anupheaus/socket-api/client';
+import { useAction, useSocketAPI } from '@anupheaus/nexus/client';
 import type { UseSubscription } from './createUseSubscription';
-import type { SocketAPIAction, SocketAPISubscription } from '@anupheaus/socket-api/common';
+import type { SocketAPIAction, SocketAPISubscription } from '@anupheaus/nexus/common';
 import { useLayoutEffect, useRef } from 'react';
 import { DateTime } from 'luxon';
 import type { AddDisableTo } from '../../../common/models';

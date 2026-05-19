@@ -6,7 +6,7 @@
 
 **Architecture:** `IndexedDbProvider` is a thin IDB CRUD wrapper. `AuthProvider` owns WebAuthn, the invite flow, and the encryption key lifecycle (signOut = clear key, not wipe IDB). `TokenProvider` reads/writes the socket auth token exclusively in SQLite and passes it to `SocketProvider` via props and a callback. `SocketProvider` wraps `SocketAPI` and handles token rotation internally.
 
-**Tech Stack:** React 18, TypeScript, `@anupheaus/react-ui` (createComponent, useLogger), `@anupheaus/socket-api/client` (SocketAPI, useEvent, useSocketAPI), vitest
+**Tech Stack:** React 18, TypeScript, `@anupheaus/react-ui` (createComponent, useLogger), `@anupheaus/nexus/client` (SocketAPI, useEvent, useSocketAPI), vitest
 
 ---
 
@@ -668,7 +668,7 @@ Wraps `SocketAPI`. An inner component (`SocketInner`) sits inside `SocketAPI` an
  */
 import { createComponent } from '@anupheaus/react-ui';
 import type { ReactNode } from 'react';
-import { SocketAPI, useEvent, useSocketAPI } from '@anupheaus/socket-api/client';
+import { SocketAPI, useEvent, useSocketAPI } from '@anupheaus/nexus/client';
 import { mxdbTokenRotated } from '../../common';
 import { ClientToServerSyncProvider } from '../providers/client-to-server';
 import { ClientToServerProvider } from '../providers/client-to-server';

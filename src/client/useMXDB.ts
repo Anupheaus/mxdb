@@ -1,6 +1,6 @@
 import { useContext, useMemo, useRef, useState } from 'react';
 import { is } from '@anupheaus/common';
-import { useSocketAPI } from '@anupheaus/socket-api/client';
+import { useSocketAPI } from '@anupheaus/nexus/client';
 import { useSyncState } from './providers/client-to-server/SyncStateContext';
 import { DbsContext } from './providers/dbs/DbContext';
 

@@ -1,6 +1,6 @@
 import crypto from 'crypto';
 import type Router from 'koa-router';
-import type { WebAuthnAuthRecord, GoogleOAuthAuthRecord, SocketAPIAuthRecord } from '@anupheaus/socket-api/common/auth';
+import type { WebAuthnAuthRecord, GoogleOAuthAuthRecord, SocketAPIAuthRecord } from '@anupheaus/nexus/common/auth';
 import type { AuthCollection } from './AuthCollection';
 import type { ServerAuthConfig } from '../internalModels';
 

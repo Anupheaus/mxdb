@@ -1,4 +1,4 @@
-import { useAuthentication } from '@anupheaus/socket-api/client';
+import { useAuthentication } from '@anupheaus/nexus/client';
 
 export function useMXDBSignOut(): () => Promise<void> {
   return useAuthentication().signOut;

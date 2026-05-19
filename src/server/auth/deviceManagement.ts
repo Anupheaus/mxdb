@@ -1,4 +1,4 @@
-import type { SocketAPIAuthRecord } from '@anupheaus/socket-api/common/auth';
+import type { SocketAPIAuthRecord } from '@anupheaus/nexus/common/auth';
 import type { AuthCollection } from './AuthCollection';
 import type { MXDBDeviceInfo } from '../../common/models';
 

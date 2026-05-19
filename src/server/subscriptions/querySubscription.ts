@@ -3,7 +3,7 @@ import { getCollectionExtensions, useCollection } from '../collections';
 import { useDb, useServerToClientSynchronisation } from '../providers';
 import { createServerCollectionSubscription } from './createServerCollectionSubscription';
 import { pushSubscriptionResultRecords } from './pushSubscriptionResultRecords';
-import { useAuthentication, useLogger } from '@anupheaus/socket-api/server';
+import { useAuthentication, useLogger } from '@anupheaus/nexus/server';
 import type { DataRequest } from '@anupheaus/common';
 
 export const serverQuerySubscription = createServerCollectionSubscription<string[]>()(mxdbQuerySubscription,

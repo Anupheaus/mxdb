@@ -3,10 +3,10 @@ import type { Server as HttpServer } from 'http';
 import type { Server as HttpsServer } from 'https';
 import type { MXDBAccount, MXDBDeviceInfo, MXDBUser } from '../common/models';
 import type { MXDBCollection } from '../common';
-import type { ServerConfig as StartSocketServerConfig } from '@anupheaus/socket-api/server';
-import type { CreateInviteOptions } from '@anupheaus/socket-api/server';
-import type { InviteDetails } from '@anupheaus/socket-api/common';
-import type { GoogleProfile } from '@anupheaus/socket-api/common/auth';
+import type { ServerConfig as StartSocketServerConfig } from '@anupheaus/nexus/server';
+import type { CreateInviteOptions } from '@anupheaus/nexus/server';
+import type { InviteDetails } from '@anupheaus/nexus/common';
+import type { GoogleProfile } from '@anupheaus/nexus/common/auth';
 import type { PromiseMaybe } from '@anupheaus/common';
 import type Koa from 'koa';
 

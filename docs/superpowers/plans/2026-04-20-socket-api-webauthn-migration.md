@@ -6,7 +6,7 @@
 
 **Architecture:** socket-api owns WebAuthn (registration/reauth via `signIn()`), cookie-based sessions (`socketapi_session`), and user propagation. mxdb-sync adds an `onPrf` callback to derive an AES-GCM encryption key from the PRF output, manages the OPFS db lifecycle in a new `MXDBSyncInner` component, and re-exports socket-api's `useAuthentication` for consumers. Server-side token rotation is removed entirely; `defineAuthentication` + `WebAuthnAuthStore` replace the old `AuthCollection`/`TokenRotation` machinery.
 
-**Tech Stack:** React (`createComponent` from `@anupheaus/react-ui`), socket-api (`SocketAPI`, `useAuthentication` client hook, `defineAuthentication` + `ServerUseAuthResult` server side, `WebAuthnAuthStore`/`WebAuthnAuthRecord` from `@anupheaus/socket-api/common`), MongoDB (`AuthCollection`), OPFS/SQLite, vitest.
+**Tech Stack:** React (`createComponent` from `@anupheaus/react-ui`), socket-api (`SocketAPI`, `useAuthentication` client hook, `defineAuthentication` + `ServerUseAuthResult` server side, `WebAuthnAuthStore`/`WebAuthnAuthRecord` from `@anupheaus/nexus/common`), MongoDB (`AuthCollection`), OPFS/SQLite, vitest.
 
 ---
 
@@ -188,14 +188,14 @@ git commit -m "refactor(auth): replace token rotation fields with sessionToken/d
 **Files:**
 - Rewrite: `src/server/auth/AuthCollection.ts`
 
-`WebAuthnAuthStore` (from `@anupheaus/socket-api/common`) requires: `create`, `findById`, `findBySessionToken`, `findByDevice`, `update`, `findByRegistrationToken`, `findByKeyHash`.
+`WebAuthnAuthStore` (from `@anupheaus/nexus/common`) requires: `create`, `findById`, `findBySessionToken`, `findByDevice`, `update`, `findByRegistrationToken`, `findByKeyHash`.
 
 - [ ] **Step 1: Rewrite AuthCollection.ts**
 
 ```ts
 // src/server/auth/AuthCollection.ts
 import type { Collection } from 'mongodb';
-import type { WebAuthnAuthRecord, WebAuthnAuthStore } from '@anupheaus/socket-api/common';
+import type { WebAuthnAuthRecord, WebAuthnAuthStore } from '@anupheaus/nexus/common';
 import type { ServerDb } from '../providers';
 
 const COLLECTION_NAME = 'mxdb_authentication';
@@ -297,7 +297,7 @@ export class AuthCollection implements WebAuthnAuthStore {
 Open `src/server/auth/deviceManagement.ts`. Replace `createDevToken` removal and update `createInviteLink` to use `WebAuthnAuthRecord`:
 
 ```ts
-import type { WebAuthnAuthRecord } from '@anupheaus/socket-api/common';
+import type { WebAuthnAuthRecord } from '@anupheaus/nexus/common';
 // Remove DEV_BYPASS_KEY_HASH and createDevToken entirely.
 // createInviteLink is also removed — invite is now created by socket-api's createInvite().
 
@@ -443,7 +443,7 @@ Remove `mxdbSignOutAction`. Keep sync-related actions:
 
 ```ts
 // src/common/internalActions.ts
-import { defineAction } from '@anupheaus/socket-api/common';
+import { defineAction } from '@anupheaus/nexus/common';
 import type {
   DistinctRequest,
   DistinctResponse,
@@ -499,7 +499,7 @@ Remove `MutableAuthState`, `setAuthState`, `getAuthState`, `clearAuthState`. The
 
 ```ts
 // src/server/auth/useAuth.ts
-import { useAuthentication } from '@anupheaus/socket-api/server';
+import { useAuthentication } from '@anupheaus/nexus/server';
 import type { MXDBUserDetails } from '../../common/models';
 
 export interface UseAuthResult {
@@ -548,7 +548,7 @@ import type { Server as HttpServer } from 'http';
 import type { Server as HttpsServer } from 'https';
 import type { MXDBDeviceInfo, MXDBUserDetails } from '../common/models';
 import type { MXDBCollection } from '../common';
-import type { ServerConfig as StartSocketServerConfig } from '@anupheaus/socket-api/server';
+import type { ServerConfig as StartSocketServerConfig } from '@anupheaus/nexus/server';
 import type { PromiseMaybe } from '@anupheaus/common';
 import type Koa from 'koa';
 
@@ -673,8 +673,8 @@ import type { ServerDb } from './providers';
 import { setServerToClientSync } from './providers';
 import { seedCollections } from './seeding';
 import { internalActions } from './actions';
-import { startServer as startSocketServer, useSocketAPI, useAction } from '@anupheaus/socket-api/server';
-import { defineAuthentication } from '@anupheaus/socket-api/server';
+import { startServer as startSocketServer, useSocketAPI, useAction } from '@anupheaus/nexus/server';
+import { defineAuthentication } from '@anupheaus/nexus/server';
 import { internalSubscriptions } from './subscriptions';
 import { addClientWatches, removeClientWatches } from './clientDbWatches';
 import { ServerToClientSynchronisation } from './ServerToClientSynchronisation';
@@ -927,7 +927,7 @@ This is the core new component. It lives inside `<SocketAPI>` and owns:
 import { createComponent, useLogger } from '@anupheaus/react-ui';
 import type { ReactNode } from 'react';
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { useAuthentication } from '@anupheaus/socket-api/client';
+import { useAuthentication } from '@anupheaus/nexus/client';
 import { DbsProvider } from '../providers/dbs';
 import { ClientToServerSyncProvider, ClientToServerProvider } from '../providers/client-to-server';
 import { ServerToClientProvider } from '../providers/server-to-client';
@@ -1090,7 +1090,7 @@ Revised approach — simpler: `MXDBSync` holds a ref-based callback `onPrfRef` t
 import { createComponent, useLogger } from '@anupheaus/react-ui';
 import type { ReactNode, MutableRefObject } from 'react';
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { useAuthentication } from '@anupheaus/socket-api/client';
+import { useAuthentication } from '@anupheaus/nexus/client';
 import { DbsProvider } from '../providers/dbs';
 import { ClientToServerSyncProvider, ClientToServerProvider } from '../providers/client-to-server';
 import { ServerToClientProvider } from '../providers/server-to-client';
@@ -1251,7 +1251,7 @@ import type { ReactNode } from 'react';
 import { useEffect, useMemo, useRef } from 'react';
 import type { Logger } from '@anupheaus/common';
 import { LoggerProvider } from '@anupheaus/react-ui';
-import { SocketAPI } from '@anupheaus/socket-api/client';
+import { SocketAPI } from '@anupheaus/nexus/client';
 import { ConflictResolutionContext } from './providers';
 import { MXDBSyncInner } from './auth/MXDBSyncInner';
 import { setupBrowserTools } from './utils/setupBrowserTools';
@@ -1349,7 +1349,7 @@ git commit -m "refactor(auth): rewrite MXDBSync — SocketAPI + MXDBSyncInner hi
 
 ```ts
 // src/client/hooks/useAuth.ts
-import { useAuthentication } from '@anupheaus/socket-api/client';
+import { useAuthentication } from '@anupheaus/nexus/client';
 import type { MXDBUserDetails } from '../../common/models';
 
 export interface UseAuthResult {
@@ -1372,7 +1372,7 @@ export function useAuth(): UseAuthResult {
 
 ```ts
 // src/client/hooks/useMXDBSignOut.ts
-import { useAuthentication } from '@anupheaus/socket-api/client';
+import { useAuthentication } from '@anupheaus/nexus/client';
 
 export function useMXDBSignOut(): { signOut(): Promise<void> } {
   const { signOut } = useAuthentication();
@@ -1384,7 +1384,7 @@ export function useMXDBSignOut(): { signOut(): Promise<void> } {
 
 ```ts
 // src/client/hooks/useMXDBUserId.ts
-import { useAuthentication } from '@anupheaus/socket-api/client';
+import { useAuthentication } from '@anupheaus/nexus/client';
 
 export function useMXDBUserId(): string | undefined {
   return useAuthentication().user?.id;
@@ -1463,7 +1463,7 @@ git commit -m "refactor(auth): update setDevAuth to call /dev/signin and store u
 **Files:**
 - Modify: `src/client/index.ts`
 
-Re-export `useAuthentication` from socket-api so consumers never import from `@anupheaus/socket-api` directly. Remove `mxdbDeviceBlocked` (no longer a mxdb-sync concern).
+Re-export `useAuthentication` from socket-api so consumers never import from `@anupheaus/nexus` directly. Remove `mxdbDeviceBlocked` (no longer a mxdb-sync concern).
 
 - [ ] **Step 1: Rewrite client index.ts**
 
@@ -1474,7 +1474,7 @@ export * from './useMXDBSync';
 export * from './useRecord';
 export * from './hooks';
 export type { MXDBCollectionEvent } from './providers/dbs/models';
-export { useAuthentication } from '@anupheaus/socket-api/client';
+export { useAuthentication } from '@anupheaus/nexus/client';
 ```
 
 - [ ] **Step 2: Commit**

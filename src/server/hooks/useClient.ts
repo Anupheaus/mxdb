@@ -1,5 +1,5 @@
 import { Logger } from '@anupheaus/common';
-import { useClient as useSocketApiClient } from '@anupheaus/socket-api/server';
+import { useClient as useSocketApiClient } from '@anupheaus/nexus/server';
 import {
   subscriptionDataGet,
   subscriptionDataIsAvailable,

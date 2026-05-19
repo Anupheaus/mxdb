@@ -1,4 +1,4 @@
-import { createServerActionHandler, useAuthentication } from '@anupheaus/socket-api/server';
+import { createServerActionHandler, useAuthentication } from '@anupheaus/nexus/server';
 import { mxdbQueryAction } from '../../common';
 import { useDb, useServerToClientSynchronisation } from '../providers';
 import { getCollectionExtensions } from '../collections/extendCollection';

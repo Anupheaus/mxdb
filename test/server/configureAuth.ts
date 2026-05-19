@@ -1,6 +1,6 @@
 import Router from 'koa-router';
 import type Koa from 'koa';
-import type { CreateInviteOptions } from '@anupheaus/socket-api/server';
+import type { CreateInviteOptions } from '@anupheaus/nexus/server';
 
 const TEST_USER_ID = 'test-user-1';
 

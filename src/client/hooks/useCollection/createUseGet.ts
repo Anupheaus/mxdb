@@ -1,7 +1,7 @@
 import { useLayoutEffect, useMemo } from 'react';
 import type { Record } from '@anupheaus/common';
 import { useSyncState } from '@anupheaus/react-ui';
-import { useSocketAPI } from '@anupheaus/socket-api/client';
+import { useSocketAPI } from '@anupheaus/nexus/client';
 import type { DbCollection } from '../../providers';
 import type { Get } from './createGet';
 import type { MXDBError } from '../../../common';

@@ -1,4 +1,4 @@
-import { createServerActionHandler, useAuthentication, type SocketAPIServerAction } from '@anupheaus/socket-api/server';
+import { createServerActionHandler, useAuthentication, type SocketAPIServerAction } from '@anupheaus/nexus/server';
 import { signInAction, testAction } from '../common';
 
 export const actions: SocketAPIServerAction[] = [

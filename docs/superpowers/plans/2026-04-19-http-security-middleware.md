@@ -1097,7 +1097,7 @@ import type { ServerDb } from '../providers/db/ServerDb';
 import { AuthCollection } from './AuthCollection';
 import type { ULID } from 'ulidx';
 import { decodeTime, ulid } from 'ulidx';
-import { withSecurity } from '@anupheaus/socket-api/server';
+import { withSecurity } from '@anupheaus/nexus/server';
 
 const INVITE_RATE_LIMIT = { maxRequests: 5, windowMs: 15 * 60 * 1000, message: 'Too many invite redemption attempts. Please wait before trying again.' };
 
@@ -1198,7 +1198,7 @@ git -C c:/code/personal/mxdb-sync commit -m "feat(security): replace inviteRateL
 
 At this point:
 - All HTTP requests to the Koa server pass through the global security middleware (security headers, CORS, rate limit, body size) before any handler runs
-- Per-route tightening is available via `withSecurity(overrides)` from `@anupheaus/socket-api/server`
+- Per-route tightening is available via `withSecurity(overrides)` from `@anupheaus/nexus/server`
 - `mxdb-sync`'s invite routes use the unified rate limiter (5 req / 15 min)
 - The bespoke `RateLimiter.ts` in `mxdb-sync` is gone
 - Consumers who call `startServer()` get full protection with sensible defaults and zero config required

@@ -1,4 +1,4 @@
-import { createAsyncContext, required, useClient } from '@anupheaus/socket-api/server';
+import { createAsyncContext, required, useClient } from '@anupheaus/nexus/server';
 import type { ServerDb } from './ServerDb';
 import type { ServerToClientSynchronisation } from '../../ServerToClientSynchronisation';
 import { lookupClientS2C } from './clientS2CStore';

@@ -7,7 +7,7 @@
  */
 
 import type { Collection } from 'mongodb';
-import type { WebAuthnAuthRecord, WebAuthnAuthStore } from '@anupheaus/socket-api/common/auth';
+import type { WebAuthnAuthRecord, WebAuthnAuthStore } from '@anupheaus/nexus/common/auth';
 import type { ServerDb } from '../providers';
 import { AuthCollection } from './AuthCollection';
 

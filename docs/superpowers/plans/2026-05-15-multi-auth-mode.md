@@ -6,7 +6,7 @@
 
 **Architecture:** `AuthCollection<TRecord>` is an abstract class implementing `SocketAPIAuthStore<TRecord>` with shared CRUD and an internal `findAllByUserId` helper. Each auth mode subclass extends it and adds the extra store-interface methods required by socket-api. `ServerConfig.auth` is a `WebAuthnServerAuthConfig | GoogleOAuthServerAuthConfig` discriminated union; `startAuthenticatedServer` branches on `auth.mode` to instantiate the correct subclass and call `configureAuthentication` with the right options. Client-side `MXDBSync` gets an `authMode` prop so it can skip PRF/key-derivation for Google OAuth and mount `DbsProvider` as soon as the user is authenticated.
 
-**Tech Stack:** TypeScript, MongoDB driver, Vitest, socket-api (`@anupheaus/socket-api`), React
+**Tech Stack:** TypeScript, MongoDB driver, Vitest, socket-api (`@anupheaus/nexus`), React
 
 ---
 
@@ -44,7 +44,7 @@ Create `src/server/auth/AuthCollection.tests.ts`:
 
 ```ts
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import type { SocketAPIAuthRecord } from '@anupheaus/socket-api/common/auth';
+import type { SocketAPIAuthRecord } from '@anupheaus/nexus/common/auth';
 import type { ServerDb } from '../providers';
 
 // Minimal concrete subclass used only in tests — no extra methods needed.
@@ -176,7 +176,7 @@ Replace the entire contents of `src/server/auth/AuthCollection.ts`:
 
 ```ts
 import type { Collection } from 'mongodb';
-import type { SocketAPIAuthRecord, SocketAPIAuthStore } from '@anupheaus/socket-api/common/auth';
+import type { SocketAPIAuthRecord, SocketAPIAuthStore } from '@anupheaus/nexus/common/auth';
 import type { ServerDb } from '../providers';
 
 const COLLECTION_NAME = 'mxdb_authentication';
@@ -290,7 +290,7 @@ Full updated test file with the concrete subclass approach:
 
 ```ts
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import type { SocketAPIAuthRecord } from '@anupheaus/socket-api/common/auth';
+import type { SocketAPIAuthRecord } from '@anupheaus/nexus/common/auth';
 import type { ServerDb } from '../providers';
 import type { AuthCollection as AuthCollectionType } from './AuthCollection';
 
@@ -438,7 +438,7 @@ Create `src/server/auth/WebAuthnAuthCollection.tests.ts`:
 
 ```ts
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import type { WebAuthnAuthRecord } from '@anupheaus/socket-api/common/auth';
+import type { WebAuthnAuthRecord } from '@anupheaus/nexus/common/auth';
 import type { ServerDb } from '../providers';
 
 const mockFindOne = vi.fn();
@@ -550,7 +550,7 @@ Create `src/server/auth/WebAuthnAuthCollection.ts`:
 
 ```ts
 import type { Collection } from 'mongodb';
-import type { WebAuthnAuthRecord, WebAuthnAuthStore } from '@anupheaus/socket-api/common/auth';
+import type { WebAuthnAuthRecord, WebAuthnAuthStore } from '@anupheaus/nexus/common/auth';
 import type { ServerDb } from '../providers';
 import { AuthCollection } from './AuthCollection';
 
@@ -620,7 +620,7 @@ Create `src/server/auth/GoogleOAuthAuthCollection.tests.ts`:
 
 ```ts
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import type { GoogleOAuthAuthRecord } from '@anupheaus/socket-api/common/auth';
+import type { GoogleOAuthAuthRecord } from '@anupheaus/nexus/common/auth';
 import type { ServerDb } from '../providers';
 
 const mockFindOne = vi.fn();
@@ -708,7 +708,7 @@ Expected: FAIL — module not found.
 Create `src/server/auth/GoogleOAuthAuthCollection.ts`:
 
 ```ts
-import type { GoogleOAuthAuthRecord, GoogleOAuthAuthStore } from '@anupheaus/socket-api/common/auth';
+import type { GoogleOAuthAuthRecord, GoogleOAuthAuthStore } from '@anupheaus/nexus/common/auth';
 import type { ServerDb } from '../providers';
 import { AuthCollection } from './AuthCollection';
 
@@ -753,7 +753,7 @@ git commit -m "feat(auth): add GoogleOAuthAuthCollection subclass"
 Replace the contents of `src/common/models/authModels.ts`:
 
 ```ts
-import type { SocketAPIAccount, SocketAPIUser } from '@anupheaus/socket-api/common';
+import type { SocketAPIAccount, SocketAPIUser } from '@anupheaus/nexus/common';
 
 export interface MXDBUser extends SocketAPIUser { }
 
@@ -826,10 +826,10 @@ import type { Server as HttpServer } from 'http';
 import type { Server as HttpsServer } from 'https';
 import type { MXDBAccount, MXDBDeviceInfo, MXDBUser } from '../common/models';
 import type { MXDBCollection } from '../common';
-import type { ServerConfig as StartSocketServerConfig } from '@anupheaus/socket-api/server';
-import type { CreateInviteOptions } from '@anupheaus/socket-api/server';
-import type { InviteDetails } from '@anupheaus/socket-api/common';
-import type { GoogleProfile } from '@anupheaus/socket-api/common/auth';
+import type { ServerConfig as StartSocketServerConfig } from '@anupheaus/nexus/server';
+import type { CreateInviteOptions } from '@anupheaus/nexus/server';
+import type { InviteDetails } from '@anupheaus/nexus/common';
+import type { GoogleProfile } from '@anupheaus/nexus/common/auth';
 import type { PromiseMaybe } from '@anupheaus/common';
 import type Koa from 'koa';
 
@@ -924,8 +924,8 @@ import {
   startServer as startSocketServer,
   useAction,
   useAuthentication as useSocketAuthentication,
-} from '@anupheaus/socket-api/server';
-import { defineAuthentication } from '@anupheaus/socket-api/server';
+} from '@anupheaus/nexus/server';
+import { defineAuthentication } from '@anupheaus/nexus/server';
 import { internalSubscriptions } from './subscriptions';
 import { addClientWatches, removeClientWatches } from './clientDbWatches';
 import { ServerToClientSynchronisation } from './ServerToClientSynchronisation';
@@ -936,7 +936,7 @@ import { mxdbServerToClientSyncAction } from '../common/internalActions';
 import type { Socket } from 'socket.io';
 import type { ServerAuthConfig, ServerConfig } from './internalModels';
 import type { AuthCollection } from './auth/AuthCollection';
-import type { SocketAPIAuthRecord } from '@anupheaus/socket-api/common/auth';
+import type { SocketAPIAuthRecord } from '@anupheaus/nexus/common/auth';
 import { Logger } from '@anupheaus/common';
 import type { MXDBAccount, MXDBUser } from '../common/models';
 
@@ -1168,9 +1168,9 @@ Replace the entire file:
 ```ts
 import crypto from 'crypto';
 import type Router from 'koa-router';
-import type { WebAuthnAuthRecord, GoogleOAuthAuthRecord } from '@anupheaus/socket-api/common/auth';
+import type { WebAuthnAuthRecord, GoogleOAuthAuthRecord } from '@anupheaus/nexus/common/auth';
 import type { AuthCollection } from './AuthCollection';
-import type { SocketAPIAuthRecord } from '@anupheaus/socket-api/common/auth';
+import type { SocketAPIAuthRecord } from '@anupheaus/nexus/common/auth';
 import type { ServerAuthConfig } from '../internalModels';
 
 const COOKIE_NAME = 'socketapi_session';
@@ -1257,7 +1257,7 @@ git commit -m "feat(auth): registerDevAuthRoute accepts authColl + mode; creates
 Replace the entire file:
 
 ```ts
-import type { SocketAPIAuthRecord } from '@anupheaus/socket-api/common/auth';
+import type { SocketAPIAuthRecord } from '@anupheaus/nexus/common/auth';
 import type { AuthCollection } from './AuthCollection';
 import type { MXDBDeviceInfo } from '../../common/models';
 
@@ -1321,7 +1321,7 @@ import { provideDb } from './providers';
 import { Logger } from '@anupheaus/common';
 import { startAuthenticatedServer } from './startAuthenticatedServer';
 import { getDevices, enableDevice, disableDevice } from './auth/deviceManagement';
-import { useAuthentication } from '@anupheaus/socket-api/server';
+import { useAuthentication } from '@anupheaus/nexus/server';
 import type { ServerConfig, ServerInstance } from './internalModels';
 
 /**
@@ -1399,8 +1399,8 @@ import type { ReactNode } from 'react';
 import { useEffect, useMemo, useRef } from 'react';
 import type { Logger } from '@anupheaus/common';
 import { LoggerProvider } from '@anupheaus/react-ui';
-import type { SocketAPIUser } from '@anupheaus/socket-api/client';
-import { SocketAPI } from '@anupheaus/socket-api/client';
+import type { SocketAPIUser } from '@anupheaus/nexus/client';
+import { SocketAPI } from '@anupheaus/nexus/client';
 import { ConflictResolutionContext } from './providers';
 import { MXDBSyncInner } from './auth/MXDBSyncInner';
 import { setupBrowserTools } from './utils/setupBrowserTools';
@@ -1515,7 +1515,7 @@ Replace the entire file:
 import { createComponent, useLogger } from '@anupheaus/react-ui';
 import type { ReactNode, MutableRefObject } from 'react';
 import { useState, useEffect, useRef } from 'react';
-import { useAuthentication } from '@anupheaus/socket-api/client';
+import { useAuthentication } from '@anupheaus/nexus/client';
 import { DbsProvider } from '../providers/dbs';
 import { ClientToServerSyncProvider, ClientToServerProvider } from '../providers/client-to-server';
 import { ServerToClientProvider } from '../providers/server-to-client';
@@ -1708,7 +1708,7 @@ const { app, createInvite } = await startServer({
 ```ts
 import Router from 'koa-router';
 import type Koa from 'koa';
-import type { CreateInviteOptions } from '@anupheaus/socket-api/server';
+import type { CreateInviteOptions } from '@anupheaus/nexus/server';
 
 const TEST_USER_ID = 'test-user-1';
 

@@ -6,6 +6,7 @@ import { DbsProvider } from '../providers/dbs';
 import { ClientToServerSyncProvider, ClientToServerProvider } from '../providers/client-to-server';
 import { ServerToClientProvider } from '../providers/server-to-client';
 import { deriveKey } from './deriveKey';
+import { saveEncryptionToSession, loadEncryptionFromSession, clearEncryptionFromSession } from './encryptionSessionCache';
 import type { MXDBCollection, MXDBError } from '../../common';
 import type { MXDBAccount, MXDBUser } from '../../common/models';
 
@@ -68,8 +69,9 @@ export const MXDBSyncInner = createComponent('MXDBSyncInner', ({
     if (typeof BroadcastChannel === 'undefined') return;
     const channel = new BroadcastChannel(`mxdb-auth-${appName}`);
     channelRef.current = channel;
-    channel.onmessage = ({ data }: MessageEvent<{ type: string }>) => {
+    channel.onmessage = ({ data }: MessageEvent<{ type: string; userId?: string }>) => {
       if (data?.type === 'signed-out') {
+        if (data.userId) clearEncryptionFromSession(appName, data.userId);
         setEncryptionKey(undefined);
         setDbName(undefined);
       }
@@ -86,8 +88,12 @@ export const MXDBSyncInner = createComponent('MXDBSyncInner', ({
     onPrfRef.current = async (userId: string, prfOutput: ArrayBuffer, accountId?: string) => {
       try {
         const key = await deriveKey(prfOutput);
+        const dbName = accountId ?? userId;
+        // Cache the derived key so page refreshes can restore it from session without a
+        // new WebAuthn ceremony (session cookie handles re-auth; PRF handles encryption).
+        saveEncryptionToSession(appName, userId, key, dbName);
         setEncryptionKey(key);
-        setDbName(accountId ?? userId);
+        setDbName(dbName);
         reauthInProgressRef.current = false;
       } catch (err) {
         reauthInProgressRef.current = false;
@@ -102,7 +108,7 @@ export const MXDBSyncInner = createComponent('MXDBSyncInner', ({
     return () => {
       onPrfRef.current = undefined;
     };
-  }, [authMode, onPrfRef, onError]);
+  }, [authMode, onPrfRef, onError, appName]);
 
   // React to user state changes
   useEffect(() => {
@@ -110,19 +116,29 @@ export const MXDBSyncInner = createComponent('MXDBSyncInner', ({
     prevUserRef.current = user;
 
     if (user == null && prev != null) {
+      clearEncryptionFromSession(appName, prev.id);
       setEncryptionKey(undefined);
       setDbName(undefined);
-      channelRef.current?.postMessage({ type: 'signed-out' });
+      channelRef.current?.postMessage({ type: 'signed-out', userId: prev.id });
       onSignedOut?.();
       return;
     }
 
     if (user != null && prev == null) {
       onSignedIn?.(user);
-      // Google OAuth: no PRF ceremony — mount DbsProvider immediately on sign-in
       if (authMode === 'google-oauth') {
+        // Google OAuth: no PRF ceremony — mount DbsProvider immediately on sign-in
         setDbName(user.id);
         setEncryptionKey(GOOGLE_OAUTH_PLACEHOLDER_KEY);
+      } else {
+        // WebAuthn: restore the PRF-derived encryption key from session cache so a page
+        // refresh doesn't require a new passkey ceremony (session cookie handles re-auth).
+        const cached = loadEncryptionFromSession(appName, user.id);
+        if (cached != null) {
+          setEncryptionKey(cached.key);
+          setDbName(cached.dbName);
+        }
+        // No cached key → wait for the WebAuthn PRF ceremony via DeviceAuthGate/signIn
       }
     }
   }, [user]); // eslint-disable-line react-hooks/exhaustive-deps

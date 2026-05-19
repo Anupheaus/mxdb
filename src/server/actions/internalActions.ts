@@ -1,4 +1,4 @@
-import type { SocketAPIServerAction } from '@anupheaus/socket-api/server';
+import type { SocketAPIServerAction } from '@anupheaus/nexus/server';
 import { clientToServerSyncAction } from './clientToServerSyncAction';
 import { serverGetAction } from './getAction';
 import { serverGetAllAction } from './getAllAction';

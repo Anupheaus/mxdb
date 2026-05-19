@@ -2,7 +2,7 @@ import { provideDb } from './providers';
 import { Logger } from '@anupheaus/common';
 import { startAuthenticatedServer } from './startAuthenticatedServer';
 import { getDevices, enableDevice, disableDevice } from './auth/deviceManagement';
-import { useAuthentication } from '@anupheaus/socket-api/server';
+import { useAuthentication } from '@anupheaus/nexus/server';
 import type { ServerConfig, ServerInstance } from './internalModels';
 
 /**

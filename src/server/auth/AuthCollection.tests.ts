@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import type { SocketAPIAuthRecord } from '@anupheaus/socket-api/common/auth';
+import type { SocketAPIAuthRecord } from '@anupheaus/nexus/common/auth';
 import type { ServerDb } from '../providers';
 import type { AuthCollection as AuthCollectionType } from './AuthCollection';
 

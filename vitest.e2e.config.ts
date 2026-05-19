@@ -19,9 +19,9 @@ const alias: Record<string, string> = {
 
 const socketApiSrc = localAlias('../socket-api/src');
 if (socketApiSrc) {
-  alias['@anupheaus/socket-api/server'] = path.join(socketApiSrc, 'server');
-  alias['@anupheaus/socket-api/client'] = path.join(socketApiSrc, 'client');
-  alias['@anupheaus/socket-api/common'] = path.join(socketApiSrc, 'common');
+  alias['@anupheaus/nexus/server'] = path.join(socketApiSrc, 'server');
+  alias['@anupheaus/nexus/client'] = path.join(socketApiSrc, 'client');
+  alias['@anupheaus/nexus/common'] = path.join(socketApiSrc, 'common');
 }
 const commonSrc = localAlias('../common/src');
 if (commonSrc) alias['@anupheaus/common'] = commonSrc;

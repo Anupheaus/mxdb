@@ -1,4 +1,4 @@
-import { defineAction } from '@anupheaus/socket-api/common';
+import { defineAction } from '@anupheaus/nexus/common';
 
 interface TestRequest {
   foo: string;

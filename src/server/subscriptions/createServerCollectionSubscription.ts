@@ -1,5 +1,5 @@
-import type { SocketAPISubscription } from '@anupheaus/socket-api/common';
-import { createServerSubscription } from '@anupheaus/socket-api/server';
+import type { SocketAPISubscription } from '@anupheaus/nexus/common';
+import { createServerSubscription } from '@anupheaus/nexus/server';
 import { InternalError, type PromiseMaybe } from '@anupheaus/common';
 import { useClient } from '../hooks';
 import { clearSubscriptionDataKeys } from '../subscriptionDataStore';

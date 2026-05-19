@@ -1,7 +1,7 @@
 import { is, type Record } from '@anupheaus/common';
 import { mxdbGetAction } from '../../../common';
 import type { DbCollection } from '../../providers';
-import { useAction, useSocketAPI } from '@anupheaus/socket-api/client';
+import { useAction, useSocketAPI } from '@anupheaus/nexus/client';
 
 import { ACTION_TIMEOUT_MS, withTimeout } from '../../utils/actionTimeout';
 

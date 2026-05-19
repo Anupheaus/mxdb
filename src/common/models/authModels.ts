@@ -1,4 +1,4 @@
-import type { SocketAPIAccount, SocketAPIUser } from '@anupheaus/socket-api/common';
+import type { SocketAPIAccount, SocketAPIUser } from '@anupheaus/nexus/common';
 
 export interface MXDBUser extends SocketAPIUser { }
 

@@ -33,16 +33,16 @@
       "@anupheaus/react-ui": [
         "../react-ui/src"
       ],
-      "@anupheaus/socket-api/server": [
+      "@anupheaus/nexus/server": [
         "../socket-api/src/server"
       ],
-      "@anupheaus/socket-api/client": [
+      "@anupheaus/nexus/client": [
         "../socket-api/src/client"
       ],
-      "@anupheaus/socket-api/common": [
+      "@anupheaus/nexus/common": [
         "../socket-api/src/common"
       ],
-      "@anupheaus/socket-api/common/auth": [
+      "@anupheaus/nexus/common/auth": [
         "../socket-api/src/common/auth"
       ]
     }

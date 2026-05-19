@@ -78,7 +78,7 @@
   "dependencies": {
     "@anupheaus/common": "^0.1.29",
     "@anupheaus/react-ui": "^0.0.66",
-    "@anupheaus/socket-api": "^0.0.28",
+    "@anupheaus/nexus": "^0.0.28",
     "@faker-js/faker": "^8.4.1",
     "@sqlite.org/sqlite-wasm": "3.51.2-build8",
     "dotenv": "^16.4.5",
@@ -138,7 +138,7 @@
     "overrides": {
       "@anupheaus/common": "file:../common",
       "@anupheaus/react-ui": "file:../react-ui",
-      "@anupheaus/socket-api": "file:../socket-api"
+      "@anupheaus/nexus": "file:../socket-api"
     }
   }
 }

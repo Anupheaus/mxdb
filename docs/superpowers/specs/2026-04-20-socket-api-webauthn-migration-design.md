@@ -144,11 +144,11 @@ MXDBSync
 
 ### Re-exports
 
-mxdb-sync re-exports socket-api's `useAuthentication` so consumers never need to import from `@anupheaus/socket-api` directly:
+mxdb-sync re-exports socket-api's `useAuthentication` so consumers never need to import from `@anupheaus/nexus` directly:
 
 ```ts
 // src/client/index.ts
-export { useAuthentication } from '@anupheaus/socket-api';
+export { useAuthentication } from '@anupheaus/nexus';
 ```
 
 `AuthContext.ts` is deleted entirely — no mxdb-sync auth context is kept. Consumers call `useAuthentication()` from the mxdb-sync package import and get socket-api's hook with full typing.

@@ -1,4 +1,4 @@
-import { createServerActionHandler } from '@anupheaus/socket-api/server';
+import { createServerActionHandler } from '@anupheaus/nexus/server';
 import { mxdbDistinctAction } from '../../common';
 import type { DistinctRequest } from '../../common';
 import { useDb, useServerToClientSynchronisation } from '../providers';

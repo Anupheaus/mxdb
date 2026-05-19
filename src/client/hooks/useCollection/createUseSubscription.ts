@@ -1,5 +1,5 @@
-import type { SocketAPISubscription } from '@anupheaus/socket-api/common';
-import { useSubscription } from '@anupheaus/socket-api/client';
+import type { SocketAPISubscription } from '@anupheaus/nexus/common';
+import { useSubscription } from '@anupheaus/nexus/client';
 import { useBound, useOnUnmount } from '@anupheaus/react-ui';
 import type { Logger } from '@anupheaus/common';
 

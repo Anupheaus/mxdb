@@ -9,7 +9,7 @@
  */
 
 import type { Collection } from 'mongodb';
-import type { SocketAPIAuthRecord, SocketAPIAuthStore } from '@anupheaus/socket-api/common/auth';
+import type { SocketAPIAuthRecord, SocketAPIAuthStore } from '@anupheaus/nexus/common/auth';
 import type { ServerDb } from '../providers';
 
 const COLLECTION_NAME = 'mxdb_authentication';

@@ -3,7 +3,7 @@ import { is } from '@anupheaus/common';
 import type { MXDBCollection, MXDBOnChangeEvent } from '../../common';
 import type { ServerDb, ServerDbCollection } from '../providers';
 import { useDb } from '../providers';
-import { useLogger } from '@anupheaus/socket-api/server';
+import { useLogger } from '@anupheaus/nexus/server';
 
 const subscriptionIds = new Map<string, Unsubscribe>();
 

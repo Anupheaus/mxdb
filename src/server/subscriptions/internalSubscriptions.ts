@@ -1,4 +1,4 @@
-import type { SocketAPIServerSubscription } from '@anupheaus/socket-api/server';
+import type { SocketAPIServerSubscription } from '@anupheaus/nexus/server';
 import { serverQuerySubscription } from './querySubscription';
 import { serverDistinctSubscription } from './distinctSubscription';
 import { serverGetAllSubscription } from './getAllSubscription';
