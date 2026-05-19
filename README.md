@@ -1,14 +1,14 @@
-# MXDB-Sync
+# MXDB
 
-[![CI](https://github.com/Anupheaus/mxdb-sync/actions/workflows/ci.yml/badge.svg)](https://github.com/Anupheaus/mxdb-sync/actions/workflows/ci.yml)
-[![npm](https://img.shields.io/npm/v/@anupheaus/mxdb-sync.svg)](https://www.npmjs.com/package/@anupheaus/mxdb-sync)
+[![CI](https://github.com/Anupheaus/mxdb/actions/workflows/ci.yml/badge.svg)](https://github.com/Anupheaus/mxdb/actions/workflows/ci.yml)
+[![npm](https://img.shields.io/npm/v/@anupheaus/mxdb.svg)](https://www.npmjs.com/package/@anupheaus/mxdb)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
-MXDB-Sync syncs MongoDB-backed collections with clients over a real-time connection (Socket.IO). You define collections once in shared code, use them on the client with React hooks and local SQLite storage, and on the server with actions, subscriptions, and lifecycle hooks. Authentication uses WebAuthn (PRF extension) and a server-managed invite-link flow.
+MXDB syncs MongoDB-backed collections with clients over a real-time connection (Socket.IO). You define collections once in shared code, use them on the client with React hooks and local SQLite storage, and on the server with actions, subscriptions, and lifecycle hooks. Authentication uses WebAuthn (PRF extension) and a server-managed invite-link flow.
 
 ## Documentation
 
-Full documentation lives in **`docs/`** in this repo and is **included in the npm package** (so it appears under `node_modules/@anupheaus/mxdb-sync/docs/` after install).
+Full documentation lives in **`docs/`** in this repo and is **included in the npm package** (so it appears under `node_modules/@anupheaus/mxdb/docs/` after install).
 
 | Start here | Purpose |
 |------------|---------|
@@ -26,9 +26,9 @@ Deeper design and sync specifications: **`docs/plans/`** (see the index in **`do
 
 ## Package exports
 
-- **`@anupheaus/mxdb-sync/common`** – Shared types and collection definitions.
-- **`@anupheaus/mxdb-sync/server`** – Server startup, collections API, and extension hooks.
-- **`@anupheaus/mxdb-sync/client`** – React provider, hooks, and sync.
+- **`@anupheaus/mxdb/common`** – Shared types and collection definitions.
+- **`@anupheaus/mxdb/server`** – Server startup, collections API, and extension hooks.
+- **`@anupheaus/mxdb/client`** – React provider, hooks, and sync.
 
 ## Architecture
 
@@ -45,7 +45,7 @@ The server exposes socket actions (upsert, remove, get, getAll, query, distinct,
 ## Defining collections
 
 ```ts
-import { defineCollection } from '@anupheaus/mxdb-sync/common';
+import { defineCollection } from '@anupheaus/mxdb/common';
 
 export const products = defineCollection<Product>({
   name: 'products',
@@ -69,7 +69,7 @@ export const products = defineCollection<Product>({
 ## Server setup
 
 ```ts
-import { startServer } from '@anupheaus/mxdb-sync/server';
+import { startServer } from '@anupheaus/mxdb/server';
 import { collections } from './collections';
 import './configureExtensions'; // extendCollection(...)
 
@@ -122,7 +122,7 @@ Use `createInvite` to generate a time-limited URL you can send to a user. They o
 ## Client setup
 
 ```tsx
-import { MXDBSync, useCollection, useMXDB } from '@anupheaus/mxdb-sync/client';
+import { MXDBSync, useCollection, useMXDB } from '@anupheaus/mxdb/client';
 import { products } from './collections';
 
 function App() {
@@ -184,7 +184,7 @@ function Content() {
 Authentication is device-scoped and uses **WebAuthn with the PRF extension** to derive a per-device encryption key. Devices are registered via an invite-link flow; there is no username/password.
 
 ```tsx
-import { useMXDBAuth, useMXDBInvite, useMXDBSignOut } from '@anupheaus/mxdb-sync/client';
+import { useMXDBAuth, useMXDBInvite, useMXDBSignOut } from '@anupheaus/mxdb/client';
 
 // Check whether the current device is authenticated
 const { isAuthenticated } = useMXDBAuth();
@@ -211,7 +211,7 @@ await signOut();
 `useRecord` is a convenience hook for form-style editing. It keeps a working copy of a record, rebases local edits onto server updates, and handles server-side deletion conflicts via `onConflictResolution`.
 
 ```tsx
-import { useRecord } from '@anupheaus/mxdb-sync/client';
+import { useRecord } from '@anupheaus/mxdb/client';
 
 // Read-only (tracks live DB record)
 const { record, isLoading, upsert, remove } = useRecord(id, products);
@@ -225,7 +225,7 @@ const { record } = useRecord(localCopy, products);
 Use `extendCollection(collection, hooks)` on the server to add lifecycle hooks and seeding.
 
 ```ts
-import { extendCollection } from '@anupheaus/mxdb-sync/server';
+import { extendCollection } from '@anupheaus/mxdb/server';
 
 extendCollection(products, {
   onBeforeUpsert: async ({ records }) => { /* validate */ },

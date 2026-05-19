@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Migrate mxdb-sync's auth layer to delegate all WebAuthn ceremonies, session management, and cookie handling to socket-api, retaining only encryption key derivation, OPFS database lifecycle, and cross-tab coordination.
+**Goal:** Migrate mxdb's auth layer to delegate all WebAuthn ceremonies, session management, and cookie handling to socket-api, retaining only encryption key derivation, OPFS database lifecycle, and cross-tab coordination.
 
-**Architecture:** socket-api owns WebAuthn (registration/reauth via `signIn()`), cookie-based sessions (`socketapi_session`), and user propagation. mxdb-sync adds an `onPrf` callback to derive an AES-GCM encryption key from the PRF output, manages the OPFS db lifecycle in a new `MXDBSyncInner` component, and re-exports socket-api's `useAuthentication` for consumers. Server-side token rotation is removed entirely; `defineAuthentication` + `WebAuthnAuthStore` replace the old `AuthCollection`/`TokenRotation` machinery.
+**Architecture:** socket-api owns WebAuthn (registration/reauth via `signIn()`), cookie-based sessions (`socketapi_session`), and user propagation. mxdb adds an `onPrf` callback to derive an AES-GCM encryption key from the PRF output, manages the OPFS db lifecycle in a new `MXDBSyncInner` component, and re-exports socket-api's `useAuthentication` for consumers. Server-side token rotation is removed entirely; `defineAuthentication` + `WebAuthnAuthStore` replace the old `AuthCollection`/`TokenRotation` machinery.
 
 **Tech Stack:** React (`createComponent` from `@anupheaus/react-ui`), socket-api (`SocketAPI`, `useAuthentication` client hook, `defineAuthentication` + `ServerUseAuthResult` server side, `WebAuthnAuthStore`/`WebAuthnAuthRecord` from `@anupheaus/nexus/common`), MongoDB (`AuthCollection`), OPFS/SQLite, vitest.
 
@@ -741,7 +741,7 @@ export async function startAuthenticatedServer({
       const { impersonateUser } = useAuthentication();
 
       await impersonateUser(adminUser, async () => {
-        const startupLogger = (logger ?? Logger.getCurrent() ?? new Logger('mxdb-sync')).createSubLogger('s2c:startup');
+        const startupLogger = (logger ?? Logger.getCurrent() ?? new Logger('mxdb')).createSubLogger('s2c:startup');
         setServerToClientSync(ServerToClientSynchronisation.createNoOp(collections, startupLogger));
         const startTime = Date.now();
         if (shouldSeedCollections === true) {
@@ -764,7 +764,7 @@ export async function startAuthenticatedServer({
         await onConnected?.({ user });
       }
 
-      const s2cLogger = (logger ?? Logger.getCurrent() ?? new Logger('mxdb-sync')).createSubLogger(`s2c:${client.id}`);
+      const s2cLogger = (logger ?? Logger.getCurrent() ?? new Logger('mxdb')).createSubLogger(`s2c:${client.id}`);
       const emitS2C = useAction(mxdbServerToClientSyncAction);
       const s2c = new ServerToClientSynchronisation({
         emitS2C: async payload => emitS2C(payload),
@@ -837,7 +837,7 @@ import type { ServerConfig, ServerInstance } from './internalModels';
 export async function startServer(config: ServerConfig): Promise<ServerInstance> {
   let { logger, name, collections, mongoDbName, mongoDbUrl, changeStreamDebounceMs, onRegisterRoutes } = config;
   if (!logger) logger = Logger.getCurrent();
-  if (!logger) logger = new Logger('MXDB-Sync');
+  if (!logger) logger = new Logger('MXDB');
 
   logger.info('[startServer] begin', { name, mongoDbName, collectionCount: collections.length });
 
@@ -1299,7 +1299,7 @@ export const MXDBSync = createComponent('MXDBSync', ({
   const onPrfRef = useRef<((userId: string, prfOutput: ArrayBuffer) => void) | undefined>(undefined);
 
   return (
-    <LoggerProvider logger={logger} loggerName="MXDB-Sync">
+    <LoggerProvider logger={logger} loggerName="MXDB">
       <ConflictResolutionContext.Provider value={conflictResolutionContext}>
         <SocketAPI
           name={name}
@@ -1463,7 +1463,7 @@ git commit -m "refactor(auth): update setDevAuth to call /dev/signin and store u
 **Files:**
 - Modify: `src/client/index.ts`
 
-Re-export `useAuthentication` from socket-api so consumers never import from `@anupheaus/nexus` directly. Remove `mxdbDeviceBlocked` (no longer a mxdb-sync concern).
+Re-export `useAuthentication` from socket-api so consumers never import from `@anupheaus/nexus` directly. Remove `mxdbDeviceBlocked` (no longer a mxdb concern).
 
 - [ ] **Step 1: Rewrite client index.ts**
 

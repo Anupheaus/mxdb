@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Add global HTTP security middleware (rate limiting, security headers, CORS, body-size limits) to `socket-api`'s Koa server, plus a `withSecurity()` per-route override, and then wire it through `mxdb-sync` replacing the existing ad-hoc invite rate limiter.
+**Goal:** Add global HTTP security middleware (rate limiting, security headers, CORS, body-size limits) to `socket-api`'s Koa server, plus a `withSecurity()` per-route override, and then wire it through `mxdb` replacing the existing ad-hoc invite rate limiter.
 
-**Architecture:** All protection is applied as Koa middleware inside `setupKoa()` in `socket-api` so every HTTP request — internal library routes and consumer-registered routes — passes through it before any handler runs. Per-route overrides are provided via a `withSecurity(overrides)` middleware factory that deep-merges onto the global resolved config. `mxdb-sync` simply passes its `security` field through to `socket-api` (already works via config spread) and drops its bespoke `RateLimiter.ts`.
+**Architecture:** All protection is applied as Koa middleware inside `setupKoa()` in `socket-api` so every HTTP request — internal library routes and consumer-registered routes — passes through it before any handler runs. Per-route overrides are provided via a `withSecurity(overrides)` middleware factory that deep-merges onto the global resolved config. `mxdb` simply passes its `security` field through to `socket-api` (already works via config spread) and drops its bespoke `RateLimiter.ts`.
 
 **Tech Stack:** TypeScript, Koa 2, koa-bodyparser, Vitest — no new npm dependencies required.
 
@@ -32,7 +32,7 @@
 | `src/server/startServer.ts` | Add `security?: SecurityConfig` to `ServerConfig`; resolve and pass to `setupKoa` |
 | `src/server/index.ts` | Re-export `SecurityConfig`, `withSecurity` |
 
-### `mxdb-sync` — modified/deleted files
+### `mxdb` — modified/deleted files
 | Path | Change |
 |---|---|
 | `src/server/auth/registerAuthInviteRoute.ts` | Replace `inviteRateLimiter.check()` calls with `withSecurity({ rateLimit: { maxRequests: 5, windowMs: 900_000 } })` router middleware |
@@ -1074,19 +1074,19 @@ git -C c:/code/personal/socket-api commit -m "feat(security): wire security midd
 
 ---
 
-## Task 6: mxdb-sync — update invite routes, delete old RateLimiter
+## Task 6: mxdb — update invite routes, delete old RateLimiter
 
-**Repo:** `mxdb-sync`
+**Repo:** `mxdb`
 
 **Files:**
 - Modify: `src/server/auth/registerAuthInviteRoute.ts`
 - Delete: `src/server/auth/RateLimiter.ts`
 
-> **Note:** `mxdb-sync`'s `ServerConfig` already extends `socket-api`'s `StartSocketServerConfig`, and `startAuthenticatedServer` spreads `...config` into `startSocketServer`. Adding `security` to socket-api's `ServerConfig` (Task 5) means it flows through automatically — no changes to `internalModels.ts` or `startAuthenticatedServer.ts` are needed.
+> **Note:** `mxdb`'s `ServerConfig` already extends `socket-api`'s `StartSocketServerConfig`, and `startAuthenticatedServer` spreads `...config` into `startSocketServer`. Adding `security` to socket-api's `ServerConfig` (Task 5) means it flows through automatically — no changes to `internalModels.ts` or `startAuthenticatedServer.ts` are needed.
 
 - [ ] **Step 6.1: Update registerAuthInviteRoute.ts**
 
-Replace the file at `c:/code/personal/mxdb-sync/src/server/auth/registerAuthInviteRoute.ts`:
+Replace the file at `c:/code/personal/mxdb/src/server/auth/registerAuthInviteRoute.ts`:
 
 ```ts
 import type Router from 'koa-router';
@@ -1166,21 +1166,21 @@ export function registerAuthInviteRoute(router: Router, name: string, db: Server
 - [ ] **Step 6.2: Delete RateLimiter.ts**
 
 ```
-git -C c:/code/personal/mxdb-sync rm src/server/auth/RateLimiter.ts
+git -C c:/code/personal/mxdb rm src/server/auth/RateLimiter.ts
 ```
 
 - [ ] **Step 6.3: Check for any remaining imports of RateLimiter**
 
 ```
-pnpm --dir c:/code/personal/mxdb-sync exec grep -r "RateLimiter\|inviteRateLimiter" src/
+pnpm --dir c:/code/personal/mxdb exec grep -r "RateLimiter\|inviteRateLimiter" src/
 ```
 
 Expected: no output (all references gone).
 
-- [ ] **Step 6.4: Run mxdb-sync unit tests**
+- [ ] **Step 6.4: Run mxdb unit tests**
 
 ```
-pnpm --dir c:/code/personal/mxdb-sync test
+pnpm --dir c:/code/personal/mxdb test
 ```
 
 Expected: all tests pass, no TypeScript errors, no missing module errors.
@@ -1188,8 +1188,8 @@ Expected: all tests pass, no TypeScript errors, no missing module errors.
 - [ ] **Step 6.5: Commit**
 
 ```
-git -C c:/code/personal/mxdb-sync add src/server/auth/registerAuthInviteRoute.ts
-git -C c:/code/personal/mxdb-sync commit -m "feat(security): replace inviteRateLimiter with withSecurity; delete RateLimiter.ts"
+git -C c:/code/personal/mxdb add src/server/auth/registerAuthInviteRoute.ts
+git -C c:/code/personal/mxdb commit -m "feat(security): replace inviteRateLimiter with withSecurity; delete RateLimiter.ts"
 ```
 
 ---
@@ -1199,6 +1199,6 @@ git -C c:/code/personal/mxdb-sync commit -m "feat(security): replace inviteRateL
 At this point:
 - All HTTP requests to the Koa server pass through the global security middleware (security headers, CORS, rate limit, body size) before any handler runs
 - Per-route tightening is available via `withSecurity(overrides)` from `@anupheaus/nexus/server`
-- `mxdb-sync`'s invite routes use the unified rate limiter (5 req / 15 min)
-- The bespoke `RateLimiter.ts` in `mxdb-sync` is gone
+- `mxdb`'s invite routes use the unified rate limiter (5 req / 15 min)
+- The bespoke `RateLimiter.ts` in `mxdb` is gone
 - Consumers who call `startServer()` get full protection with sensible defaults and zero config required

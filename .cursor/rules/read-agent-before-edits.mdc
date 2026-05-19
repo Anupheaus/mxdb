@@ -3,7 +3,7 @@ description: Read agent docs before editing this repo
 alwaysApply: true
 ---
 
-# Before any edit in mxdb-sync
+# Before any edit in mxdb
 
 1. **Read** `agent.md` at the repository root (sync architecture, design principles, test pointers).
 2. **Read** `c:/code/personal/agents/global-agent.md` when `agent.md` points to it (or when making non-trivial changes).

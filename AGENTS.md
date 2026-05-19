@@ -1,4 +1,4 @@
-# MXDB-Sync Library Overview
+# MXDB Library Overview
 
 ## Before making changes
 
@@ -23,7 +23,7 @@ All of this ships in the published package under **`docs/`** (see **`package.jso
 
 ## Architecture Summary
 
-MXDB-Sync is a real-time synchronization library for MongoDB-backed collections between clients and servers. It provides a three-layer architecture:
+MXDB is a real-time synchronization library for MongoDB-backed collections between clients and servers. It provides a three-layer architecture:
 
 ### Core Components
 
@@ -148,7 +148,7 @@ The script runs Unit, CRUD, Performance, and Stress sequentially, records the wa
 3. Parse the JSON. The shape is:
    ```json
    {
-     "schema": "mxdb-sync.test-run.v1",
+     "schema": "mxdb.test-run.v1",
      "totalWallMs": 123456,
      "suites": [
        { "key": "unit", "label": "...", "exitCode": 0, "durationMs": 1234,

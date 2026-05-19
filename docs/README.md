@@ -1,4 +1,4 @@
-# MXDB-Sync documentation
+# MXDB documentation
 
 ## Start here
 
@@ -30,7 +30,7 @@ Normative **target behaviour** and **long-form design** (implementation may lag 
 
 From **`package.json`** exports:
 
-- **`@anupheaus/mxdb-sync`** — resolves to **server** on Node, **client** in bundlers (check **`exports`** for your environment).
-- **`@anupheaus/mxdb-sync/server`** — `startServer`, server utilities.
-- **`@anupheaus/mxdb-sync/client`** — React client (`MXDBSync`, hooks).
-- **`@anupheaus/mxdb-sync/common`** — `defineCollection`, models, auditor, internal action/event **symbols** (for advanced wiring).
+- **`@anupheaus/mxdb`** — resolves to **server** on Node, **client** in bundlers (check **`exports`** for your environment).
+- **`@anupheaus/mxdb/server`** — `startServer`, server utilities.
+- **`@anupheaus/mxdb/client`** — React client (`MXDBSync`, hooks).
+- **`@anupheaus/mxdb/common`** — `defineCollection`, models, auditor, internal action/event **symbols** (for advanced wiring).

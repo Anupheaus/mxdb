@@ -284,7 +284,7 @@ export function createSyncClient(
     };
 
     root.render(
-      <LoggerProvider logger={reactTreeLogger} loggerName="MXDB-Sync">
+      <LoggerProvider logger={reactTreeLogger} loggerName="MXDB">
         <SocketAPI host={serverUrl} name={socketName} auth={sessionToken != null ? { sessionToken } : undefined}>
           <DbsProvider name={dbName} collections={[e2eTestCollection]} encryptionKey={encryptionKey} logger={reactTreeLogger.createSubLogger('db')}>
             <ClientToServerSyncProvider collections={[e2eTestCollection]}>

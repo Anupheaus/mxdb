@@ -48,7 +48,7 @@ export function createUseGet<RecordType extends Record>(collection: DbCollection
             setState({ record, isLoading: false, error: undefined });
           } catch (error) {
             // eslint-disable-next-line no-console
-            console.error('[MXDB-Sync] createUseGet: get() threw an error for id', id, error);
+            console.error('[MXDB] createUseGet: get() threw an error for id', id, error);
             setState(s => ({ ...s, isLoading: false, error: error as MXDBError }));
           }
         }

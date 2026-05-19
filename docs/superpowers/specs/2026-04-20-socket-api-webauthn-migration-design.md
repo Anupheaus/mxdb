@@ -1,4 +1,4 @@
-# mxdb-sync: socket-api WebAuthn Migration Design
+# mxdb: socket-api WebAuthn Migration Design
 
 **Date:** 2026-04-20
 **Status:** Approved for implementation
@@ -7,17 +7,17 @@
 
 ## Overview
 
-socket-api now implements WebAuthn end-to-end: client ceremonies (`signIn()` with PRF), server routes (`/invite`, `/register`, `/reauth`), cookie-based sessions, and lifecycle callbacks on `SocketAPI` (`onPrf`, `onSignedIn`, `onSignedOut`, `onDeviceDisabled`). mxdb-sync duplicates large parts of this — its own WebAuthn flows, token rotation, invite routes, and IndexedDB credential store. This design migrates mxdb-sync to delegate all of that to socket-api, retaining only what is genuinely mxdb-sync-specific: encryption key derivation from the PRF output, encrypted OPFS database lifecycle, device management, and cross-tab coordination.
+socket-api now implements WebAuthn end-to-end: client ceremonies (`signIn()` with PRF), server routes (`/invite`, `/register`, `/reauth`), cookie-based sessions, and lifecycle callbacks on `SocketAPI` (`onPrf`, `onSignedIn`, `onSignedOut`, `onDeviceDisabled`). mxdb duplicates large parts of this — its own WebAuthn flows, token rotation, invite routes, and IndexedDB credential store. This design migrates mxdb to delegate all of that to socket-api, retaining only what is genuinely mxdb-specific: encryption key derivation from the PRF output, encrypted OPFS database lifecycle, device management, and cross-tab coordination.
 
 ### What changes
 
 | Area | Before | After |
 |------|--------|-------|
-| WebAuthn ceremonies | mxdb-sync `AuthProvider` | socket-api `signIn()` |
-| PRF → AES key | mxdb-sync `deriveEncryptionKey.ts` | mxdb-sync `onPrf` callback → `deriveKey.ts` |
+| WebAuthn ceremonies | mxdb `AuthProvider` | socket-api `signIn()` |
+| PRF → AES key | mxdb `deriveEncryptionKey.ts` | mxdb `onPrf` callback → `deriveKey.ts` |
 | Session token storage | Encrypted SQLite (`db.readAuth/writeAuth`) | HttpOnly cookie (browser-managed) |
 | Token rotation | `TokenRotation`, gate, `mxdbTokenRotated` event | Removed entirely |
-| Invite + register routes | mxdb-sync `registerAuthInviteRoute` | socket-api `/socketAPI/webauthn/invite` + `/register` |
+| Invite + register routes | mxdb `registerAuthInviteRoute` | socket-api `/socketAPI/webauthn/invite` + `/register` |
 | Auth store shape | `currentToken`/`pendingToken` two-phase | `sessionToken` single field |
 | Device blocked signal | `mxdbDeviceBlocked` event | socket-api `onDeviceDisabled` callback |
 | User propagation | `mxdbUserAuthenticated` event | socket-api `onSignedIn` callback |
@@ -40,10 +40,10 @@ socket-api now implements WebAuthn end-to-end: client ceremonies (`signIn()` wit
 >
 ```
 
-- **`onPrf(userId, prfOutput: ArrayBuffer)`** — fired after every successful WebAuthn ceremony (registration and reauth), before `reconnect()`. `userId` is the real user ID from the server response. `prfOutput` is the raw PRF result — mxdb-sync runs HKDF internally and socket-api never sees the derived key.
-- **`onSignedIn(user)`** — fired when `socketAPIUserChanged` transitions `undefined → user`. On page reload with a valid cookie this fires automatically; mxdb-sync uses it to trigger the reauth ceremony if no encryption key is in memory yet.
-- **`onSignedOut()`** — fired when `socketAPIUserChanged` transitions `user → undefined`. mxdb-sync uses it to clear the in-memory key and notify other tabs.
-- **`onDeviceDisabled()`** — fired when the server emits `socketAPIDeviceDisabled` before disconnecting. Replaces mxdb-sync's `mxdbDeviceBlocked` event.
+- **`onPrf(userId, prfOutput: ArrayBuffer)`** — fired after every successful WebAuthn ceremony (registration and reauth), before `reconnect()`. `userId` is the real user ID from the server response. `prfOutput` is the raw PRF result — mxdb runs HKDF internally and socket-api never sees the derived key.
+- **`onSignedIn(user)`** — fired when `socketAPIUserChanged` transitions `undefined → user`. On page reload with a valid cookie this fires automatically; mxdb uses it to trigger the reauth ceremony if no encryption key is in memory yet.
+- **`onSignedOut()`** — fired when `socketAPIUserChanged` transitions `user → undefined`. mxdb uses it to clear the in-memory key and notify other tabs.
+- **`onDeviceDisabled()`** — fired when the server emits `socketAPIDeviceDisabled` before disconnecting. Replaces mxdb's `mxdbDeviceBlocked` event.
 
 ### `useAuthentication()` (client, inside `SocketAPI`)
 
@@ -144,14 +144,14 @@ MXDBSync
 
 ### Re-exports
 
-mxdb-sync re-exports socket-api's `useAuthentication` so consumers never need to import from `@anupheaus/nexus` directly:
+mxdb re-exports socket-api's `useAuthentication` so consumers never need to import from `@anupheaus/nexus` directly:
 
 ```ts
 // src/client/index.ts
 export { useAuthentication } from '@anupheaus/nexus';
 ```
 
-`AuthContext.ts` is deleted entirely — no mxdb-sync auth context is kept. Consumers call `useAuthentication()` from the mxdb-sync package import and get socket-api's hook with full typing.
+`AuthContext.ts` is deleted entirely — no mxdb auth context is kept. Consumers call `useAuthentication()` from the mxdb package import and get socket-api's hook with full typing.
 
 ---
 
@@ -196,7 +196,7 @@ On page reload a valid cookie is present. The flow:
 |------|------|---------|
 | `onDeviceDisabled` | `() => void` | Forwarded from socket-api `onDeviceDisabled` |
 | `onSignedIn` | `(user: MXDBUserDetails) => void` | Forwarded from socket-api `onSignedIn` |
-| `onSignedOut` | `() => void` | Forwarded from socket-api `onSignedOut`; mxdb-sync also uses this to clear state |
+| `onSignedOut` | `() => void` | Forwarded from socket-api `onSignedOut`; mxdb also uses this to clear state |
 
 ### Unchanged
 
@@ -222,7 +222,7 @@ Files to update: `src/client/useMXDBSync.ts`, `test/client/ConnectionTest.tsx`, 
 
 `MXDBSyncInner` (or a hook it calls) owns a `BroadcastChannel('mxdb-auth-{name}')`.
 
-- `onSignedOut` callback fires → mxdb-sync clears in-memory encryption key → `DbsProvider` unmounts → channel posts `{ type: 'signed-out' }`
+- `onSignedOut` callback fires → mxdb clears in-memory encryption key → `DbsProvider` unmounts → channel posts `{ type: 'signed-out' }`
 - Other tabs receive the message → clear their key state → `DbsProvider` unmounts
 
 This replaces the current logic in `AuthProvider`. The channel is opened on mount and closed on unmount.
@@ -303,7 +303,7 @@ await startSocketServer({
 
 ### Removed
 
-- `src/server/auth/registerAuthInviteRoute.ts` — GET `/register` and POST `/register` mxdb-sync routes
+- `src/server/auth/registerAuthInviteRoute.ts` — GET `/register` and POST `/register` mxdb routes
 - `src/server/auth/authConfig.ts` field `inviteLinkTTLMs` (invite TTL is now implicit in how long the `requestId` record sits in the store with `isEnabled: false`)
 
 ### Replaced by
@@ -313,9 +313,9 @@ socket-api routes registered automatically when `mode: 'webauthn'`:
 - `POST /{name}/socketAPI/webauthn/register`
 - `POST /{name}/socketAPI/webauthn/reauth`
 
-### Expose `createInvite` to mxdb-sync consumers
+### Expose `createInvite` to mxdb consumers
 
-`startServer` (mxdb-sync's public API) returns `createInvite`:
+`startServer` (mxdb's public API) returns `createInvite`:
 
 ```ts
 const { app, createInvite } = await startServer({ ... });
@@ -390,7 +390,7 @@ This path is stripped from production builds via `process.env.NODE_ENV` guards.
 ## 13. Error Handling
 
 - WebAuthn ceremony failure (user cancels passkey) — `signIn()` rejects; `MXDBSyncInner` catches and calls `onError({ code: 'AUTH_FAILED', ... })`.
-- Reauth route 401 (device disabled between page load and reauth) — mxdb-sync treats this the same as `onDeviceDisabled`.
+- Reauth route 401 (device disabled between page load and reauth) — mxdb treats this the same as `onDeviceDisabled`.
 - Cookie missing on connect — socket-api's `validateSessionCookie` disconnects; `MXDBSyncInner` sees no `onSignedIn` and stays in unauthenticated state.
 
 ---

@@ -1,5 +1,5 @@
 {
-  "name": "@anupheaus/mxdb-sync",
+  "name": "@anupheaus/mxdb",
   "version": "0.0.1",
   "type": "module",
   "main": "./dist/server.js",
@@ -43,8 +43,8 @@
       ]
     }
   },
-  "repository": "https://github.com/Anupheaus/mxdb-sync.git",
-  "description": "MXDB-Sync",
+  "repository": "https://github.com/Anupheaus/mxdb.git",
+  "description": "MXDB",
   "author": "Anupheaus",
   "license": "Apache-2.0",
   "publishConfig": {

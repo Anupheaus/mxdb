@@ -1,14 +1,14 @@
 # Server guide
 
-How to run **@anupheaus/mxdb-sync** on **Node** with **MongoDB** and **nexus**. This matches **`startServer`** → **`startAuthenticatedServer`** and **`provideDb`**.
+How to run **@anupheaus/mxdb** on **Node** with **MongoDB** and **nexus**. This matches **`startServer`** → **`startAuthenticatedServer`** and **`provideDb`**.
 
 ---
 
 ## 1. Install and import
 
 ```ts
-import { startServer } from '@anupheaus/mxdb-sync/server';
-import { defineCollection } from '@anupheaus/mxdb-sync/common';
+import { startServer } from '@anupheaus/mxdb/server';
+import { defineCollection } from '@anupheaus/mxdb/common';
 ```
 
 Use the **same** `defineCollection()` definitions as the client (shared module recommended).
@@ -63,7 +63,7 @@ From [`src/server/actions/internalActions.ts`](../../src/server/actions/internal
 Inside a **socket action or subscription** handler (async context provided by nexus + MXDB **`useDb`**):
 
 ```ts
-import { useCollection } from '@anupheaus/mxdb-sync/server';
+import { useCollection } from '@anupheaus/mxdb/server';
 // const { collection, upsert, query, ... } = useCollection(myCollection);
 ```
 

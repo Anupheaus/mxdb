@@ -5,7 +5,7 @@
 
 ## Overview
 
-Add four factory functions to mxdb-sync that let consumers create strongly-typed, named hooks for individual records and record collections — both on the client (React) and on the server (async/imperative). Ported from the vision project's `createUseRecord` / `createUseRecords`, adapted for this library's internal structure, with `useAutoSave` inlined and shared types extracted to common.
+Add four factory functions to mxdb that let consumers create strongly-typed, named hooks for individual records and record collections — both on the client (React) and on the server (async/imperative). Ported from the vision project's `createUseRecord` / `createUseRecords`, adapted for this library's internal structure, with `useAutoSave` inlined and shared types extracted to common.
 
 ---
 

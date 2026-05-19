@@ -1,6 +1,6 @@
 # Technical overview
 
-High-level picture of **MXDB-Sync**: how the **common**, **client**, and **server** pieces fit together, how data moves, and where to read more. For integration steps see [client-guide.md](../guides/client-guide.md) and [server-guide.md](../guides/server-guide.md). For symbol-level detail see [features.md](./features.md). Normative sync behaviour is in [plans/client-to-server-synchronisation.md](../plans/client-to-server-synchronisation.md) and [plans/server-to-client-synchronisation.md](../plans/server-to-client-synchronisation.md).
+High-level picture of **MXDB**: how the **common**, **client**, and **server** pieces fit together, how data moves, and where to read more. For integration steps see [client-guide.md](../guides/client-guide.md) and [server-guide.md](../guides/server-guide.md). For symbol-level detail see [features.md](./features.md). Normative sync behaviour is in [plans/client-to-server-synchronisation.md](../plans/client-to-server-synchronisation.md) and [plans/server-to-client-synchronisation.md](../plans/server-to-client-synchronisation.md).
 
 ---
 
@@ -16,7 +16,7 @@ flowchart LR
     UI <--> LOC
   end
 
-  subgraph mxdb["MXDB-Sync"]
+  subgraph mxdb["MXDB"]
     CL["Client package"]
     SV["Server package"]
     CM["Common · defineCollection, auditor, actions"]

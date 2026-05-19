@@ -1,6 +1,6 @@
 # Server→client synchronisation
 
-This document specifies how **authoritative server state** reaches **local client storage** in MXDB-Sync: the **`mxdbServerToClientSyncAction`** path, the per-connection **`ServerToClientSynchronisation`** **mirror** of client rows, client application rules, and the **ack** the client sends back. It is the counterpart to [client-to-server-synchronisation.md](./client-to-server-synchronisation.md), which covers **`ClientToServerSynchronisation`** and **`mxdbClientToServerSyncAction`**.
+This document specifies how **authoritative server state** reaches **local client storage** in MXDB: the **`mxdbServerToClientSyncAction`** path, the per-connection **`ServerToClientSynchronisation`** **mirror** of client rows, client application rules, and the **ack** the client sends back. It is the counterpart to [client-to-server-synchronisation.md](./client-to-server-synchronisation.md), which covers **`ClientToServerSynchronisation`** and **`mxdbClientToServerSyncAction`**.
 
 Together, those two types are the **only** target mechanisms for **record** synchronisation between client and server (see client-to-server doc §3.2).
 

@@ -34,7 +34,7 @@ Four-component protocol (ClientDispatcher, ServerReceiver, ServerDispatcher, Cli
 
 ## Architecture
 
-`defineCollection` registers a config into a module-level `configRegistry`. Both the client `Db` and the server `ServerDb` look up configs from this registry at mount time — same registry instance because both import from `@anupheaus/mxdb-sync/common`. Configs must be registered before either side mounts.
+`defineCollection` registers a config into a module-level `configRegistry`. Both the client `Db` and the server `ServerDb` look up configs from this registry at mount time — same registry instance because both import from `@anupheaus/mxdb/common`. Configs must be registered before either side mounts.
 
 ## Related
 

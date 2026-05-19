@@ -152,7 +152,7 @@ export class IndexedDbAuthStore {
 - [ ] **Step 2: Verify TypeScript compiles (expect errors in other files — that's fine for now)**
 
 ```bash
-cd c:/code/personal/mxdb-sync && npx tsc --noEmit 2>&1 | head -40
+cd c:/code/personal/mxdb && npx tsc --noEmit 2>&1 | head -40
 ```
 
 Expected: errors referencing `token`, `keyHash`, `updateDefaultToken` in other files. That confirms the right fields were removed.
@@ -160,8 +160,8 @@ Expected: errors referencing `token`, `keyHash`, `updateDefaultToken` in other f
 - [ ] **Step 3: Commit**
 
 ```bash
-git -C c:/code/personal/mxdb-sync add src/client/auth/IndexedDbAuthStore.ts
-git -C c:/code/personal/mxdb-sync commit -m "refactor: strip token/keyHash from MXDBAuthEntry and remove updateDefaultToken"
+git -C c:/code/personal/mxdb add src/client/auth/IndexedDbAuthStore.ts
+git -C c:/code/personal/mxdb commit -m "refactor: strip token/keyHash from MXDBAuthEntry and remove updateDefaultToken"
 ```
 
 ---
@@ -233,8 +233,8 @@ export const IndexedDbProvider = createComponent('IndexedDbProvider', ({ appName
 - [ ] **Step 3: Commit (keep IndexedDbBridge.tsx for now — it will be deleted in Task 9)**
 
 ```bash
-git -C c:/code/personal/mxdb-sync add src/client/auth/IndexedDbContext.ts src/client/auth/IndexedDbProvider.tsx
-git -C c:/code/personal/mxdb-sync commit -m "feat: add IndexedDbContext and thin IndexedDbProvider"
+git -C c:/code/personal/mxdb add src/client/auth/IndexedDbContext.ts src/client/auth/IndexedDbProvider.tsx
+git -C c:/code/personal/mxdb commit -m "feat: add IndexedDbContext and thin IndexedDbProvider"
 ```
 
 ---
@@ -282,8 +282,8 @@ export const AuthContext = createContext<AuthContextValue>({
 - [ ] **Step 2: Commit**
 
 ```bash
-git -C c:/code/personal/mxdb-sync add src/client/auth/AuthContext.ts
-git -C c:/code/personal/mxdb-sync commit -m "feat: add AuthContext"
+git -C c:/code/personal/mxdb add src/client/auth/AuthContext.ts
+git -C c:/code/personal/mxdb commit -m "feat: add AuthContext"
 ```
 
 ---
@@ -545,8 +545,8 @@ export const AuthProvider = createComponent('AuthProvider', ({
 - [ ] **Step 2: Commit**
 
 ```bash
-git -C c:/code/personal/mxdb-sync add src/client/auth/AuthProvider.tsx
-git -C c:/code/personal/mxdb-sync commit -m "feat: add AuthProvider with WebAuthn, registration, and signOut"
+git -C c:/code/personal/mxdb add src/client/auth/AuthProvider.tsx
+git -C c:/code/personal/mxdb commit -m "feat: add AuthProvider with WebAuthn, registration, and signOut"
 ```
 
 ---
@@ -640,8 +640,8 @@ export const TokenProvider = createComponent('TokenProvider', ({
 - [ ] **Step 2: Commit**
 
 ```bash
-git -C c:/code/personal/mxdb-sync add src/client/auth/TokenProvider.tsx
-git -C c:/code/personal/mxdb-sync commit -m "feat: add TokenProvider — reads/writes SQLite token, fixed connectionToken for session"
+git -C c:/code/personal/mxdb add src/client/auth/TokenProvider.tsx
+git -C c:/code/personal/mxdb commit -m "feat: add TokenProvider — reads/writes SQLite token, fixed connectionToken for session"
 ```
 
 ---
@@ -749,8 +749,8 @@ export const SocketProvider = createComponent('SocketProvider', ({
 - [ ] **Step 2: Commit**
 
 ```bash
-git -C c:/code/personal/mxdb-sync add src/client/auth/SocketProvider.tsx
-git -C c:/code/personal/mxdb-sync commit -m "feat: add SocketProvider with inline token rotation handling"
+git -C c:/code/personal/mxdb add src/client/auth/SocketProvider.tsx
+git -C c:/code/personal/mxdb commit -m "feat: add SocketProvider with inline token rotation handling"
 ```
 
 ---
@@ -810,7 +810,7 @@ export const MXDBSync = createComponent('MXDBSync', ({
   const conflictResolutionContext = useMemo(() => ({ onConflictResolution }), [onConflictResolution]);
 
   return (
-    <LoggerProvider logger={logger} loggerName="MXDB-Sync">
+    <LoggerProvider logger={logger} loggerName="MXDB">
       <ConflictResolutionContext.Provider value={conflictResolutionContext}>
         <IndexedDbProvider appName={name}>
           <AuthProvider appName={name} host={host} collections={collections} onError={onError}>
@@ -826,8 +826,8 @@ export const MXDBSync = createComponent('MXDBSync', ({
 - [ ] **Step 2: Commit**
 
 ```bash
-git -C c:/code/personal/mxdb-sync add src/client/MXDBSync.tsx
-git -C c:/code/personal/mxdb-sync commit -m "refactor: simplify MXDBSync to compose IndexedDbProvider + AuthProvider"
+git -C c:/code/personal/mxdb add src/client/MXDBSync.tsx
+git -C c:/code/personal/mxdb commit -m "refactor: simplify MXDBSync to compose IndexedDbProvider + AuthProvider"
 ```
 
 ---
@@ -895,8 +895,8 @@ export function useMXDBAuth(): UseMXDBAuthResult {
 - [ ] **Step 4: Commit**
 
 ```bash
-git -C c:/code/personal/mxdb-sync add src/client/hooks/useMXDBInvite.ts src/client/hooks/useMXDBSignOut.ts src/client/hooks/useMXDBAuth.ts
-git -C c:/code/personal/mxdb-sync commit -m "refactor: update public hooks to use AuthContext and IndexedDbContext"
+git -C c:/code/personal/mxdb add src/client/hooks/useMXDBInvite.ts src/client/hooks/useMXDBSignOut.ts src/client/hooks/useMXDBAuth.ts
+git -C c:/code/personal/mxdb commit -m "refactor: update public hooks to use AuthContext and IndexedDbContext"
 ```
 
 ---
@@ -912,13 +912,13 @@ git -C c:/code/personal/mxdb-sync commit -m "refactor: update public hooks to us
 - [ ] **Step 1: Delete the old files**
 
 ```bash
-git -C c:/code/personal/mxdb-sync rm src/client/auth/AuthTokenContext.ts src/client/auth/SqliteTokenSync.tsx src/client/auth/TokenRotationProvider.tsx src/client/auth/IndexedDbBridge.tsx
+git -C c:/code/personal/mxdb rm src/client/auth/AuthTokenContext.ts src/client/auth/SqliteTokenSync.tsx src/client/auth/TokenRotationProvider.tsx src/client/auth/IndexedDbBridge.tsx
 ```
 
 - [ ] **Step 2: Check for any remaining imports of deleted files**
 
 ```bash
-grep -r "AuthTokenContext\|SqliteTokenSync\|TokenRotationProvider\|IndexedDbBridge" c:/code/personal/mxdb-sync/src --include="*.ts" --include="*.tsx" -l
+grep -r "AuthTokenContext\|SqliteTokenSync\|TokenRotationProvider\|IndexedDbBridge" c:/code/personal/mxdb/src --include="*.ts" --include="*.tsx" -l
 ```
 
 Expected: no output. If any files appear, open them and update the import to the new provider.
@@ -926,7 +926,7 @@ Expected: no output. If any files appear, open them and update the import to the
 - [ ] **Step 3: Run TypeScript compiler**
 
 ```bash
-cd c:/code/personal/mxdb-sync && npx tsc --noEmit 2>&1
+cd c:/code/personal/mxdb && npx tsc --noEmit 2>&1
 ```
 
 Expected: zero errors. Fix any that appear before continuing.
@@ -934,7 +934,7 @@ Expected: zero errors. Fix any that appear before continuing.
 - [ ] **Step 4: Run the test suite**
 
 ```bash
-cd c:/code/personal/mxdb-sync && npx vitest run 2>&1
+cd c:/code/personal/mxdb && npx vitest run 2>&1
 ```
 
 Expected: all existing tests pass (the refactor does not touch collection or sync logic).
@@ -942,7 +942,7 @@ Expected: all existing tests pass (the refactor does not touch collection or syn
 - [ ] **Step 5: Commit deletions**
 
 ```bash
-git -C c:/code/personal/mxdb-sync commit -m "refactor: delete AuthTokenContext, SqliteTokenSync, TokenRotationProvider, IndexedDbBridge"
+git -C c:/code/personal/mxdb commit -m "refactor: delete AuthTokenContext, SqliteTokenSync, TokenRotationProvider, IndexedDbBridge"
 ```
 
 ---
@@ -952,7 +952,7 @@ git -C c:/code/personal/mxdb-sync commit -m "refactor: delete AuthTokenContext, 
 - [ ] **Step 1: Build the client bundle**
 
 ```bash
-cd c:/code/personal/mxdb-sync && npx webpack --mode development --name client 2>&1 | tail -20
+cd c:/code/personal/mxdb && npx webpack --mode development --name client 2>&1 | tail -20
 ```
 
 Expected: build succeeds with no errors (warnings about bundle size are fine).
@@ -960,8 +960,8 @@ Expected: build succeeds with no errors (warnings about bundle size are fine).
 - [ ] **Step 2: Verify exported public API is unchanged**
 
 ```bash
-grep -r "export" c:/code/personal/mxdb-sync/src/client/index.ts
-grep -r "export" c:/code/personal/mxdb-sync/src/client/hooks/index.ts
+grep -r "export" c:/code/personal/mxdb/src/client/index.ts
+grep -r "export" c:/code/personal/mxdb/src/client/hooks/index.ts
 ```
 
 Expected output (unchanged from before):
@@ -983,6 +983,6 @@ export * from './useMXDBSignOut';
 - [ ] **Step 3: Final commit**
 
 ```bash
-git -C c:/code/personal/mxdb-sync add -A
-git -C c:/code/personal/mxdb-sync commit -m "feat: complete auth provider refactor — IndexedDbProvider/AuthProvider/TokenProvider/SocketProvider chain"
+git -C c:/code/personal/mxdb add -A
+git -C c:/code/personal/mxdb commit -m "feat: complete auth provider refactor — IndexedDbProvider/AuthProvider/TokenProvider/SocketProvider chain"
 ```

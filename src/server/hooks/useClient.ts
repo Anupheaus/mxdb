@@ -10,7 +10,7 @@ export function useClient() {
   const socket = useSocketApiClient();
 
   function getLogger(subLoggerName?: string) {
-    const parentLogger = Logger.getCurrent() ?? new Logger('mxdb-sync');
+    const parentLogger = Logger.getCurrent() ?? new Logger('mxdb');
     const clientLogger = parentLogger.createSubLogger(socket?.id ?? 'admin');
     if (subLoggerName != null) return clientLogger.createSubLogger(subLoggerName);
     return clientLogger;

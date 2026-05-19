@@ -8,9 +8,9 @@ This page maps **what the repo provides** to **where it lives** and **how it is 
 
 | Import | Typical use |
 |--------|-------------|
-| `@anupheaus/mxdb-sync/client` | Browser / React app |
-| `@anupheaus/mxdb-sync/server` | Node server |
-| `@anupheaus/mxdb-sync/common` | Shared collection definitions and types (imported by both sides) |
+| `@anupheaus/mxdb/client` | Browser / React app |
+| `@anupheaus/mxdb/server` | Node server |
+| `@anupheaus/mxdb/common` | Shared collection definitions and types (imported by both sides) |
 
 ---
 

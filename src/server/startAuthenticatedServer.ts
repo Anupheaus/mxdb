@@ -128,7 +128,7 @@ export async function startAuthenticatedServer({
       const { impersonateUser } = useAuthentication();
       await impersonateUser(adminUser, async () => {
         const startupLogger = (
-          logger ?? Logger.getCurrent() ?? new Logger('mxdb-sync')
+          logger ?? Logger.getCurrent() ?? new Logger('mxdb')
         ).createSubLogger('s2c:startup');
         setServerToClientSync(
           ServerToClientSynchronisation.createNoOp(collections, startupLogger),
@@ -177,7 +177,7 @@ export async function startAuthenticatedServer({
       client.emit('socketapi:authCheckComplete');
 
       const s2cLogger = (
-        logger ?? Logger.getCurrent() ?? new Logger('mxdb-sync')
+        logger ?? Logger.getCurrent() ?? new Logger('mxdb')
       ).createSubLogger(`s2c:${client.id}`);
       const emitS2C = useAction(mxdbServerToClientSyncAction);
       const s2c = new ServerToClientSynchronisation({

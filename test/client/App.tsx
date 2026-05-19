@@ -29,7 +29,7 @@ const AppContent = createComponent('AppContent', () => {
 export const App = createComponent('App', () => {
   return (
     <Dialogs>
-      <MXDBSync name="mxdb-sync-test" collections={collections}>
+      <MXDBSync name="mxdb-test" collections={collections}>
         <AppContent />
       </MXDBSync>
     </Dialogs>

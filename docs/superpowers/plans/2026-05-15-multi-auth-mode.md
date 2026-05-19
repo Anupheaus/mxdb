@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Refactor mxdb-sync so `AuthCollection` is a generic base class with `WebAuthnAuthCollection` and `GoogleOAuthAuthCollection` subclasses, and `ServerConfig` accepts a discriminated union `auth` field so either mode can be wired up without code changes.
+**Goal:** Refactor mxdb so `AuthCollection` is a generic base class with `WebAuthnAuthCollection` and `GoogleOAuthAuthCollection` subclasses, and `ServerConfig` accepts a discriminated union `auth` field so either mode can be wired up without code changes.
 
 **Architecture:** `AuthCollection<TRecord>` is an abstract class implementing `SocketAPIAuthStore<TRecord>` with shared CRUD and an internal `findAllByUserId` helper. Each auth mode subclass extends it and adds the extra store-interface methods required by socket-api. `ServerConfig.auth` is a `WebAuthnServerAuthConfig | GoogleOAuthServerAuthConfig` discriminated union; `startAuthenticatedServer` branches on `auth.mode` to instantiate the correct subclass and call `configureAuthentication` with the right options. Client-side `MXDBSync` gets an `authMode` prop so it can skip PRF/key-derivation for Google OAuth and mount `DbsProvider` as soon as the user is authenticated.
 
@@ -1046,7 +1046,7 @@ export async function startAuthenticatedServer({
       const { impersonateUser } = useAuthentication();
       await impersonateUser(adminUser, async () => {
         const startupLogger = (
-          logger ?? Logger.getCurrent() ?? new Logger('mxdb-sync')
+          logger ?? Logger.getCurrent() ?? new Logger('mxdb')
         ).createSubLogger('s2c:startup');
         setServerToClientSync(
           ServerToClientSynchronisation.createNoOp(collections, startupLogger),
@@ -1091,7 +1091,7 @@ export async function startAuthenticatedServer({
       }
 
       const s2cLogger = (
-        logger ?? Logger.getCurrent() ?? new Logger('mxdb-sync')
+        logger ?? Logger.getCurrent() ?? new Logger('mxdb')
       ).createSubLogger(`s2c:${client.id}`);
       const emitS2C = useAction(mxdbServerToClientSyncAction);
       const s2c = new ServerToClientSynchronisation({
@@ -1335,7 +1335,7 @@ import type { ServerConfig, ServerInstance } from './internalModels';
 export async function startServer(config: ServerConfig): Promise<ServerInstance> {
   let { logger, name, collections, mongoDbName, mongoDbUrl, changeStreamDebounceMs } = config;
   if (!logger) logger = Logger.getCurrent();
-  if (!logger) logger = new Logger('MXDB-Sync');
+  if (!logger) logger = new Logger('MXDB');
 
   logger.info('[startServer] begin', { name, mongoDbName, collectionCount: collections.length });
 
@@ -1459,7 +1459,7 @@ export const MXDBSync = createComponent('MXDBSync', ({
   const handleSignedIn = useBound((user: SocketAPIUser) => onSignedIn?.(user as MXDBUser));
 
   return (
-    <LoggerProvider logger={logger} loggerName="MXDB-Sync">
+    <LoggerProvider logger={logger} loggerName="MXDB">
       <ConflictResolutionContext.Provider value={conflictResolutionContext}>
         <SocketAPI
           name={name}
@@ -1686,7 +1686,7 @@ Replace the `startServer` call block (lines 36–49) with the new `auth` shape:
 
 ```ts
 const { app, createInvite } = await startServer({
-  name: 'mxdb-sync-test',
+  name: 'mxdb-test',
   logger,
   collections,
   actions,

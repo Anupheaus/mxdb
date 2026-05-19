@@ -2,7 +2,7 @@
 
 **Date:** 2026-04-19  
 **Status:** Approved  
-**Scope:** `socket-api` (core middleware) + `mxdb-sync` (config surface + invite route cleanup)
+**Scope:** `socket-api` (core middleware) + `mxdb` (config surface + invite route cleanup)
 
 ---
 
@@ -69,7 +69,7 @@ Set unconditionally when `securityHeaders: true` (default):
 Validates `Origin` header against `allowedOrigins`. On mismatch → `403`. Handles `OPTIONS` preflight with `204`. Sets `Access-Control-*` headers on all passing requests.
 
 ### 4. Rate Limiter
-In-memory, keyed by `ctx.ip`. Per-window counter with auto-expiry. On exceeded limit → `429` JSON response. Replaces the existing `inviteRateLimiter` singleton in `mxdb-sync`.
+In-memory, keyed by `ctx.ip`. Per-window counter with auto-expiry. On exceeded limit → `429` JSON response. Replaces the existing `inviteRateLimiter` singleton in `mxdb`.
 
 The global middleware stores the resolved effective config on `ctx.state.security` for per-route middleware to read.
 
@@ -85,7 +85,7 @@ Passed into `bodyParser` as `jsonLimit` / `formLimit` (`${maxBodySizeKb}kb`).
 export function withSecurity(overrides: DeepPartial<SecurityConfig>): Koa.Middleware
 ```
 
-Usage in `onRegisterRoutes` or inside `mxdb-sync` route registration:
+Usage in `onRegisterRoutes` or inside `mxdb` route registration:
 
 ```ts
 router.get('/sensitive', withSecurity({ rateLimit: { maxRequests: 10 } }), handler)
@@ -128,10 +128,10 @@ All rejections return JSON:
   - `SecurityConfig.ts` — type definitions + defaults
   - `createSecurityMiddleware.ts` — global middleware factory
   - `withSecurity.ts` — per-route override middleware factory
-  - `RateLimiter.ts` — in-memory rate limiter (moved/generalised from `mxdb-sync`)
+  - `RateLimiter.ts` — in-memory rate limiter (moved/generalised from `mxdb`)
 - `src/server/index.ts` — export `withSecurity`, `SecurityConfig`
 
-### `mxdb-sync`
+### `mxdb`
 - `src/server/internalModels.ts` — add `security?: SecurityConfig` to `ServerConfig`
 - `src/server/startAuthenticatedServer.ts` — pass `security` through to `socket-api` `startServer()`
 - `src/server/auth/registerAuthInviteRoute.ts` — replace manual `inviteRateLimiter.check()` calls with `withSecurity({ rateLimit: { maxRequests: 5, windowMs: 900_000 } })` applied at the route level

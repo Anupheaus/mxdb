@@ -271,7 +271,7 @@ console.error(`\n  total wall time: ${fmtMs(overallMs)}\n`);
 // A marker on its own line + a single-line JSON payload + closing marker.
 // Claude greps the file for these markers to extract the structured data.
 const payload = {
-  schema: 'mxdb-sync.test-run.v1',
+  schema: 'mxdb.test-run.v1',
   ranAt: new Date().toISOString(),
   totalWallMs: overallMs,
   suites: results.map((r) => ({

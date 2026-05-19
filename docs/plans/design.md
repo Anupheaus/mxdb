@@ -12,7 +12,7 @@ This document is also the **plan for changing the current library implementation
 
 ### 1.1 Auditor implementation
 
-The **auditor** (create/update/merge audit entries, materialise records from audit, apply ops, etc.) will be pulled in from the **common library** (`@anupheaus/common`) and maintained as an **in-repo version** within this library. That in-repo auditor will implement the behaviour described in this document (enums, audit structures, hybrid path anchoring, replay and conflict rules, idempotency, etc.), so that mxdb-sync owns the sync semantics and can evolve them without depending on the common library’s auditor.
+The **auditor** (create/update/merge audit entries, materialise records from audit, apply ops, etc.) will be pulled in from the **common library** (`@anupheaus/common`) and maintained as an **in-repo version** within this library. That in-repo auditor will implement the behaviour described in this document (enums, audit structures, hybrid path anchoring, replay and conflict rules, idempotency, etc.), so that mxdb owns the sync semantics and can evolve them without depending on the common library’s auditor.
 
 ### 1.2 Target Platforms
 
@@ -939,7 +939,7 @@ The following scenarios can occur during **replay** (materialising a record from
 
 ### 7.1 Package Exports and Conditional Resolution
 
-The library is published as `@anupheaus/mxdb-sync` with three sub-path exports and a **conditional root export** that resolves to either the server or client implementation based on the runtime target:
+The library is published as `@anupheaus/mxdb` with three sub-path exports and a **conditional root export** that resolves to either the server or client implementation based on the runtime target:
 
 ```json
 {
@@ -977,17 +977,17 @@ The library is published as `@anupheaus/mxdb-sync` with three sub-path exports a
 
 **How it works:**
 
-- **Node.js** (and bundlers with `target: 'node'`): `import { useCollection } from '@anupheaus/mxdb-sync'` resolves to the **server** implementation via the `node` condition.
+- **Node.js** (and bundlers with `target: 'node'`): `import { useCollection } from '@anupheaus/mxdb'` resolves to the **server** implementation via the `node` condition.
 - **Browsers** (and bundlers with `target: 'web'`, e.g. webpack): the same import resolves to the **client** implementation via the `default` condition.
-- **Explicit imports** are always available: `@anupheaus/mxdb-sync/server`, `@anupheaus/mxdb-sync/client`, `@anupheaus/mxdb-sync/common`.
+- **Explicit imports** are always available: `@anupheaus/mxdb/server`, `@anupheaus/mxdb/client`, `@anupheaus/mxdb/common`.
 
-**TypeScript resolution:** TypeScript resolves types from the `types` field matching the active condition. For this to work, the consuming project must use `moduleResolution: "bundler"` (or `"node16"` / `"nodenext"`) in its `tsconfig.json`. If the consuming project has both server and client code in a single tsconfig, TypeScript can only resolve one set of types for the root import — in that case, the consumer should either use separate tsconfigs for server and client code, or use the explicit sub-path imports (`@anupheaus/mxdb-sync/server`, `@anupheaus/mxdb-sync/client`).
+**TypeScript resolution:** TypeScript resolves types from the `types` field matching the active condition. For this to work, the consuming project must use `moduleResolution: "bundler"` (or `"node16"` / `"nodenext"`) in its `tsconfig.json`. If the consuming project has both server and client code in a single tsconfig, TypeScript can only resolve one set of types for the root import — in that case, the consumer should either use separate tsconfigs for server and client code, or use the explicit sub-path imports (`@anupheaus/mxdb/server`, `@anupheaus/mxdb/client`).
 
 **Webpack alignment:** The existing webpack config already targets `node` for the server build and `web` for the client build (§1.1), so the conditional exports resolve correctly at both build time and runtime.
 
 #### Recommended consuming project structure
 
-Apps using this library should split their TypeScript configuration so that server and client code each have their own tsconfig. This ensures that `import { useCollection } from '@anupheaus/mxdb-sync'` resolves to the correct types in each context — server code sees `MXDBServerCollection<T>`, client code sees `MXDBClientCollection<T>`.
+Apps using this library should split their TypeScript configuration so that server and client code each have their own tsconfig. This ensures that `import { useCollection } from '@anupheaus/mxdb'` resolves to the correct types in each context — server code sees `MXDBServerCollection<T>`, client code sees `MXDBClientCollection<T>`.
 
 ```
 my-app/
@@ -1038,23 +1038,23 @@ my-app/
 }
 ```
 
-**How `defineCollection` in common works:** Collection definitions use the explicit sub-path `@anupheaus/mxdb-sync/common`, which is **not** conditionally resolved — it always points to the same module and the same types regardless of which tsconfig is active. The `MXDBCollection<RecordType>` object returned by `defineCollection` is a plain data object carrying a phantom type parameter for inference. It contains no server or client logic. Both tsconfigs include the `common/` folder in their `include` paths, so the same collection definition files are visible to both.
+**How `defineCollection` in common works:** Collection definitions use the explicit sub-path `@anupheaus/mxdb/common`, which is **not** conditionally resolved — it always points to the same module and the same types regardless of which tsconfig is active. The `MXDBCollection<RecordType>` object returned by `defineCollection` is a plain data object carrying a phantom type parameter for inference. It contains no server or client logic. Both tsconfigs include the `common/` folder in their `include` paths, so the same collection definition files are visible to both.
 
 When the collection object is later passed to `useCollection`, the return type is determined by **which `useCollection` was imported** — the server or client version — not by the collection definition itself:
 
 ```typescript
 // common/collections.ts — identical under both tsconfigs
-import { defineCollection } from '@anupheaus/mxdb-sync/common';
+import { defineCollection } from '@anupheaus/mxdb/common';
 export const todosCollection = defineCollection<TodoRecord>({ name: 'todos', indexes: [] });
 
 // server/index.ts — tsconfig has customConditions: ["node"]
-import { useCollection } from '@anupheaus/mxdb-sync';     // → server types
+import { useCollection } from '@anupheaus/mxdb';     // → server types
 import { todosCollection } from '../common/collections';
 const { get } = useCollection(todosCollection);
 const record = await get('id');  // ✓ Promise<TodoRecord | undefined>
 
 // client/App.tsx — tsconfig has no customConditions (default)
-import { useCollection } from '@anupheaus/mxdb-sync';     // → client types
+import { useCollection } from '@anupheaus/mxdb';     // → client types
 import { todosCollection } from '../common/collections';
 const { useGet, upsert } = useCollection(todosCollection);
 const { record, isLoading } = useGet('id');  // ✓ { record, isLoading, error }
@@ -1062,12 +1062,12 @@ const { record, isLoading } = useGet('id');  // ✓ { record, isLoading, error }
 
 This separation also benefits bundling: webpack's server build (with `target: 'node'`) and client build (with `target: 'web'`) resolve the conditional exports independently, matching the tsconfig type resolution.
 
-### 7.2 Common Exports (`@anupheaus/mxdb-sync/common`)
+### 7.2 Common Exports (`@anupheaus/mxdb/common`)
 
 These are shared between server and client. Collection definitions live here so that the same objects can be imported by both sides.
 
 ```typescript
-import { defineCollection } from '@anupheaus/mxdb-sync/common';
+import { defineCollection } from '@anupheaus/mxdb/common';
 
 const todosCollection = defineCollection<TodoRecord>({
   name: 'todos',
@@ -1163,7 +1163,7 @@ type MXDBCollectionChangeEvent<RecordType extends Record> =
   | { type: 'remove'; recordIds: string[] };
 ```
 
-### 7.4 Server API (`@anupheaus/mxdb-sync/server`)
+### 7.4 Server API (`@anupheaus/mxdb/server`)
 
 #### Bootstrap
 
@@ -1249,7 +1249,7 @@ function extendCollection<RecordType extends Record>(
 #### Server usage example
 
 ```typescript
-import { startServer, useCollection, extendCollection } from '@anupheaus/mxdb-sync/server';
+import { startServer, useCollection, extendCollection } from '@anupheaus/mxdb/server';
 import { todosCollection } from '../common/collections';
 
 extendCollection(todosCollection, {
@@ -1270,7 +1270,7 @@ await startServer({
 });
 ```
 
-### 7.5 Client API (`@anupheaus/mxdb-sync/client`)
+### 7.5 Client API (`@anupheaus/mxdb/client`)
 
 #### Provider component
 
@@ -1396,7 +1396,7 @@ function useMXDBSync(): {
 #### Client usage example
 
 ```typescript
-import { MXDBSync, useCollection, useRecord, useMXDBSync } from '@anupheaus/mxdb-sync/client';
+import { MXDBSync, useCollection, useRecord, useMXDBSync } from '@anupheaus/mxdb/client';
 import { todosCollection } from '../common/collections';
 
 // App root

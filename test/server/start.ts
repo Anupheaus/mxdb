@@ -27,14 +27,14 @@ Logger.registerListener({
   onTrigger: loggerService,
 });
 
-const logger = new Logger('MXDB-Sync');
+const logger = new Logger('MXDB');
 const server = http.createServer();
 
 async function start() {
   try {
     await waitForBindablePort(port, logger);
     const { app, createInvite } = await startServer({
-      name: 'mxdb-sync-test',
+      name: 'mxdb-test',
       logger,
       collections,
       actions,

@@ -65,7 +65,7 @@ export const MXDBSync = createComponent('MXDBSync', ({
   const handleSignedIn = useBound((user: SocketAPIUser) => onSignedIn?.(user as MXDBUser));
 
   return (
-    <LoggerProvider logger={logger} loggerName="MXDB-Sync">
+    <LoggerProvider logger={logger} loggerName="MXDB">
       <ConflictResolutionContext.Provider value={conflictResolutionContext}>
         <SocketAPI
           name={name}

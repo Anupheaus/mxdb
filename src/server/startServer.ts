@@ -16,7 +16,7 @@ import type { ServerConfig, ServerInstance } from './internalModels';
 export async function startServer(config: ServerConfig): Promise<ServerInstance> {
   let { logger, name, collections, mongoDbName, mongoDbUrl, changeStreamDebounceMs } = config;
   if (!logger) logger = Logger.getCurrent();
-  if (!logger) logger = new Logger('MXDB-Sync');
+  if (!logger) logger = new Logger('MXDB');
 
   logger.info('[startServer] begin', { name, mongoDbName, collectionCount: collections.length });
 

@@ -13,14 +13,14 @@ export function createUseGetAll<RecordType extends Record>(getAll: GetAll<Record
 
     useLayoutEffect(() => {
       if (props.disable) {
-        if (props.debug) console.log('[MXDB-Sync] getAll is disabled, returning default', props); // eslint-disable-line no-console
+        if (props.debug) console.log('[MXDB] getAll is disabled, returning default', props); // eslint-disable-line no-console
         setState({ records: [], isLoading: false, error: undefined });
       } else {
         setState(s => ({ ...s, isLoading: true }));
         const requestId = requestIdRef.current = Math.uniqueId();
-        if (props.debug) console.log('[MXDB-Sync] Subscribing getAll', { requestId, props }); // eslint-disable-line no-console
+        if (props.debug) console.log('[MXDB] Subscribing getAll', { requestId, props }); // eslint-disable-line no-console
         getAll(props, records => {
-          if (props.debug) console.log('[MXDB-Sync] getAll response', { requestId, count: records.length }); // eslint-disable-line no-console
+          if (props.debug) console.log('[MXDB] getAll response', { requestId, count: records.length }); // eslint-disable-line no-console
           if (requestId !== requestIdRef.current) return;
           lastResponseRef.current = { records };
           setState({ records, isLoading: false, error: undefined });

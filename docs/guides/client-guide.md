@@ -1,14 +1,14 @@
 # Client guide
 
-How to integrate **@anupheaus/mxdb-sync** in a **React** app. This matches the current **`src/client`** wiring (IndexedDB auth, SQLite in a worker, nexus).
+How to integrate **@anupheaus/mxdb** in a **React** app. This matches the current **`src/client`** wiring (IndexedDB auth, SQLite in a worker, nexus).
 
 ---
 
 ## 1. Install and import
 
 ```ts
-import { MXDBSync, useCollection, useMXDB, useRecord } from '@anupheaus/mxdb-sync/client';
-import { defineCollection } from '@anupheaus/mxdb-sync/common';
+import { MXDBSync, useCollection, useMXDB, useRecord } from '@anupheaus/mxdb/client';
+import { defineCollection } from '@anupheaus/mxdb/common';
 ```
 
 Define collections in **common** (or a shared package) so the **same** `MXDBCollection` tokens are used on server and client.

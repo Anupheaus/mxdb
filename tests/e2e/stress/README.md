@@ -1,6 +1,6 @@
 # Stress Test Suite
 
-End-to-end integration tests for the MXDB-Sync library under concurrent, adversarial conditions. The goal is to prove that the sync engine preserves data integrity across many simultaneous clients, network disruptions, and server restarts.
+End-to-end integration tests for the MXDB library under concurrent, adversarial conditions. The goal is to prove that the sync engine preserves data integrity across many simultaneous clients, network disruptions, and server restarts.
 
 ---
 

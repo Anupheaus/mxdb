@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Add four factory functions (`createUseRecord` and `createUseRecords` for both client and server) that let consumers build strongly-typed, named hooks on top of mxdb-sync's existing collection primitives.
+**Goal:** Add four factory functions (`createUseRecord` and `createUseRecords` for both client and server) that let consumers build strongly-typed, named hooks on top of mxdb's existing collection primitives.
 
 **Architecture:** Client factories wrap the existing `useRecord` and `useCollection` React hooks and add hydration, named APIs, auto-save (client only), helpers, and extensions. Server factories wrap the server `useCollection` with the same named API pattern but return plain async functions instead of React hooks. Three shared types (`RecordTypeOfCollection`, `ExtensionsType`, `RemoveDasherized`) are extracted to `src/common/models/hookModels.ts` so both sides can reference them without cross-layer imports.
 
@@ -97,7 +97,7 @@ import { ConflictResolutionContext } from './providers';
 - [ ] **Step 4: Verify build passes**
 
 ```
-pnpm -C c:/code/personal/mxdb-sync build
+pnpm -C c:/code/personal/mxdb build
 ```
 
 Expected: build succeeds with no type errors.
@@ -105,8 +105,8 @@ Expected: build succeeds with no type errors.
 - [ ] **Step 5: Commit**
 
 ```
-git -C c:/code/personal/mxdb-sync add src/common/models/hookModels.ts src/common/models/index.ts src/client/useRecord.ts
-git -C c:/code/personal/mxdb-sync commit -m "refactor(common): extract RecordTypeOfCollection, ExtensionsType, RemoveDasherized to common/models"
+git -C c:/code/personal/mxdb add src/common/models/hookModels.ts src/common/models/index.ts src/client/useRecord.ts
+git -C c:/code/personal/mxdb commit -m "refactor(common): extract RecordTypeOfCollection, ExtensionsType, RemoveDasherized to common/models"
 ```
 
 ---
@@ -189,7 +189,7 @@ describe('createUseRecord (client)', () => {
 - [ ] **Step 2: Run tests to verify they fail**
 
 ```
-pnpm -C c:/code/personal/mxdb-sync test --reporter=verbose src/client/hooks/useRecord/createUseRecord.tests.tsx
+pnpm -C c:/code/personal/mxdb test --reporter=verbose src/client/hooks/useRecord/createUseRecord.tests.tsx
 ```
 
 Expected: FAIL — `Cannot find module './createUseRecord'`
@@ -387,7 +387,7 @@ export * from './createUseRecord';
 - [ ] **Step 3: Run tests to verify they pass**
 
 ```
-pnpm -C c:/code/personal/mxdb-sync test --reporter=verbose src/client/hooks/useRecord/createUseRecord.tests.tsx
+pnpm -C c:/code/personal/mxdb test --reporter=verbose src/client/hooks/useRecord/createUseRecord.tests.tsx
 ```
 
 Expected: all 4 tests PASS.
@@ -395,8 +395,8 @@ Expected: all 4 tests PASS.
 - [ ] **Step 4: Commit**
 
 ```
-git -C c:/code/personal/mxdb-sync add src/client/hooks/useRecord/
-git -C c:/code/personal/mxdb-sync commit -m "feat(client): add createUseRecord factory hook with inlined auto-save"
+git -C c:/code/personal/mxdb add src/client/hooks/useRecord/
+git -C c:/code/personal/mxdb commit -m "feat(client): add createUseRecord factory hook with inlined auto-save"
 ```
 
 ---
@@ -502,7 +502,7 @@ describe('createUseRecords (client)', () => {
 - [ ] **Step 2: Run tests to verify they fail**
 
 ```
-pnpm -C c:/code/personal/mxdb-sync test --reporter=verbose src/client/hooks/useRecords/createUseRecords.tests.tsx
+pnpm -C c:/code/personal/mxdb test --reporter=verbose src/client/hooks/useRecords/createUseRecords.tests.tsx
 ```
 
 Expected: FAIL — `Cannot find module './createUseRecords'`
@@ -654,7 +654,7 @@ export * from './createUseRecords';
 - [ ] **Step 3: Run tests to verify they pass**
 
 ```
-pnpm -C c:/code/personal/mxdb-sync test --reporter=verbose src/client/hooks/useRecords/createUseRecords.tests.tsx
+pnpm -C c:/code/personal/mxdb test --reporter=verbose src/client/hooks/useRecords/createUseRecords.tests.tsx
 ```
 
 Expected: all 7 tests PASS.
@@ -662,8 +662,8 @@ Expected: all 7 tests PASS.
 - [ ] **Step 4: Commit**
 
 ```
-git -C c:/code/personal/mxdb-sync add src/client/hooks/useRecords/
-git -C c:/code/personal/mxdb-sync commit -m "feat(client): add createUseRecords factory hook with reactive query sub-hook"
+git -C c:/code/personal/mxdb add src/client/hooks/useRecords/
+git -C c:/code/personal/mxdb commit -m "feat(client): add createUseRecords factory hook with reactive query sub-hook"
 ```
 
 ---
@@ -696,7 +696,7 @@ export * from './useMXDBUserId';
 - [ ] **Step 2: Verify the build**
 
 ```
-pnpm -C c:/code/personal/mxdb-sync build
+pnpm -C c:/code/personal/mxdb build
 ```
 
 Expected: build succeeds, no type errors.
@@ -704,8 +704,8 @@ Expected: build succeeds, no type errors.
 - [ ] **Step 3: Commit**
 
 ```
-git -C c:/code/personal/mxdb-sync add src/client/hooks/index.ts
-git -C c:/code/personal/mxdb-sync commit -m "feat(client): export createUseRecord and createUseRecords from client hooks"
+git -C c:/code/personal/mxdb add src/client/hooks/index.ts
+git -C c:/code/personal/mxdb commit -m "feat(client): export createUseRecord and createUseRecords from client hooks"
 ```
 
 ---
@@ -833,7 +833,7 @@ describe('createUseRecord (server)', () => {
 - [ ] **Step 2: Run tests to verify they fail**
 
 ```
-pnpm -C c:/code/personal/mxdb-sync test --reporter=verbose src/server/hooks/useRecord/createUseRecord.tests.ts
+pnpm -C c:/code/personal/mxdb test --reporter=verbose src/server/hooks/useRecord/createUseRecord.tests.ts
 ```
 
 Expected: FAIL — `Cannot find module './createUseRecord'`
@@ -953,7 +953,7 @@ export * from './createUseRecord';
 - [ ] **Step 3: Run tests to verify they pass**
 
 ```
-pnpm -C c:/code/personal/mxdb-sync test --reporter=verbose src/server/hooks/useRecord/createUseRecord.tests.ts
+pnpm -C c:/code/personal/mxdb test --reporter=verbose src/server/hooks/useRecord/createUseRecord.tests.ts
 ```
 
 Expected: all 9 tests PASS.
@@ -961,8 +961,8 @@ Expected: all 9 tests PASS.
 - [ ] **Step 4: Commit**
 
 ```
-git -C c:/code/personal/mxdb-sync add src/server/hooks/useRecord/
-git -C c:/code/personal/mxdb-sync commit -m "feat(server): add createUseRecord async factory hook"
+git -C c:/code/personal/mxdb add src/server/hooks/useRecord/
+git -C c:/code/personal/mxdb commit -m "feat(server): add createUseRecord async factory hook"
 ```
 
 ---
@@ -1088,7 +1088,7 @@ describe('createUseRecords (server)', () => {
 - [ ] **Step 2: Run tests to verify they fail**
 
 ```
-pnpm -C c:/code/personal/mxdb-sync test --reporter=verbose src/server/hooks/useRecords/createUseRecords.tests.ts
+pnpm -C c:/code/personal/mxdb test --reporter=verbose src/server/hooks/useRecords/createUseRecords.tests.ts
 ```
 
 Expected: FAIL — `Cannot find module './createUseRecords'`
@@ -1220,7 +1220,7 @@ export * from './createUseRecords';
 - [ ] **Step 3: Run tests to verify they pass**
 
 ```
-pnpm -C c:/code/personal/mxdb-sync test --reporter=verbose src/server/hooks/useRecords/createUseRecords.tests.ts
+pnpm -C c:/code/personal/mxdb test --reporter=verbose src/server/hooks/useRecords/createUseRecords.tests.ts
 ```
 
 Expected: all 9 tests PASS.
@@ -1228,8 +1228,8 @@ Expected: all 9 tests PASS.
 - [ ] **Step 4: Commit**
 
 ```
-git -C c:/code/personal/mxdb-sync add src/server/hooks/useRecords/
-git -C c:/code/personal/mxdb-sync commit -m "feat(server): add createUseRecords factory hook with async query helper"
+git -C c:/code/personal/mxdb add src/server/hooks/useRecords/
+git -C c:/code/personal/mxdb commit -m "feat(server): add createUseRecords factory hook with async query helper"
 ```
 
 ---
@@ -1278,7 +1278,7 @@ export { useAuth } from './auth/useAuth';
 - [ ] **Step 3: Run the full unit test suite**
 
 ```
-pnpm -C c:/code/personal/mxdb-sync test
+pnpm -C c:/code/personal/mxdb test
 ```
 
 Expected: all tests pass with no regressions.
@@ -1286,7 +1286,7 @@ Expected: all tests pass with no regressions.
 - [ ] **Step 4: Verify build**
 
 ```
-pnpm -C c:/code/personal/mxdb-sync build
+pnpm -C c:/code/personal/mxdb build
 ```
 
 Expected: build succeeds with no type errors.
@@ -1294,6 +1294,6 @@ Expected: build succeeds with no type errors.
 - [ ] **Step 5: Commit**
 
 ```
-git -C c:/code/personal/mxdb-sync add src/server/hooks/index.ts src/server/index.ts
-git -C c:/code/personal/mxdb-sync commit -m "feat(server): export createUseRecord and createUseRecords from server package"
+git -C c:/code/personal/mxdb add src/server/hooks/index.ts src/server/index.ts
+git -C c:/code/personal/mxdb commit -m "feat(server): export createUseRecord and createUseRecords from server package"
 ```
