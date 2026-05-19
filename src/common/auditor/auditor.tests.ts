@@ -269,7 +269,7 @@ describe('auditor core API', () => {
       const t2 = decodeTime(id2);
 
       // With positive drift, generated ULIDs should appear slightly earlier
-      expect(t2).toBeLessThanOrEqual(t1);
+      expect(t2).toBeLessThan(t1);
     });
   });
 });
