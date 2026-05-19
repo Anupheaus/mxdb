@@ -15,7 +15,7 @@ One SR + SD pair per connected client on the server. One CD + CR pair per client
 
 ## Full reference
 
-**[readme.md](readme.md)** — living reference document covering every component's lifecycle, invariants, flow diagrams, race conditions, and regression test index. Read this before editing any file in this directory.
+**[sync-engine-reference.md](sync-engine-reference.md)** — living reference document covering every component's lifecycle, invariants, flow diagrams, race conditions, and regression test index. Read this before editing any file in this directory.
 
 ## Contents
 
