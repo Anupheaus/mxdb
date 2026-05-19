@@ -26,16 +26,18 @@ export async function startServer(config: ServerConfig): Promise<ServerInstance>
       await db.getMongoDb();
       logger!.info('[startServer] Mongo connected');
 
-      const { app, authColl } = await startAuthenticatedServer({ ...config, db, logger });
+      const { app, authColl, startListening, stopListening } = await startAuthenticatedServer({ ...config, db, logger });
 
       if (app == null) throw new Error('Failed to start server');
+
+      await startListening();
 
       const instance: ServerInstance = {
         app,
         getDevices: async (userId: string) => getDevices(authColl, userId),
         enableDevice: async (requestId: string) => enableDevice(authColl, requestId),
         disableDevice: async (requestId: string) => disableDevice(authColl, requestId),
-        close: async () => db.close(),
+        close: async () => { await stopListening(); await db.close(); },
       };
 
       if (config.auth.mode === 'webauthn') {

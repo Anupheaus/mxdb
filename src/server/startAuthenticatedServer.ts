@@ -116,7 +116,7 @@ export async function startAuthenticatedServer({
         });
 
   logger?.info('[startAuthenticatedServer] calling startSocketServer');
-  const { app } = await startSocketServer({
+  const { app, startListening, stopListening } = await startSocketServer({
     ...config,
     logger,
     actions: [...internalActions, ...(actions ?? [])],
@@ -171,6 +171,10 @@ export async function startAuthenticatedServer({
         if (currentAccount != null) connectedAccounts.set(client, currentAccount);
         await onConnected?.({ user: socketAuthCtx.user, account: currentAccount });
       }
+      // Signal the client that the session-cookie auth check is complete, regardless of
+      // whether the user was found. The client waits for this before triggering WebAuthn,
+      // so it can skip the ceremony when a valid cookie already authenticated the user.
+      client.emit('socketapi:authCheckComplete');
 
       const s2cLogger = (
         logger ?? Logger.getCurrent() ?? new Logger('mxdb-sync')
@@ -217,5 +221,5 @@ export async function startAuthenticatedServer({
   });
 
   logger?.info('[startAuthenticatedServer] done');
-  return { app, authColl };
+  return { app, authColl, startListening, stopListening };
 }
