@@ -32,7 +32,9 @@ SQLite worker architecture. See [db-worker/AGENTS.md](db-worker/AGENTS.md).
 React context providers composing the `MXDBSync` tree. See [providers/AGENTS.md](providers/AGENTS.md).
 
 ### Auth (`auth/`)
-- `deriveKey.ts` — WebAuthn PRF extension key derivation; used to encrypt the auth token at rest in SQLite
+- `deriveKey.ts` — derives a 256-bit AES key from a WebAuthn PRF output (`SubtleCrypto.deriveKey`); the key encrypts the local SQLite database at rest
+- `encryptionSessionCache.ts` — caches the PRF-derived encryption key in `sessionStorage` (base64-encoded) so a page refresh does not require a new WebAuthn ceremony; `loadEncryptionFromSession` restores it on re-mount; `clearEncryptionFromSession` is called on sign-out; Google OAuth uses an all-zero placeholder key (no PRF ceremony needed)
+- `MXDBSyncInner.tsx` — auth-aware inner provider component mounted by `MXDBSync`. Responsibilities: (1) branches on `authMode` (webauthn vs google-oauth), (2) wires the PRF callback from socket-api into key derivation and session cache, (3) monitors user state changes to trigger sign-in/sign-out flows, (4) broadcasts sign-out across tabs via `BroadcastChannel`, (5) implements dev-bypass (non-production only: reads `mxdb:dev-auth:{appName}` from localStorage). Only mounts `DbsProvider` once an `encryptionKey` and `dbName` are both available.
 
 ### Components (`components/UseRecord/`)
 - `UseRecordContext.ts` — React context carrying the `useRecord` instance
