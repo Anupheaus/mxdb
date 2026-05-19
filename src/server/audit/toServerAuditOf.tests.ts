@@ -4,6 +4,7 @@ import type { Record as MXDBRecord } from '@anupheaus/common';
 import {
   auditor,
   AuditEntryType,
+  OperationType,
   type AuditCreatedEntry,
   type AuditUpdateEntry,
   type AuditDeletedEntry,
@@ -108,10 +109,12 @@ describe('toServerAuditOf', () => {
       const outEntry = result.entries[0];
       expect(outEntry?.type).toBe(AuditEntryType.Created);
       expect(outEntry?.userId).toBe(ACTING_USER_ID);
+      expect((outEntry as AuditCreatedEntry<TestRecord>).record).toEqual(record);
     });
 
     it('passes an Updated entry through with userId added', () => {
-      const updatedEntry = makeUpdatedEntry([]);
+      const ops: AuditUpdateEntry['ops'] = [{ type: OperationType.Replace, path: 'name', value: 'Bob' }];
+      const updatedEntry = makeUpdatedEntry(ops);
       const createdEntry = makeCreatedEntry(makeRecord());
       const audit = { id: 'rec-1', entries: [createdEntry, updatedEntry] };
 
@@ -119,6 +122,7 @@ describe('toServerAuditOf', () => {
 
       const outUpdated = result.entries.find(e => e.type === AuditEntryType.Updated);
       expect(outUpdated?.userId).toBe(ACTING_USER_ID);
+      expect((outUpdated as AuditUpdateEntry).ops).toEqual(ops);
     });
 
     it('passes a Branched entry through with userId added and no extra fields', () => {
@@ -132,10 +136,12 @@ describe('toServerAuditOf', () => {
       expect(outBranched?.userId).toBe(ACTING_USER_ID);
       // Branched should not have a record field
       expect((outBranched as Record<string, unknown>)['record']).toBeUndefined();
+      expect('record' in (outBranched as object)).toBe(false);
     });
 
     it('passes a Restored entry through with userId added', () => {
-      const restoredEntry = makeRestoredEntry(makeRecord({ name: 'Restored' }));
+      const restoredRecord = makeRecord({ name: 'Restored' });
+      const restoredEntry = makeRestoredEntry(restoredRecord);
       const createdEntry = makeCreatedEntry(makeRecord());
       const deletedEntry = makeDeletedEntry();
       const audit = { id: 'rec-1', entries: [createdEntry, deletedEntry, restoredEntry] };
@@ -144,6 +150,7 @@ describe('toServerAuditOf', () => {
 
       const outRestored = result.entries.find(e => e.type === AuditEntryType.Restored);
       expect(outRestored?.userId).toBe(ACTING_USER_ID);
+      expect((outRestored as AuditRestoredEntry<TestRecord>).record).toEqual(restoredRecord);
     });
   });
 
@@ -286,7 +293,7 @@ describe('toServerAuditOf', () => {
 
     it('strips null entries without throwing', () => {
       const validEntry = makeCreatedEntry(makeRecord());
-      const audit = { id: 'rec-1', entries: [validEntry, null, undefined] };
+      const audit = { id: 'rec-1', entries: [validEntry, null, undefined] as unknown[] };
 
       const result = toServerAuditOf(audit, ACTING_USER_ID);
 
