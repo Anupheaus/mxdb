@@ -26,7 +26,7 @@ This page maps **what the repo provides** to **where it lives** and **how it is 
 | **Socket events (symbols)** | Typed names for server→client pushes (no request/response pair) | [`src/common/internalEvents.ts`](../../src/common/internalEvents.ts) |
 | **Subscriptions (symbols)** | Long-lived query / distinct / get-all streams | [`src/common/internalSubscriptions.ts`](../../src/common/internalSubscriptions.ts) |
 
-### Actions vs events (socket-api)
+### Actions vs events (nexus)
 
 - **`defineAction<Request, Response>`** — RPC: caller sends a request and awaits a typed response. Used for **C2S sync**, **S2C sync** (server uses **`useAction`** to call the **client** handler and await **ack** — client registers **`useServerActionHandler`**), and **get / getAll / query / distinct** actions.
 - **`defineEvent<Payload>`** — One-way push with payload only. In this repo: **legacy** `mxdbServerPush`, **`mxdbRefreshQuery`**, **`mxdbTokenRotated`**.

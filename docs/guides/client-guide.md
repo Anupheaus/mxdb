@@ -1,6 +1,6 @@
 # Client guide
 
-How to integrate **@anupheaus/mxdb-sync** in a **React** app. This matches the current **`src/client`** wiring (IndexedDB auth, SQLite in a worker, socket-api).
+How to integrate **@anupheaus/mxdb-sync** in a **React** app. This matches the current **`src/client`** wiring (IndexedDB auth, SQLite in a worker, nexus).
 
 ---
 
@@ -84,7 +84,7 @@ Local mutations go through **`DbCollection`**, which **`ClientToServerProvider`*
 **`useMXDB()`** exposes:
 
 - **`isConnected`**, **`clientId`**
-- **`onConnectionStateChanged`** (from socket-api)
+- **`onConnectionStateChanged`** (from nexus)
 - **`disconnect`**, **`connect`** (testing helpers)
 - **`isSynchronising`** — tracks sync state via **`SyncStateContext`**
 

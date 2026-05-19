@@ -1,6 +1,6 @@
 # Server guide
 
-How to run **@anupheaus/mxdb-sync** on **Node** with **MongoDB** and **socket-api**. This matches **`startServer`** → **`startAuthenticatedServer`** and **`provideDb`**.
+How to run **@anupheaus/mxdb-sync** on **Node** with **MongoDB** and **nexus**. This matches **`startServer`** → **`startAuthenticatedServer`** and **`provideDb`**.
 
 ---
 
@@ -17,7 +17,7 @@ Use the **same** `defineCollection()` definitions as the client (shared module r
 
 ## 2. `startServer(config)`
 
-**`ServerConfig`** (see [`src/server/internalModels.ts`](../../src/server/internalModels.ts)) extends socket-api’s server config. Notable fields:
+**`ServerConfig`** (see [`src/server/internalModels.ts`](../../src/server/internalModels.ts)) extends nexus’s server config. Notable fields:
 
 | Field | Purpose |
 |-------|---------|
@@ -60,7 +60,7 @@ From [`src/server/actions/internalActions.ts`](../../src/server/actions/internal
 
 ## 4. Using collections on the server
 
-Inside a **socket action or subscription** handler (async context provided by socket-api + MXDB **`useDb`**):
+Inside a **socket action or subscription** handler (async context provided by nexus + MXDB **`useDb`**):
 
 ```ts
 import { useCollection } from '@anupheaus/mxdb-sync/server';

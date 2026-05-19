@@ -768,7 +768,7 @@ When a record changes (detected via **MongoDB Change Streams** on the live colle
 
 Collection syncs MUST remain separate. If syncing a collection fails (timeout/network/server error), the client MUST retry that collection a small number of times (e.g. 3 attempts with backoff). If it still fails, the client MUST surface an error to the user, while allowing other collections to continue syncing independently.
 
-**WebSocket reconnection** (exponential backoff, max retries, etc.) is already handled by the underlying socket library (`socket-api` / WebSocket layer) used by this library. The reconnection strategy does not need to be redesigned — ensure it continues to work with the changes in this document (token rotation on reconnect per §5.1, clock drift recalculation per §5.2, and sync trigger per §5.10).
+**WebSocket reconnection** (exponential backoff, max retries, etc.) is already handled by the underlying socket library (`nexus` / WebSocket layer) used by this library. The reconnection strategy does not need to be redesigned — ensure it continues to work with the changes in this document (token rotation on reconnect per §5.1, clock drift recalculation per §5.2, and sync trigger per §5.10).
 
 ### 5.8 CRUD Blocking During Sync
 

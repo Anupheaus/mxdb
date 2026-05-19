@@ -6,7 +6,7 @@ High-level picture of **MXDB-Sync**: how the **common**, **client**, and **serve
 
 ## 1. System context
 
-The library connects **React clients** (local SQLite per user, encrypted at rest when a key is available) to a **Node server** backed by **MongoDB**. The real-time link is **Socket.IO** via **socket-api** (`defineAction` / `defineEvent`).
+The library connects **React clients** (local SQLite per user, encrypted at rest when a key is available) to a **Node server** backed by **MongoDB**. The real-time link is **Socket.IO** via **nexus** (`defineAction` / `defineEvent`).
 
 ```mermaid
 flowchart LR
