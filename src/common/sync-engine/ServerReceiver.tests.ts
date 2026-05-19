@@ -44,18 +44,29 @@ describe('ServerReceiver', () => {
     return { sd, onDispatch };
   }
 
-  it('pauses and resumes SD during process', async () => {
-    const { sd } = makeSD();
-    const pauseSpy = vi.spyOn(sd, 'pause');
-    const resumeSpy = vi.spyOn(sd, 'resume');
+  it('SD is operational after process completes (not left paused)', async () => {
+    const { sd, onDispatch } = makeSD();
 
     const onRetrieve = vi.fn().mockResolvedValue([]);
     const onUpdate = vi.fn().mockResolvedValue([]);
     const sr = new ServerReceiver(mockLogger, { onRetrieve, onUpdate, serverDispatcher: sd });
 
     await sr.process([]);
-    expect(pauseSpy).toHaveBeenCalledOnce();
-    expect(resumeSpy).toHaveBeenCalledOnce();
+
+    // After process() resolves the SD must be resumed. Push an active cursor and
+    // verify that onDispatch fires — proving the SD is not stuck in a paused state.
+    const record = makeRecord('probe-1', 'Probe');
+    const probeAudit = auditor.createAuditFrom(record);
+    const lastAuditEntryId = probeAudit.entries[0]!.id;
+    sd.push([{
+      collectionName: 'items',
+      records: [{ record, lastAuditEntryId, hash: 'mock-hash-probe-1' }],
+    }]);
+
+    // Allow the microtask queue to drain so the async dispatch can run.
+    await new Promise(r => setTimeout(r, 0));
+
+    expect(onDispatch).toHaveBeenCalled();
   });
 
   it('resumes SD even if onUpdate throws', async () => {
@@ -251,5 +262,67 @@ describe('ServerReceiver', () => {
 
     await sr.process(request);
     expect(pushSpy).not.toHaveBeenCalled();
+  });
+
+  it('server-deleted record: client update is persisted as tombstone, delete cursor pushed', async () => {
+    const { sd, onDispatch } = makeSD();
+    const pushSpy = vi.spyOn(sd, 'push');
+
+    // Build server state: Created then Deleted — the record is tombstoned on the server.
+    const record = makeRecord('r1', 'Alice');
+    const serverAudit = auditor.createAuditFrom(record);
+    const deletedAudit = auditor.delete(serverAudit);
+
+    const serverStates: MXDBRecordStates = [{
+      collectionName: 'items',
+      // MXDBDeletedRecordState: recordId + audit, no record field
+      records: [{ recordId: 'r1', audit: deletedAudit.entries }],
+    }];
+
+    const onRetrieve = vi.fn().mockResolvedValue(serverStates);
+    // onUpdate must ACK r1 so the SR treats the persist as successful
+    const onUpdate = vi.fn().mockResolvedValue([{
+      collectionName: 'items',
+      successfulRecordIds: ['r1'],
+    }]);
+    const sr = new ServerReceiver(mockLogger, { onRetrieve, onUpdate, serverDispatcher: sd });
+
+    // Client doesn't know about the deletion — it sends an Updated entry and includes a hash.
+    const clientAudit = auditor.updateAuditWith({ id: 'r1', name: 'Bob' }, serverAudit);
+    const strippedEntries = clientAudit.entries.filter(e => e.type !== AuditEntryType.Branched);
+
+    const request: ClientDispatcherRequest = [{
+      collectionName: 'items',
+      records: [{ id: 'r1', hash: 'mock-hash-r1', entries: strippedEntries }],
+    }];
+
+    const result = await sr.process(request);
+
+    // onUpdate must be called — the merged audit (server deleted + client updated) is persisted.
+    expect(onUpdate).toHaveBeenCalledOnce();
+
+    // The state passed to onUpdate must be a tombstone (MXDBDeletedRecordState: no record field).
+    const updateArg = onUpdate.mock.calls[0][0] as MXDBRecordStates;
+    const persistedState = updateArg[0]?.records[0];
+    expect(persistedState).toBeDefined();
+    expect('record' in persistedState!).toBe(false);
+    expect((persistedState as { recordId: string }).recordId).toBe('r1');
+
+    // r1 must be ACKed to the client so it can collapse its local audit.
+    const successIds = result.find(r => r.collectionName === 'items')?.successfulRecordIds ?? [];
+    expect(successIds).toContain('r1');
+
+    // The SD must receive a delete cursor (recordId + lastAuditEntryId, no record field)
+    // so the client learns the record is tombstoned.
+    expect(pushSpy).toHaveBeenCalledOnce();
+    const pushPayload = pushSpy.mock.calls[0][0] as MXDBRecordStates;
+    const pushedCursor = pushPayload[0]?.records[0];
+    expect(pushedCursor).toBeDefined();
+    expect('record' in pushedCursor!).toBe(false);
+    expect((pushedCursor as { recordId: string }).recordId).toBe('r1');
+
+    // Confirm the SD actually dispatches — not stuck paused.
+    await new Promise(r => setTimeout(r, 0));
+    expect(onDispatch).toHaveBeenCalled();
   });
 });
