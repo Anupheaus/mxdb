@@ -47,7 +47,7 @@ jobs:
           install-args: '--no-frozen-lockfile'
 
       - name: Type check
-        run: pnpm run typecheck
+        run: pnpm exec tsc --noEmit --project tsconfig.ci.json
 
       - name: Lint
         run: pnpm run lint
