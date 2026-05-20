@@ -143,7 +143,8 @@ export async function startAuthenticatedServer({
 
     onRegisterRoutes: async router => {
       if (process.env.NODE_ENV !== 'production') {
-        registerDevAuthRoute(router, config.name, authColl, auth.mode);
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        registerDevAuthRoute(router as any, config.name, authColl, auth.mode);
       }
       await config.onRegisterRoutes?.(router);
     },

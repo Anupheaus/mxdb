@@ -18,7 +18,8 @@ export function registerDevAuthRoute(
   mode: ServerAuthConfig['mode'],
 ): void {
   router.post(`/${name}/dev/signin`, async ctx => {
-    const body = ctx.request.body as Record<string, unknown>;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const body = (ctx.request as any).body as Record<string, unknown>;
     const userId = body?.userId;
     if (typeof userId !== 'string' || userId.length === 0) {
       ctx.status = 400;
