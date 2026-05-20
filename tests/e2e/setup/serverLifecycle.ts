@@ -1,10 +1,18 @@
 import { fork, type ChildProcess } from 'child_process';
+import { fileURLToPath } from 'url';
 import { MongoMemoryReplSet } from 'mongodb-memory-server';
 import * as os from 'os';
 import * as path from 'path';
 import * as fs from 'fs';
 import type { MXDBCollection } from '../../../src/common';
 import { E2E_MONGO_DB_NAME, E2E_SERVER_PROCESS_ENV } from './mongoConstants';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const SERVER_PROCESS_PATH = path.resolve(__dirname, './serverProcess.ts');
+// tsconfig without source-level path aliases so tsx resolves @anupheaus/* to node_modules
+// dists instead of the local source tree (which has a CJS→ESM cycle on Node 22).
+const E2E_SERVER_TSCONFIG_PATH = path.resolve(__dirname, '../../../tsconfig.e2e-server.json');
 /** "Power outage" delay between killing old server/mongod and booting their replacements. */
 const SERVER_RESTART_WAIT_MS = 1000;
 
@@ -146,13 +154,15 @@ export async function startServerInstance(
   if (serverChild != null) throw new Error('Server child already running');
 
   lifecycleLog('startServerInstance.spawn', { requestedPort: port });
-  const child = fork(require.resolve('./serverProcess.cjs'), {
+  const child = fork(SERVER_PROCESS_PATH, {
+    execArgv: ['--import', 'tsx/esm', '--no-warnings'],
     stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
     env: {
       ...process.env,
       [E2E_SERVER_PROCESS_ENV.PORT]: String(port),
       [E2E_SERVER_PROCESS_ENV.MONGO_URI]: mongoUri,
       [E2E_SERVER_PROCESS_ENV.MONGO_DB_NAME]: E2E_MONGO_DB_NAME,
+      TSX_TSCONFIG_PATH: E2E_SERVER_TSCONFIG_PATH,
     },
   });
   serverChild = child;

@@ -1,26 +1,29 @@
 // Child process entrypoint: starts the MXDB sync server over HTTPS on a given port.
 // Runs in its own process so we can "restart" by killing and respawning without
 // hitting socket-api global handler registration conflicts.
+//
+// Loaded via `node --import tsx/esm` so plain TypeScript import syntax works in
+// an ESM context (mxdb package has "type":"module").
 
-require('ts-node/register/transpile-only');
-require('tsconfig-paths/register');
-
-const https = require('https');
-const fs = require('fs');
-const path = require('path');
-
-const { Logger } = require('@anupheaus/common');
-const { startServer } = require('../../../src/server');
-const { e2eTestCollection } = require('./types');
-const {
+import https from 'https';
+import fs from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
+import { Logger } from '@anupheaus/common';
+import { startServer } from '../../../src/server/index.js';
+import { e2eTestCollection } from './types.js';
+import {
   E2E_MONGO_DB_NAME,
   E2E_SERVER_PROCESS_ENV,
   E2E_SOCKET_API_NAME,
-} = require('./mongoConstants');
+} from './mongoConstants.js';
 
-const PORT = Number(process.env[E2E_SERVER_PROCESS_ENV.PORT] || '0');
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+const PORT = Number(process.env[E2E_SERVER_PROCESS_ENV.PORT] ?? '0');
 const MONGO_URI = process.env[E2E_SERVER_PROCESS_ENV.MONGO_URI];
-const MONGO_DB_NAME = process.env[E2E_SERVER_PROCESS_ENV.MONGO_DB_NAME] || E2E_MONGO_DB_NAME;
+const MONGO_DB_NAME = process.env[E2E_SERVER_PROCESS_ENV.MONGO_DB_NAME] ?? E2E_MONGO_DB_NAME;
 
 if (!MONGO_URI) {
   // eslint-disable-next-line no-console
@@ -41,11 +44,10 @@ Logger.registerListener({
   onTrigger(entries) {
     if (typeof process.send !== 'function') return;
     for (const entry of entries) {
-      const { getLevelAsString } = require('@anupheaus/common').Logger;
       process.send({
         type: 'server-log',
         logger: entry.names.join(' > '),
-        level: getLevelAsString(entry.level),
+        level: Logger.getLevelAsString(entry.level),
         tsNano: process.hrtime.bigint().toString(),
         tsIso: entry.timestamp.toISO(),
         message: entry.message,
@@ -58,7 +60,7 @@ Logger.registerListener({
 const logger = new Logger('mxdb-e2e-server');
 
 const bootStartMs = Date.now();
-function bootLog(phase, detail) {
+function bootLog(phase: string, detail?: Record<string, unknown>) {
   const elapsedMs = Date.now() - bootStartMs;
   logger.info(`[boot] ${phase} (+${elapsedMs}ms)`, detail ?? {});
 }
@@ -83,20 +85,20 @@ async function main() {
     collections: [e2eTestCollection],
     server,
     mongoDbName: MONGO_DB_NAME,
-    mongoDbUrl: MONGO_URI,
+    mongoDbUrl: MONGO_URI!,
     auth: { mode: 'webauthn' },
   });
   bootLog('startServer.returned');
 
   bootLog('server.listen.begin', { port: PORT });
-  await new Promise((resolve, reject) => {
+  await new Promise<void>((resolve, reject) => {
     server.listen(PORT, () => resolve());
     server.once('error', reject);
   });
   bootLog('server.listen.done');
 
   const addr = server.address();
-  const actualPort = addr && typeof addr === 'object' ? addr.port : PORT;
+  const actualPort = addr != null && typeof addr === 'object' ? addr.port : PORT;
   bootLog('ready.sending', { actualPort });
   if (process.send) process.send({ type: 'ready', port: actualPort });
   bootLog('ready.sent');
@@ -108,10 +110,10 @@ async function main() {
     bootLog('shutdown.signal');
     // Force-close socket-io/HTTP sockets so server.close() doesn't hang on long-lived connections.
     try {
-      const io = server.sockets || null;
+      const io = (server as any).sockets ?? null;
       if (io && typeof io.close === 'function') io.close();
     } catch { /* ignore */ }
-    const httpClosed = new Promise(resolve => server.close(() => resolve()));
+    const httpClosed = new Promise(resolve => server.close(() => resolve(undefined)));
     // Cleanly close the MongoClient FIRST so in-flight transactions abort on the Mongo side.
     // Without this, Mongo leaves row locks held until transactionLifetimeLimitSeconds (60s),
     // causing the next-restarted server to stall for ~60s on every affected document.
@@ -120,7 +122,7 @@ async function main() {
       await serverInstance.close();
       bootLog('shutdown.db.close.done');
     } catch (err) {
-      bootLog('shutdown.db.close.error', { error: String((err && err.message) || err) });
+      bootLog('shutdown.db.close.error', { error: String((err as any)?.message ?? err) });
     }
     // Give HTTP a brief grace period, then exit.
     await Promise.race([httpClosed, new Promise(r => setTimeout(r, 2000))]);
@@ -131,25 +133,25 @@ async function main() {
   process.on('SIGINT', shutdown);
   // IPC-based shutdown — Windows cannot invoke signal handlers via proc.kill('SIGTERM'),
   // so the test harness sends a { type: 'shutdown' } IPC message which we handle here.
-  process.on('message', msg => {
-    if (msg && msg.type === 'shutdown') shutdown();
+  process.on('message', (msg: any) => {
+    if (msg && msg.type === 'shutdown') void shutdown();
   });
 }
 
 main().catch(err => {
   // eslint-disable-next-line no-console
   console.error(err);
-  bootLog('main.fatal', { error: String((err && err.message) || err), stack: err && err.stack });
+  bootLog('main.fatal', { error: String((err as any)?.message ?? err), stack: (err as any)?.stack });
   process.exit(1);
 });
 
 process.on('uncaughtException', err => {
-  bootLog('uncaughtException', { error: String((err && err.message) || err), stack: err && err.stack });
+  bootLog('uncaughtException', { error: String(err?.message ?? err), stack: err?.stack });
   // eslint-disable-next-line no-console
   console.error('[uncaughtException]', err);
 });
 process.on('unhandledRejection', err => {
-  bootLog('unhandledRejection', { error: String((err && err.message) || err), stack: err && err.stack });
+  bootLog('unhandledRejection', { error: String((err as any)?.message ?? err), stack: (err as any)?.stack });
   // eslint-disable-next-line no-console
   console.error('[unhandledRejection]', err);
 });
