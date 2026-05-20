@@ -1,7 +1,7 @@
 import { useLayoutEffect, useMemo } from 'react';
 import type { Record } from '@anupheaus/common';
 import { useSyncState } from '@anupheaus/react-ui';
-import { useSocketAPI } from '@anupheaus/nexus/client';
+import { useNexus } from '@anupheaus/nexus/client';
 import type { DbCollection } from '../../providers';
 import type { Get } from './createGet';
 import type { MXDBError } from '../../../common';
@@ -19,7 +19,7 @@ export function createUseGet<RecordType extends Record>(collection: DbCollection
     // get() call that runs while the socket is still handshaking silently returns
     // no record (createGet falls through its `getIsConnected()` gate) and useGet
     // parks at { record: undefined, isLoading: false } forever.
-    const { isConnected } = useSocketAPI();
+    const { isConnected } = useNexus();
 
     useMemo(() => {
       const state = getState();

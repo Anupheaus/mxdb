@@ -1,7 +1,7 @@
 import { createComponent, useLogger } from '@anupheaus/react-ui';
 import type { ReactNode, MutableRefObject } from 'react';
 import { useState, useEffect, useRef } from 'react';
-import { useAuthentication } from '@anupheaus/socket-api/client';
+import { useAuthentication } from '@anupheaus/nexus/client';
 import { DbsProvider } from '../providers/dbs';
 import { ClientToServerSyncProvider, ClientToServerProvider } from '../providers/client-to-server';
 import { ServerToClientProvider } from '../providers/server-to-client';

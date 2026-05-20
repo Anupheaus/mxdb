@@ -1,5 +1,5 @@
 import { createComponent, useLogger } from '@anupheaus/react-ui';
-import { useServerActionHandler } from '@anupheaus/socket-api/client';
+import { useServerActionHandler } from '@anupheaus/nexus/client';
 import { mxdbServerToClientSyncAction } from '../../../common';
 import { SyncPausedError, type MXDBSyncEngineResponse } from '../../../common/sync-engine';
 import { useClientReceiver } from './ClientReceiverContext';

@@ -1,7 +1,7 @@
 import { is, type Record } from '@anupheaus/common';
 import { mxdbGetAction } from '../../../common';
 import type { DbCollection } from '../../providers';
-import { useAction, useSocketAPI } from '@anupheaus/nexus/client';
+import { useAction, useNexus } from '@anupheaus/nexus/client';
 
 import { ACTION_TIMEOUT_MS, withTimeout } from '../../utils/actionTimeout';
 
@@ -10,7 +10,7 @@ interface GetProps {
 }
 
 export function createGet<RecordType extends Record>(dbCollection: DbCollection<RecordType>) {
-  const { getIsConnected } = useSocketAPI();
+  const { getIsConnected } = useNexus();
   const { mxdbGetAction: getRecordFromServer } = useAction(mxdbGetAction);
 
   async function get(id: string, props?: GetProps): Promise<RecordType | undefined>;

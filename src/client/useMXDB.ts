@@ -1,11 +1,11 @@
 import { useContext, useMemo, useRef, useState } from 'react';
 import { is } from '@anupheaus/common';
-import { useSocketAPI } from '@anupheaus/nexus/client';
+import { useNexus } from '@anupheaus/nexus/client';
 import { useSyncState } from './providers/client-to-server/SyncStateContext';
 import { DbsContext } from './providers/dbs/DbContext';
 
 export function useMXDB() {
-  const { getIsConnected, onConnectionStateChanged, getSocket, disconnect, connect } = useSocketAPI();
+  const { getIsConnected, onConnectionStateChanged, getSocket, disconnect, connect } = useNexus();
   const [isConnected, setIsConnected] = useState(useMemo(() => getIsConnected(), []));
   const { isSyncing, onSyncStateChanged } = useSyncState();
   const updateWhenChangedRef = useRef(false);

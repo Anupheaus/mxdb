@@ -1,7 +1,7 @@
 import { createComponent, useLogger, useOnUnmount } from '@anupheaus/react-ui';
 import type { ReactNode } from 'react';
 import { useEffect, useMemo, useState } from 'react';
-import { useAction, useSocketAPI } from '@anupheaus/socket-api/client';
+import { useAction, useNexus } from '@anupheaus/nexus/client';
 import { mxdbClientToServerSyncAction } from '../../../common';
 import type { MXDBCollection, MXDBError } from '../../../common';
 import type { Record as MXDBRecord } from '@anupheaus/common';
@@ -40,7 +40,7 @@ export const ClientToServerSyncProvider = createComponent('ClientToServerSyncPro
   children,
 }: Props) => {
   const { db } = useDb();
-  const { onConnectionStateChanged, getIsConnected } = useSocketAPI();
+  const { onConnectionStateChanged, getIsConnected } = useNexus();
   const { mxdbClientToServerSyncAction: sendBatch } = useAction(mxdbClientToServerSyncAction);
   const logger = useLogger('sync-engine');
 

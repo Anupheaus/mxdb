@@ -33,8 +33,8 @@ import { createUseQuery } from './createUseQuery';
 import { createUseDistinct } from './createUseDistinct';
 import { createUseGet } from './createUseGet';
 
-vi.mock('@anupheaus/socket-api/client', () => ({
-  useSocketAPI: () => ({ getIsConnected: () => true }),
+vi.mock('@anupheaus/nexus/client', () => ({
+  useNexus: () => ({ getIsConnected: () => true }),
   useSubscription: () => {
     // Simulate server acknowledging the subscription by calling the registered
     // onCallback handler after subscribe resolves. This mimics real socket-api

@@ -3,8 +3,8 @@ import type { ReactNode } from 'react';
 import { useEffect, useMemo, useRef } from 'react';
 import type { Logger } from '@anupheaus/common';
 import { LoggerProvider } from '@anupheaus/react-ui';
-import type { SocketAPIUser, TokenStorage } from '@anupheaus/socket-api/client';
-import { SocketAPI } from '@anupheaus/socket-api/client';
+import type { NexusUser, TokenStorage } from '@anupheaus/nexus/client';
+import { Nexus } from '@anupheaus/nexus/client';
 import { ConflictResolutionContext } from './providers';
 import { MXDBSyncInner } from './auth/MXDBSyncInner';
 import { setupBrowserTools } from './utils/setupBrowserTools';
@@ -62,12 +62,12 @@ export const MXDBSync = createComponent('MXDBSync', ({
     (userId: string, prfOutput: ArrayBuffer, accountId?: string) =>
       onPrfRef.current?.(userId, prfOutput, accountId) ?? undefined,
   );
-  const handleSignedIn = useBound((user: SocketAPIUser) => onSignedIn?.(user as MXDBUser));
+  const handleSignedIn = useBound((user: NexusUser) => onSignedIn?.(user as MXDBUser));
 
   return (
     <LoggerProvider logger={logger} loggerName="MXDB">
       <ConflictResolutionContext.Provider value={conflictResolutionContext}>
-        <SocketAPI
+        <Nexus
           name={name}
           host={host}
           autoConnect={autoConnect}
@@ -88,7 +88,7 @@ export const MXDBSync = createComponent('MXDBSync', ({
           >
             {children}
           </MXDBSyncInner>
-        </SocketAPI>
+        </Nexus>
       </ConflictResolutionContext.Provider>
     </LoggerProvider>
   );

@@ -1,8 +1,8 @@
-import type { SocketAPIAccount, SocketAPIUser } from '@anupheaus/nexus/common';
+import type { NexusAccount, NexusUser } from '@anupheaus/nexus/common';
 
-export interface MXDBUser extends SocketAPIUser { }
+export interface MXDBUser extends NexusUser { }
 
-export interface MXDBAccount extends SocketAPIAccount { }
+export interface MXDBAccount extends NexusAccount { }
 
 /**
  * Base shape for an `mxdb_authentication` document — matches `SocketAPIAuthRecord`.

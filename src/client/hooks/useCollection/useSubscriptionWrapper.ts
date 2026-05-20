@@ -1,8 +1,8 @@
 import { is, type AnyObject, type Logger, type PromiseMaybe, type Record } from '@anupheaus/common';
 import type { DbCollection } from '../../providers';
-import { useAction, useSocketAPI } from '@anupheaus/nexus/client';
+import { useAction, useNexus } from '@anupheaus/nexus/client';
 import type { UseSubscription } from './createUseSubscription';
-import type { SocketAPIAction, SocketAPISubscription } from '@anupheaus/nexus/common';
+import type { NexusAction, NexusSubscription } from '@anupheaus/nexus/common';
 import { useLayoutEffect, useRef } from 'react';
 import { DateTime } from 'luxon';
 import type { AddDisableTo } from '../../../common/models';
@@ -13,8 +13,8 @@ const RequestCancelled = Symbol('RequestCancelled');
 interface Props<RecordType extends Record, Request extends AnyObject, Response extends AnyObject, RemoteRequest extends AnyObject, RemoteResponse> {
   collection: DbCollection<RecordType>;
   logger: Logger;
-  subscription: SocketAPISubscription<string, RemoteRequest, RemoteResponse>;
-  action: SocketAPIAction<string, RemoteRequest, RemoteResponse>;
+  subscription: NexusSubscription<string, RemoteRequest, RemoteResponse>;
+  action: NexusAction<string, RemoteRequest, RemoteResponse>;
   slowThreshold?: number;
   useSubscription: UseSubscription;
   onDefaultResponse(): Response;
@@ -39,7 +39,7 @@ export function useSubscriptionWrapper<RecordType extends Record, Request extend
   onRequestTransform,
   onExecute,
 }: Props<RecordType, Request, Response, RemoteRequest, RemoteResponse>) {
-  const { getIsConnected } = useSocketAPI();
+  const { getIsConnected } = useNexus();
   const { execute: remoteInvoke } = useSubscription(subscription);
   const actionResult = useAction(action);
   const lastRequestIdRef = useRef<string>();
