@@ -25,7 +25,7 @@ jobs:
           pnpm-version: ${{ env.PNPM_VERSION }}
           node-version: ${{ env.NODE_VERSION }}
           node-auth-token: ${{ secrets.GITHUB_TOKEN }}
-          patch-package-json: 'true'
+          workspace-repos: 'Anupheaus/common Anupheaus/react-ui Anupheaus/nexus'
           install-args: '--no-frozen-lockfile'
 
   # ── VALIDATE ───────────────────────────────────────────────────────────────
@@ -43,7 +43,7 @@ jobs:
           pnpm-version: ${{ env.PNPM_VERSION }}
           node-version: ${{ env.NODE_VERSION }}
           node-auth-token: ${{ secrets.GITHUB_TOKEN }}
-          patch-package-json: 'true'
+          workspace-repos: 'Anupheaus/common Anupheaus/react-ui Anupheaus/nexus'
           install-args: '--no-frozen-lockfile'
 
       - name: Type check
@@ -87,7 +87,7 @@ jobs:
           pnpm-version: ${{ env.PNPM_VERSION }}
           node-version: ${{ env.NODE_VERSION }}
           node-auth-token: ${{ secrets.GITHUB_TOKEN }}
-          patch-package-json: 'true'
+          workspace-repos: 'Anupheaus/common Anupheaus/react-ui Anupheaus/nexus'
           install-args: '--no-frozen-lockfile'
 
       - name: Run unit tests with coverage
@@ -115,7 +115,7 @@ jobs:
           pnpm-version: ${{ env.PNPM_VERSION }}
           node-version: ${{ env.NODE_VERSION }}
           node-auth-token: ${{ secrets.GITHUB_TOKEN }}
-          patch-package-json: 'true'
+          workspace-repos: 'Anupheaus/common Anupheaus/react-ui Anupheaus/nexus'
           install-args: '--no-frozen-lockfile'
 
       - name: Run CRUD E2E tests
@@ -137,7 +137,7 @@ jobs:
           pnpm-version: ${{ env.PNPM_VERSION }}
           node-version: ${{ env.NODE_VERSION }}
           node-auth-token: ${{ secrets.GITHUB_TOKEN }}
-          patch-package-json: 'true'
+          workspace-repos: 'Anupheaus/common Anupheaus/react-ui Anupheaus/nexus'
           install-args: '--no-frozen-lockfile'
 
       - name: Run performance E2E tests
@@ -159,7 +159,7 @@ jobs:
           pnpm-version: ${{ env.PNPM_VERSION }}
           node-version: ${{ env.NODE_VERSION }}
           node-auth-token: ${{ secrets.GITHUB_TOKEN }}
-          patch-package-json: 'true'
+          workspace-repos: 'Anupheaus/common Anupheaus/react-ui Anupheaus/nexus'
           install-args: '--no-frozen-lockfile'
 
       - name: Run stress tests
@@ -181,7 +181,7 @@ jobs:
           pnpm-version: ${{ env.PNPM_VERSION }}
           node-version: ${{ env.NODE_VERSION }}
           node-auth-token: ${{ secrets.GITHUB_TOKEN }}
-          patch-package-json: 'true'
+          workspace-repos: 'Anupheaus/common Anupheaus/react-ui Anupheaus/nexus'
           fetch-depth: '0'
           install-args: '--no-frozen-lockfile'
 
