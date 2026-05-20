@@ -7,7 +7,7 @@ settings:
 overrides:
   '@anupheaus/common': file:../common
   '@anupheaus/react-ui': file:../react-ui
-  '@anupheaus/socket-api': file:../socket-api
+  '@anupheaus/nexus': file:../nexus
 
 importers:
 
@@ -16,12 +16,12 @@ importers:
       '@anupheaus/common':
         specifier: file:../common
         version: file:../common
+      '@anupheaus/nexus':
+        specifier: file:../nexus
+        version: file:../nexus(@mui/system@5.18.0(@emotion/react@11.14.0(@types/react@18.3.28)(react@18.3.1))(@emotion/styled@11.14.1(@emotion/react@11.14.0(@types/react@18.3.28)(react@18.3.1))(@types/react@18.3.28)(react@18.3.1))(@types/react@18.3.28)(react@18.3.1))(@types/react@18.3.28)(dayjs@1.11.19)(socket.io-client@4.8.3)(socket.io@4.8.3)
       '@anupheaus/react-ui':
         specifier: file:../react-ui
         version: file:../react-ui(@mui/system@5.18.0(@emotion/react@11.14.0(@types/react@18.3.28)(react@18.3.1))(@emotion/styled@11.14.1(@emotion/react@11.14.0(@types/react@18.3.28)(react@18.3.1))(@types/react@18.3.28)(react@18.3.1))(@types/react@18.3.28)(react@18.3.1))(@types/react@18.3.28)(dayjs@1.11.19)(react-dom@18.3.1(react@18.3.1))(react@18.3.1)
-      '@anupheaus/socket-api':
-        specifier: file:../socket-api
-        version: file:../socket-api(@mui/system@5.18.0(@emotion/react@11.14.0(@types/react@18.3.28)(react@18.3.1))(@emotion/styled@11.14.1(@emotion/react@11.14.0(@types/react@18.3.28)(react@18.3.1))(@types/react@18.3.28)(react@18.3.1))(@types/react@18.3.28)(react@18.3.1))(@types/react@18.3.28)(dayjs@1.11.19)(socket.io-client@4.8.3)(socket.io@4.8.3)
       '@faker-js/faker':
         specifier: ^8.4.1
         version: 8.4.1
@@ -189,19 +189,26 @@ packages:
   '@anupheaus/common@file:../common':
     resolution: {directory: ../common, type: directory}
 
+  '@anupheaus/nexus@file:../nexus':
+    resolution: {directory: ../nexus, type: directory}
+    engines: {node: '>=20'}
+    peerDependencies:
+      '@aparajita/capacitor-biometric-auth': ^10.0.0
+      '@capacitor/preferences': ^6.0.0 || ^7.0.0
+      socket.io: ^4.6.0 || ^4.7.0 || ^4.8.0
+      socket.io-client: ^4.6.0 || ^4.7.0 || ^4.8.0
+    peerDependenciesMeta:
+      '@aparajita/capacitor-biometric-auth':
+        optional: true
+      '@capacitor/preferences':
+        optional: true
+
   '@anupheaus/react-ui@file:../react-ui':
     resolution: {directory: ../react-ui, type: directory}
     engines: {node: '>=20.19.0'}
     peerDependencies:
       react: ^18.2.0
       react-dom: ^18.2.0
-
-  '@anupheaus/socket-api@file:../socket-api':
-    resolution: {directory: ../socket-api, type: directory}
-    engines: {node: '>=20'}
-    peerDependencies:
-      socket.io: ^4.6.0 || ^4.7.0 || ^4.8.0
-      socket.io-client: ^4.6.0 || ^4.7.0 || ^4.8.0
 
   '@asamuzakjp/css-color@3.2.0':
     resolution: {integrity: sha512-K1A6z8tS3XsmCMM86xoWdn7Fkdn9m6RSVtocUrJYIwZnFVkng/PvkEoWtOWmP+Scc6saYWHWZYbndEEXxl24jw==}
@@ -1717,6 +1724,9 @@ packages:
   ccount@2.0.1:
     resolution: {integrity: sha512-eyrF0jiFpY+3drT6383f1qhkbGsLSifNAjA61IUjZjmLCWjItY6LB9ft9YhoDgwfmclB2zhu51Lc7+95b8NRAg==}
 
+  cert-store@1.1.0:
+    resolution: {integrity: sha512-OFuiuxebSQLGUgBVDZ4jfVaJBCO3EKRkBFovcyl4n6GDZ/d73neJ6xjYyLcyKS9uhr2ZnvkGZU9z+lD/2HwM8Q==}
+
   chai@4.5.0:
     resolution: {integrity: sha512-RITGBfijLkBddZvnn8jdqoTypxvqbOLYQkGGxXzeFjVHvudaPw0HNFD9x928/eUwYWd2dPCugVqspGALTZZQKw==}
     engines: {node: '>=4'}
@@ -2190,8 +2200,9 @@ packages:
   fast-deep-equal@3.1.3:
     resolution: {integrity: sha512-f3qQ9oQy9j2AhBe/H9VC91wLmKBCCU/gDOnKNAYG5hswO7BLKj09Hc5HYNz9cGI++xlpDCIgDaitVs03ATR84Q==}
 
-  fast-equals@4.0.3:
-    resolution: {integrity: sha512-G3BSX9cfKttjr+2o1O22tYMLq0DPluZnYtq1rXumE1SpL/F/SLIfHx08WYQoWSIpeMYf8sRbJ8++71+v6Pnxfg==}
+  fast-equals@6.0.0:
+    resolution: {integrity: sha512-PFhhIGgdM79r5Uztdj9Zb6Tt1zKafqVfdMGwVca1z5z6fbX7DmsySSuJd8HiP6I1j505DCS83cLxo5rmSNeVEA==}
+    engines: {node: '>=6.0.0'}
 
   fast-fifo@1.3.2:
     resolution: {integrity: sha512-/d9sfos4yxzpwkDkuN7k2SqFKtYNmCTzgfEpz82x34IM9/zc8KGxQoXg1liNC/izpRM/MBdt44Nmx41ZWqk+FQ==}
@@ -3193,6 +3204,9 @@ packages:
     resolution: {integrity: sha512-lDcBsjBSMlj3LXH2v/FW3txlh2pYTjmbOXPYJD93HI5EwuLzI11tdHSIpUMmfq/IOsldj4Ps8M8flhm+pCK4Ew==}
     engines: {node: '>=12.22.0'}
 
+  node-forge@0.7.6:
+    resolution: {integrity: sha512-sol30LUpz1jQFBjOKwbjxijiE3b6pjd74YwfD0fJOKPjF+fONKb2Yg8rYgS6+bK6VDl+/wfr4IYpC7jDzLUIfw==}
+
   node-releases@2.0.27:
     resolution: {integrity: sha512-nmh3lCkYZ3grZvqcCH+fjmQ7X+H0OeZgP40OierEaAptX4XofMh5kwNbWh7lBduUzCcV/8kZ+NDLCwm2iorIlA==}
 
@@ -3718,6 +3732,9 @@ packages:
     resolution: {integrity: sha512-eflK8wEtyOE6+hsaRVPxvUKYCpRgzLqDTb8krvAsRIwOGlHoSgYLgBXoubGgLd2fT41/OUYdb48v4k4WWHQurA==}
     engines: {node: '>= 10.13.0'}
 
+  selfsigned-ca@2.0.1:
+    resolution: {integrity: sha512-NYGB/kAAR90+bW11e0Cjf8olGuVN8LgHRFHt+KkP7+iksBVOOBk6P78hJLN2rGWX+mytmzwyZre82l+7cTnk2A==}
+
   semver@6.3.1:
     resolution: {integrity: sha512-BR7VvDCVHO+q2xBEWskxS6DJE1qRnb7DxzUrogb71CWoSficBxYsiAGd+Kl0mmq/MprG9yArRkyrQxTO6XjMzA==}
     hasBin: true
@@ -4220,12 +4237,13 @@ packages:
   util@0.12.5:
     resolution: {integrity: sha512-kZf/K6hEIrWHI6XqOFUiiMa+79wE/D8Q+NCNAWclkyg3b4d2k7s0QGepNjiABc+aR3N1PAyHL7p6UcLY6LmrnA==}
 
-  uuid@8.3.2:
-    resolution: {integrity: sha512-+NYs2QeMWy+GWFOEm9xnn6HCDp0l7QBD7ml8zLUmJ+93Q5NF0NocErnwkTkXVFNiX3/fpC6afS8Dhb/gz7R7eg==}
+  uuid@14.0.0:
+    resolution: {integrity: sha512-Qo+uWgilfSmAhXCMav1uYFynlQO7fMFiMVZsQqZRMIXp0O7rR7qjkj+cPvBHLgBqi960QCoo/PH2/6ZtVqKvrg==}
     hasBin: true
 
-  uuid@9.0.1:
-    resolution: {integrity: sha512-b+1eJOlsR9K8HJpow9Ok3fiWOWSIcIzXodvv0rQjVoOVNpWMpxf1wZNpt4y9h10odCNrqnYp1OBzRktckBe3sA==}
+  uuid@8.3.2:
+    resolution: {integrity: sha512-+NYs2QeMWy+GWFOEm9xnn6HCDp0l7QBD7ml8zLUmJ+93Q5NF0NocErnwkTkXVFNiX3/fpC6afS8Dhb/gz7R7eg==}
+    deprecated: uuid@10 and below is no longer supported.  For ESM codebases, update to uuid@latest.  For CommonJS codebases, use uuid@11 (but be aware this version will likely be deprecated in 2028).
     hasBin: true
 
   v8-compile-cache-lib@3.0.1:
@@ -4488,7 +4506,7 @@ snapshots:
 
   '@anupheaus/common@file:../common':
     dependencies:
-      fast-equals: 4.0.3
+      fast-equals: 6.0.0
       inflection: 3.0.2
       just-diff: 6.0.2
       just-diff-apply: 5.5.0
@@ -4496,7 +4514,38 @@ snapshots:
       nanoid: 5.1.11
       numeral: 2.0.6
       object-hash: 3.0.0
-      uuid: 9.0.1
+      uuid: 14.0.0
+
+  '@anupheaus/nexus@file:../nexus(@mui/system@5.18.0(@emotion/react@11.14.0(@types/react@18.3.28)(react@18.3.1))(@emotion/styled@11.14.1(@emotion/react@11.14.0(@types/react@18.3.28)(react@18.3.1))(@types/react@18.3.28)(react@18.3.1))(@types/react@18.3.28)(react@18.3.1))(@types/react@18.3.28)(dayjs@1.11.19)(socket.io-client@4.8.3)(socket.io@4.8.3)':
+    dependencies:
+      '@anupheaus/common': file:../common
+      '@anupheaus/react-ui': file:../react-ui(@mui/system@5.18.0(@emotion/react@11.14.0(@types/react@18.3.28)(react@18.3.1))(@emotion/styled@11.14.1(@emotion/react@11.14.0(@types/react@18.3.28)(react@18.3.1))(@types/react@18.3.28)(react@18.3.1))(@types/react@18.3.28)(react@18.3.1))(@types/react@18.3.28)(dayjs@1.11.19)(react-dom@18.3.1(react@18.3.1))(react@18.3.1)
+      axios: 1.13.5
+      dotenv: 16.6.1
+      jsonwebtoken: 9.0.3
+      jwt-decode: 4.0.0
+      koa: 2.16.3
+      koa-bodyparser: 4.4.1
+      koa-router: 12.0.1
+      luxon: 3.7.2
+      react: 18.3.1
+      react-dom: 18.3.1(react@18.3.1)
+      selfsigned-ca: 2.0.1
+      socket.io: 4.8.3
+      socket.io-client: 4.8.3
+      ts-toolbelt: 9.6.0
+    transitivePeerDependencies:
+      - '@emotion/server'
+      - '@mui/system'
+      - '@types/react'
+      - date-fns
+      - date-fns-jalali
+      - dayjs
+      - debug
+      - moment
+      - moment-hijri
+      - moment-jalaali
+      - supports-color
 
   '@anupheaus/react-ui@file:../react-ui(@mui/system@5.18.0(@emotion/react@11.14.0(@types/react@18.3.28)(react@18.3.1))(@emotion/styled@11.14.1(@emotion/react@11.14.0(@types/react@18.3.28)(react@18.3.1))(@types/react@18.3.28)(react@18.3.1))(@types/react@18.3.28)(react@18.3.1))(@types/react@18.3.28)(dayjs@1.11.19)(react-dom@18.3.1(react@18.3.1))(react@18.3.1)':
     dependencies:
@@ -4530,36 +4579,6 @@ snapshots:
       - date-fns
       - date-fns-jalali
       - dayjs
-      - moment
-      - moment-hijri
-      - moment-jalaali
-      - supports-color
-
-  '@anupheaus/socket-api@file:../socket-api(@mui/system@5.18.0(@emotion/react@11.14.0(@types/react@18.3.28)(react@18.3.1))(@emotion/styled@11.14.1(@emotion/react@11.14.0(@types/react@18.3.28)(react@18.3.1))(@types/react@18.3.28)(react@18.3.1))(@types/react@18.3.28)(react@18.3.1))(@types/react@18.3.28)(dayjs@1.11.19)(socket.io-client@4.8.3)(socket.io@4.8.3)':
-    dependencies:
-      '@anupheaus/common': file:../common
-      '@anupheaus/react-ui': file:../react-ui(@mui/system@5.18.0(@emotion/react@11.14.0(@types/react@18.3.28)(react@18.3.1))(@emotion/styled@11.14.1(@emotion/react@11.14.0(@types/react@18.3.28)(react@18.3.1))(@types/react@18.3.28)(react@18.3.1))(@types/react@18.3.28)(react@18.3.1))(@types/react@18.3.28)(dayjs@1.11.19)(react-dom@18.3.1(react@18.3.1))(react@18.3.1)
-      axios: 1.13.5
-      dotenv: 16.6.1
-      jsonwebtoken: 9.0.3
-      jwt-decode: 4.0.0
-      koa: 2.16.3
-      koa-bodyparser: 4.4.1
-      koa-router: 12.0.1
-      luxon: 3.7.2
-      react: 18.3.1
-      react-dom: 18.3.1(react@18.3.1)
-      socket.io: 4.8.3
-      socket.io-client: 4.8.3
-      ts-toolbelt: 9.6.0
-    transitivePeerDependencies:
-      - '@emotion/server'
-      - '@mui/system'
-      - '@types/react'
-      - date-fns
-      - date-fns-jalali
-      - dayjs
-      - debug
       - moment
       - moment-hijri
       - moment-jalaali
@@ -6018,6 +6037,10 @@ snapshots:
 
   ccount@2.0.1: {}
 
+  cert-store@1.1.0:
+    dependencies:
+      node-forge: 0.7.6
+
   chai@4.5.0:
     dependencies:
       assertion-error: 1.1.0
@@ -6574,7 +6597,7 @@ snapshots:
 
   fast-deep-equal@3.1.3: {}
 
-  fast-equals@4.0.3: {}
+  fast-equals@6.0.0: {}
 
   fast-fifo@1.3.2: {}
 
@@ -7906,6 +7929,8 @@ snapshots:
     transitivePeerDependencies:
       - supports-color
 
+  node-forge@0.7.6: {}
+
   node-releases@2.0.27: {}
 
   nodemon-webpack-plugin@4.8.2(webpack@5.105.2):
@@ -8537,6 +8562,11 @@ snapshots:
       ajv-formats: 2.1.1(ajv@8.18.0)
       ajv-keywords: 5.1.0(ajv@8.18.0)
 
+  selfsigned-ca@2.0.1:
+    dependencies:
+      cert-store: 1.1.0
+      node-forge: 0.7.6
+
   semver@6.3.1: {}
 
   semver@7.7.4: {}
@@ -9097,9 +9127,9 @@ snapshots:
       is-typed-array: 1.1.15
       which-typed-array: 1.1.20
 
-  uuid@8.3.2: {}
+  uuid@14.0.0: {}
 
-  uuid@9.0.1: {}
+  uuid@8.3.2: {}
 
   v8-compile-cache-lib@3.0.1: {}
 

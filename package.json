@@ -138,7 +138,7 @@
     "overrides": {
       "@anupheaus/common": "file:../common",
       "@anupheaus/react-ui": "file:../react-ui",
-      "@anupheaus/nexus": "file:../socket-api"
+      "@anupheaus/nexus": "file:../nexus"
     }
   }
 }
