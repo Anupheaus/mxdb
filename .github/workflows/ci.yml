@@ -118,6 +118,35 @@ jobs:
           workspace-repos: 'Anupheaus/common Anupheaus/react-ui Anupheaus/nexus'
           install-args: '--no-frozen-lockfile'
 
+      - name: Generate TLS certificates for E2E server
+        run: |
+          mkdir -p tests/e2e/setup/certs
+          openssl req -new -x509 -days 3650 -nodes -newkey rsa:2048 \
+            -keyout tests/e2e/setup/certs/ca.key \
+            -out tests/e2e/setup/certs/ca.crt \
+            -subj "/CN=E2E Test CA"
+          openssl req -new -nodes -newkey rsa:2048 \
+            -keyout tests/e2e/setup/certs/localhost.key \
+            -out tests/e2e/setup/certs/localhost.csr \
+            -subj "/CN=localhost"
+          printf '%s\n' \
+            'authorityKeyIdentifier=keyid,issuer' \
+            'basicConstraints=CA:FALSE' \
+            'keyUsage = digitalSignature, keyEncipherment' \
+            'extendedKeyUsage = serverAuth' \
+            'subjectAltName = @alt_names' \
+            '' \
+            '[alt_names]' \
+            'DNS.1 = localhost' \
+            'IP.1 = 127.0.0.1' \
+            > /tmp/localhost.ext
+          openssl x509 -req -days 3650 -CAcreateserial \
+            -in tests/e2e/setup/certs/localhost.csr \
+            -CA tests/e2e/setup/certs/ca.crt \
+            -CAkey tests/e2e/setup/certs/ca.key \
+            -out tests/e2e/setup/certs/localhost.crt \
+            -extfile /tmp/localhost.ext
+
       - name: Run CRUD E2E tests
         run: pnpm run test:crud
 
@@ -140,6 +169,35 @@ jobs:
           workspace-repos: 'Anupheaus/common Anupheaus/react-ui Anupheaus/nexus'
           install-args: '--no-frozen-lockfile'
 
+      - name: Generate TLS certificates for E2E server
+        run: |
+          mkdir -p tests/e2e/setup/certs
+          openssl req -new -x509 -days 3650 -nodes -newkey rsa:2048 \
+            -keyout tests/e2e/setup/certs/ca.key \
+            -out tests/e2e/setup/certs/ca.crt \
+            -subj "/CN=E2E Test CA"
+          openssl req -new -nodes -newkey rsa:2048 \
+            -keyout tests/e2e/setup/certs/localhost.key \
+            -out tests/e2e/setup/certs/localhost.csr \
+            -subj "/CN=localhost"
+          printf '%s\n' \
+            'authorityKeyIdentifier=keyid,issuer' \
+            'basicConstraints=CA:FALSE' \
+            'keyUsage = digitalSignature, keyEncipherment' \
+            'extendedKeyUsage = serverAuth' \
+            'subjectAltName = @alt_names' \
+            '' \
+            '[alt_names]' \
+            'DNS.1 = localhost' \
+            'IP.1 = 127.0.0.1' \
+            > /tmp/localhost.ext
+          openssl x509 -req -days 3650 -CAcreateserial \
+            -in tests/e2e/setup/certs/localhost.csr \
+            -CA tests/e2e/setup/certs/ca.crt \
+            -CAkey tests/e2e/setup/certs/ca.key \
+            -out tests/e2e/setup/certs/localhost.crt \
+            -extfile /tmp/localhost.ext
+
       - name: Run performance E2E tests
         run: pnpm run test:performance
 
@@ -161,6 +219,35 @@ jobs:
           node-auth-token: ${{ secrets.GITHUB_TOKEN }}
           workspace-repos: 'Anupheaus/common Anupheaus/react-ui Anupheaus/nexus'
           install-args: '--no-frozen-lockfile'
+
+      - name: Generate TLS certificates for E2E server
+        run: |
+          mkdir -p tests/e2e/setup/certs
+          openssl req -new -x509 -days 3650 -nodes -newkey rsa:2048 \
+            -keyout tests/e2e/setup/certs/ca.key \
+            -out tests/e2e/setup/certs/ca.crt \
+            -subj "/CN=E2E Test CA"
+          openssl req -new -nodes -newkey rsa:2048 \
+            -keyout tests/e2e/setup/certs/localhost.key \
+            -out tests/e2e/setup/certs/localhost.csr \
+            -subj "/CN=localhost"
+          printf '%s\n' \
+            'authorityKeyIdentifier=keyid,issuer' \
+            'basicConstraints=CA:FALSE' \
+            'keyUsage = digitalSignature, keyEncipherment' \
+            'extendedKeyUsage = serverAuth' \
+            'subjectAltName = @alt_names' \
+            '' \
+            '[alt_names]' \
+            'DNS.1 = localhost' \
+            'IP.1 = 127.0.0.1' \
+            > /tmp/localhost.ext
+          openssl x509 -req -days 3650 -CAcreateserial \
+            -in tests/e2e/setup/certs/localhost.csr \
+            -CA tests/e2e/setup/certs/ca.crt \
+            -CAkey tests/e2e/setup/certs/ca.key \
+            -out tests/e2e/setup/certs/localhost.crt \
+            -extfile /tmp/localhost.ext
 
       - name: Run stress tests
         run: pnpm run test:stress
