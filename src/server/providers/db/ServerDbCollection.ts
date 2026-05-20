@@ -24,17 +24,17 @@ export interface SyncWriteResult {
   error?: string;
 }
 
-interface DbCollectionSyncProps<RecordType extends Record> {
+export interface DbCollectionSyncProps<RecordType extends Record> {
   updated: RecordType[];
   updatedAudits: AnyAuditOf<RecordType>[];
   removedIds: string[];
 }
 
-interface UpsertProps {
+export interface UpsertProps {
   resetAudit?: boolean;
 }
 
-interface DeleteProps<RT extends Record = Record> {
+export interface DeleteProps<RT extends Record = Record> {
   clearAudit?: boolean;
   /** When removing without clearing audit, supply live rows to persist on delete entries (see {@link ServerDbCollection.remove}). */
   deleteSnapshots?: { [recordId: string]: RT };

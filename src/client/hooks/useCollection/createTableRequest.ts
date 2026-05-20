@@ -3,7 +3,7 @@ import type { Query } from './createQuery';
 import type { TableOnRequest } from '@anupheaus/react-ui';
 import { useBound, useDebounce } from '@anupheaus/react-ui';
 
-interface TableRequestProps {
+export interface TableRequestProps {
   debounceTimer?: number;
 }
 

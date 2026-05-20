@@ -4,7 +4,7 @@ import type { Distinct } from './createDistinct';
 import { useSyncState } from '@anupheaus/react-ui';
 import type { MXDBError } from '../../../common';
 
-interface DistinctState<DistinctField> {
+export interface DistinctState<DistinctField> {
   values: DistinctField[];
   isLoading: boolean;
   error?: MXDBError;

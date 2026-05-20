@@ -5,7 +5,7 @@ import { useAction, useNexus } from '@anupheaus/nexus/client';
 
 import { ACTION_TIMEOUT_MS, withTimeout } from '../../utils/actionTimeout';
 
-interface GetProps {
+export interface GetProps {
   locallyOnly?: boolean;
 }
 

@@ -6,7 +6,7 @@ import type { DbCollection } from '../../providers';
 import type { Get } from './createGet';
 import type { MXDBError } from '../../../common';
 
-interface State<RecordType extends Record> {
+export interface State<RecordType extends Record> {
   record?: RecordType;
   isLoading: boolean;
   error?: MXDBError;

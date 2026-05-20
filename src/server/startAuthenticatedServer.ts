@@ -17,7 +17,7 @@ import { GoogleOAuthAuthCollection } from './auth/GoogleOAuthAuthCollection';
 import { registerDevAuthRoute } from './auth/registerDevAuthRoute';
 import { mxdbServerToClientSyncAction } from '../common/internalActions';
 import type { Socket } from 'socket.io';
-import type { ServerAuthConfig, ServerConfig } from './internalModels';
+import type { Koa, ServerAuthConfig, ServerConfig } from './internalModels';
 import type { AuthCollection } from './auth/AuthCollection';
 import type { NexusAuthRecord } from '@anupheaus/nexus/common';
 import { Logger } from '@anupheaus/common';
@@ -83,7 +83,7 @@ export async function startAuthenticatedServer({
   auth,
   changeStreamDebounceMs,
   ...config
-}: Props) {
+}: Props): Promise<{ app: Koa; authColl: AuthCollection<NexusAuthRecord>; startListening: () => Promise<void>; stopListening: () => Promise<void> }> {
   const { configureAuthentication, useAuthentication } = defineAuthentication<
     MXDBUser,
     MXDBAccount
@@ -221,5 +221,6 @@ export async function startAuthenticatedServer({
   });
 
   logger?.info('[startAuthenticatedServer] done');
-  return { app, authColl, startListening, stopListening };
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  return { app: app as any as Koa, authColl, startListening, stopListening };
 }
