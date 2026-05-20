@@ -3,6 +3,21 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { ServerDbCollectionEvents } from './ServerDbCollectionEvents';
 import type { ServerDbChangeEvent } from './server-db-models';
 
+// The global e2eVitestSetup vi.mock('@anupheaus/common') strips the side-effect that installs
+// Date.isIsoString, so dbUtils.deserialize would throw at runtime inside the debounce callback.
+// These tests verify debouncing and batching behaviour only — not serialisation — so we mock the
+// transform layer to remove the dependency on that side-effect entirely.
+vi.mock('./db-transforms', () => ({
+  dbUtils: {
+    deserialize: vi.fn().mockImplementation((doc: Record<string, unknown> | undefined) => {
+      if (doc == null) return undefined;
+      const { _id, ...rest } = doc;
+      return { ...rest, id: _id };
+    }),
+    serialize: vi.fn(),
+  },
+}));
+
 describe('ServerDbCollectionEvents', () => {
   beforeEach(() => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval'] });

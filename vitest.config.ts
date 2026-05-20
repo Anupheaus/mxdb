@@ -45,6 +45,10 @@ export default defineConfig({
     ],
     globals: true,
     setupFiles: ['./tests/e2e/setup/e2eVitestSetup.ts', './tests/e2e/setup/vitestGlobals.ts'],
+    // css:true instructs Vitest to handle CSS imports (returning empty modules) rather than
+    // throwing ERR_UNKNOWN_FILE_EXTENSION when @anupheaus/react-ui transitively pulls in
+    // @uiw/react-md-editor which imports .css files.
+    css: true,
     coverage: {
       provider: 'v8',
       reporter: ['text', 'lcov'],
