@@ -84,6 +84,7 @@ async function main() {
     server,
     mongoDbName: MONGO_DB_NAME,
     mongoDbUrl: MONGO_URI,
+    auth: { mode: 'webauthn' },
   });
   bootLog('startServer.returned');
 

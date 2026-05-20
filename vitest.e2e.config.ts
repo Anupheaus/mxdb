@@ -78,6 +78,7 @@ export default defineConfig(({ mode }) => {
       exclude,
       testTimeout,
       globals: true,
+      globalSetup: ['./tests/e2e/setup/e2eGlobalSetup.ts'],
       setupFiles: ['./tests/e2e/setup/e2eVitestSetup.ts', './tests/e2e/setup/vitestGlobals.ts'],
       dangerouslyIgnoreUnhandledErrors: true,
     },
