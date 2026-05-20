@@ -6,7 +6,7 @@ import type { MXDBCollection } from '../common';
 import type { ServerConfig as StartSocketServerConfig } from '@anupheaus/nexus/server';
 import type { CreateInviteOptions } from '@anupheaus/nexus/server';
 import type { InviteDetails } from '@anupheaus/nexus/common';
-import type { GoogleProfile } from '@anupheaus/nexus/common/auth';
+import type { GoogleProfile } from '@anupheaus/nexus/common';
 import type { PromiseMaybe } from '@anupheaus/common';
 import type Koa from 'koa';
 

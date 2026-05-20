@@ -9,25 +9,25 @@
  */
 
 import type { Collection } from 'mongodb';
-import type { SocketAPIAuthRecord, SocketAPIAuthStore } from '@anupheaus/nexus/common/auth';
+import type { NexusAuthRecord, NexusAuthStore } from '@anupheaus/nexus/common';
 import type { ServerDb } from '../providers';
 
 const COLLECTION_NAME = 'mxdb_authentication';
 
-type AuthDoc<TRecord extends SocketAPIAuthRecord> = Omit<TRecord, 'requestId'> & { _id: string };
+type AuthDoc<TRecord extends NexusAuthRecord> = Omit<TRecord, 'requestId'> & { _id: string };
 
-function toDoc<TRecord extends SocketAPIAuthRecord>(record: TRecord): AuthDoc<TRecord> {
+function toDoc<TRecord extends NexusAuthRecord>(record: TRecord): AuthDoc<TRecord> {
   const { requestId, ...rest } = record;
   return { _id: requestId, ...rest } as AuthDoc<TRecord>;
 }
 
-function fromDoc<TRecord extends SocketAPIAuthRecord>(doc: AuthDoc<TRecord>): TRecord {
+function fromDoc<TRecord extends NexusAuthRecord>(doc: AuthDoc<TRecord>): TRecord {
   const { _id, ...rest } = doc;
   return { requestId: _id, ...rest } as unknown as TRecord;
 }
 
-export abstract class AuthCollection<TRecord extends SocketAPIAuthRecord>
-  implements SocketAPIAuthStore<TRecord> {
+export abstract class AuthCollection<TRecord extends NexusAuthRecord>
+  implements NexusAuthStore<TRecord> {
 
   constructor(db: ServerDb) {
     this.#coll = this.#init(db);
@@ -81,7 +81,7 @@ export abstract class AuthCollection<TRecord extends SocketAPIAuthRecord>
     return doc ? fromDoc(doc as AuthDoc<TRecord>) : undefined;
   }
 
-  /** Not part of SocketAPIAuthStore. Used by device management to list all records for a user regardless of auth mode. */
+  /** Not part of NexusAuthStore. Used by device management to list all records for a user regardless of auth mode. */
   async findAllByUserId(userId: string): Promise<TRecord[]> {
     const coll = await this.getColl();
     const docs = await coll.find({ userId } as any).toArray();

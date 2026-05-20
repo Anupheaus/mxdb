@@ -1,6 +1,6 @@
 import crypto from 'crypto';
 import type Router from 'koa-router';
-import type { WebAuthnAuthRecord, GoogleOAuthAuthRecord, SocketAPIAuthRecord } from '@anupheaus/nexus/common/auth';
+import type { WebAuthnAuthRecord, GoogleOAuthAuthRecord, NexusAuthRecord } from '@anupheaus/nexus/common';
 import type { AuthCollection } from './AuthCollection';
 import type { ServerAuthConfig } from '../internalModels';
 
@@ -14,7 +14,7 @@ function buildSetCookieHeader(token: string): string {
 export function registerDevAuthRoute(
   router: Router,
   name: string,
-  authColl: AuthCollection<SocketAPIAuthRecord>,
+  authColl: AuthCollection<NexusAuthRecord>,
   mode: ServerAuthConfig['mode'],
 ): void {
   router.post(`/${name}/dev/signin`, async ctx => {

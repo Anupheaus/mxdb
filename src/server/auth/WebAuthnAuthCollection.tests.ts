@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import type { WebAuthnAuthRecord } from '@anupheaus/nexus/common/auth';
+
 import type { ServerDb } from '../providers';
 import type { WebAuthnAuthCollection as WebAuthnAuthCollectionType } from './WebAuthnAuthCollection';
 

@@ -135,7 +135,7 @@ describe('toServerAuditOf', () => {
       const outBranched = result.entries.find(e => e.type === AuditEntryType.Branched);
       expect(outBranched?.userId).toBe(ACTING_USER_ID);
       // Branched should not have a record field
-      expect((outBranched as Record<string, unknown>)['record']).toBeUndefined();
+      expect((outBranched as unknown as Record<string, unknown>)['record']).toBeUndefined();
       expect('record' in (outBranched as object)).toBe(false);
     });
 
@@ -274,7 +274,7 @@ describe('toServerAuditOf', () => {
       const entryMissingId = { type: AuditEntryType.Created, record: makeRecord() };
       const audit = { id: 'rec-1', entries: [validEntry, entryMissingId] };
 
-      const result = toServerAuditOf(audit, ACTING_USER_ID);
+      const result = toServerAuditOf(audit as never, ACTING_USER_ID);
 
       expect(result.entries).toHaveLength(1);
       expect(result.entries[0]?.id).toBe(validEntry.id);
@@ -285,7 +285,7 @@ describe('toServerAuditOf', () => {
       const entryMissingType = { id: auditor.generateUlid(), record: makeRecord() };
       const audit = { id: 'rec-1', entries: [validEntry, entryMissingType] };
 
-      const result = toServerAuditOf(audit, ACTING_USER_ID);
+      const result = toServerAuditOf(audit as never, ACTING_USER_ID);
 
       expect(result.entries).toHaveLength(1);
       expect(result.entries[0]?.id).toBe(validEntry.id);
@@ -295,7 +295,7 @@ describe('toServerAuditOf', () => {
       const validEntry = makeCreatedEntry(makeRecord());
       const audit = { id: 'rec-1', entries: [validEntry, null, undefined] as unknown[] };
 
-      const result = toServerAuditOf(audit, ACTING_USER_ID);
+      const result = toServerAuditOf(audit as never, ACTING_USER_ID);
 
       expect(result.entries).toHaveLength(1);
     });

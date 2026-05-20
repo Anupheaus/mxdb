@@ -18,7 +18,7 @@ export const ConnectionTest = createComponent('ConnectionTest', () => {
   const { css, join } = useStyles();
   const { onConnectionStateChanged, disconnect, connect } = useMXDB();
   const [isConnected, setIsConnected] = useState(false);
-  onConnectionStateChanged(newIsConnected => setIsConnected(newIsConnected));
+  onConnectionStateChanged((newIsConnected: boolean) => setIsConnected(newIsConnected));
 
   return (
     <Flex gap={'fields'} disableGrow>

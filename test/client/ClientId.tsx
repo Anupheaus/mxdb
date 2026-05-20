@@ -1,6 +1,6 @@
 import { Button, createComponent, Flex } from '@anupheaus/react-ui';
 import { useMXDB, useMXDBSignOut } from '../../src/client';
-import { useAuthentication } from '@anupheaus/socket-api/client';
+import { useAuthentication } from '@anupheaus/nexus/client';
 
 export const ClientId = createComponent('ClientId', () => {
   const { clientId } = useMXDB();

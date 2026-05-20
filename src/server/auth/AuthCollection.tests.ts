@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import type { SocketAPIAuthRecord } from '@anupheaus/nexus/common/auth';
+import type { NexusAuthRecord } from '@anupheaus/nexus/common';
 import type { ServerDb } from '../providers';
 import type { AuthCollection as AuthCollectionType } from './AuthCollection';
 
@@ -32,19 +32,19 @@ function makeFakeDb(): ServerDb {
   } as unknown as ServerDb;
 }
 
-let ConcreteCollection: new (db: ServerDb) => AuthCollectionType<SocketAPIAuthRecord>;
+let ConcreteCollection: new (db: ServerDb) => AuthCollectionType<NexusAuthRecord>;
 
 beforeEach(async () => {
   vi.clearAllMocks();
   const { AuthCollection } = await import('./AuthCollection');
   // Minimal concrete subclass — satisfies abstract constraint for testing base behaviour
-  ConcreteCollection = class extends AuthCollection<SocketAPIAuthRecord> { };
+  ConcreteCollection = class extends AuthCollection<NexusAuthRecord> { };
 });
 
 describe('AuthCollection (base class)', () => {
   it('create: inserts doc with _id = requestId and no requestId field', async () => {
     const coll = new ConcreteCollection(makeFakeDb());
-    const record: SocketAPIAuthRecord = {
+    const record: NexusAuthRecord = {
       requestId: 'req-1', sessionToken: 'tok', userId: 'u1',
       deviceId: 'dev', isEnabled: true,
     };

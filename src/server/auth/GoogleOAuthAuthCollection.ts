@@ -1,4 +1,4 @@
-import type { GoogleOAuthAuthRecord, GoogleOAuthAuthStore } from '@anupheaus/nexus/common/auth';
+import type { GoogleOAuthAuthRecord, GoogleOAuthAuthStore } from '@anupheaus/nexus/common';
 import type { ServerDb } from '../providers';
 import { AuthCollection } from './AuthCollection';
 

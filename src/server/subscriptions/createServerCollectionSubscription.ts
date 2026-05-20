@@ -1,4 +1,4 @@
-import type { SocketAPISubscription } from '@anupheaus/nexus/common';
+import type { NexusSubscription } from '@anupheaus/nexus/common';
 import { createServerSubscription } from '@anupheaus/nexus/server';
 import { InternalError, type PromiseMaybe } from '@anupheaus/common';
 import { useClient } from '../hooks';
@@ -22,9 +22,9 @@ type MXDBSyncServerSubscriptionHandler<Request, Response, AdditionalData = unkno
   (parameters: MXDBSyncServerSubscriptionHandlerParameters<Request, Response, AdditionalData>) => PromiseMaybe<Response>;
 
 export function createServerCollectionSubscription<AdditionalData = unknown>() {
-  return <Name extends string, Request, Response>(subscription: SocketAPISubscription<Name, Request, Response>,
+  return <Name extends string, Request, Response>(subscription: NexusSubscription<Name, Request, Response>,
     handler: MXDBSyncServerSubscriptionHandler<Request, Response, AdditionalData>) => {
-    return createServerSubscription(subscription as SocketAPISubscription<Name, Request, Response>,
+    return createServerSubscription(subscription as NexusSubscription<Name, Request, Response>,
       async ({ request, subscriptionId, update, onUnsubscribe }) => {
         const { isDataAvailable, getData, setData } = useClient();
         const saveAsPreviousResponse = (response: Response) => setData(`subscription-data.${subscriptionId}`, response);

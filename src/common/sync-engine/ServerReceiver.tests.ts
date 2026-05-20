@@ -6,6 +6,7 @@ import {
   ServerReceiver,
   ServerDispatcher,
   type MXDBRecordStates,
+  type MXDBRecordCursors,
   type ClientDispatcherRequest,
 } from '.';
 
@@ -60,7 +61,7 @@ describe('ServerReceiver', () => {
     const lastAuditEntryId = probeAudit.entries[0]!.id;
     sd.push([{
       collectionName: 'items',
-      records: [{ record, lastAuditEntryId, hash: 'mock-hash-probe-1' }],
+      records: [{ record, lastAuditEntryId, hash: 'mock-hash-probe-1' } as never],
     }]);
 
     // Allow the microtask queue to drain so the async dispatch can run.
@@ -315,7 +316,7 @@ describe('ServerReceiver', () => {
     // The SD must receive a delete cursor (recordId + lastAuditEntryId, no record field)
     // so the client learns the record is tombstoned.
     expect(pushSpy).toHaveBeenCalledOnce();
-    const pushPayload = pushSpy.mock.calls[0][0] as MXDBRecordStates;
+    const pushPayload = pushSpy.mock.calls[0]![0] as unknown as MXDBRecordCursors;
     const pushedCursor = pushPayload[0]?.records[0];
     expect(pushedCursor).toBeDefined();
     expect('record' in pushedCursor!).toBe(false);

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import type { GoogleOAuthAuthRecord } from '@anupheaus/nexus/common/auth';
+import type { GoogleOAuthAuthRecord } from '@anupheaus/nexus/common';
 import type { ServerDb } from '../providers';
 import type { GoogleOAuthAuthCollection as GoogleOAuthAuthCollectionType } from './GoogleOAuthAuthCollection';
 

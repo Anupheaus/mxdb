@@ -1,4 +1,4 @@
-import type { SocketAPISubscription } from '@anupheaus/nexus/common';
+import type { NexusSubscription } from '@anupheaus/nexus/common';
 import { useSubscription } from '@anupheaus/nexus/client';
 import { useBound, useOnUnmount } from '@anupheaus/react-ui';
 import type { Logger } from '@anupheaus/common';
@@ -13,8 +13,8 @@ export interface UseSubscriptionExecuteProps<Request, Response> {
 }
 
 export function createUseSubscription(logger?: Logger) {
-  return <Name extends string, Request, Response>(subscription: SocketAPISubscription<Name, Request, Response>) => {
-    const { subscribe: socketAPISubscribe, unsubscribe, onCallback } = useSubscription(subscription as SocketAPISubscription<Name, Request, Response>);
+  return <Name extends string, Request, Response>(subscription: NexusSubscription<Name, Request, Response>) => {
+    const { subscribe: socketAPISubscribe, unsubscribe, onCallback } = useSubscription(subscription as NexusSubscription<Name, Request, Response>);
 
     useOnUnmount(unsubscribe);
 

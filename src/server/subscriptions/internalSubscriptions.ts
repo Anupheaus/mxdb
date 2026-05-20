@@ -1,9 +1,9 @@
-import type { SocketAPIServerSubscription } from '@anupheaus/nexus/server';
+import type { NexusServerSubscription } from '@anupheaus/nexus/server';
 import { serverQuerySubscription } from './querySubscription';
 import { serverDistinctSubscription } from './distinctSubscription';
 import { serverGetAllSubscription } from './getAllSubscription';
 
-export const internalSubscriptions: SocketAPIServerSubscription[] = [
+export const internalSubscriptions: NexusServerSubscription[] = [
   serverQuerySubscription,
   serverDistinctSubscription,
   serverGetAllSubscription,

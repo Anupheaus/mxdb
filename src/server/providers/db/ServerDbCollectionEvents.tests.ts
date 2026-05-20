@@ -5,7 +5,7 @@ import type { ServerDbChangeEvent } from './server-db-models';
 
 describe('ServerDbCollectionEvents', () => {
   beforeEach(() => {
-    vi.useFakeTimers();
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval'] });
   });
 
   afterEach(() => {

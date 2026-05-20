@@ -1,6 +1,6 @@
 import { MongoClient } from 'mongodb';
 import type { ServerAuditOf } from '../../../src/common';
-import { dbUtils } from '../../../src/server/providers/db/db-utils';
+import { dbUtils } from '../../../src/server/providers/db/db-transforms';
 import { E2E_MONGO_DB_NAME } from './mongoConstants';
 import type { E2eTestRecord } from './e2eTestFixture';
 

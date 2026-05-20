@@ -17,7 +17,7 @@ import type { E2eTestRecord } from './types';
 import { e2eTestCollection, type RunLogDetail, type RunLogEvent } from './types';
 // Use ES imports so vitest applies resolve aliases (source code), avoiding
 // context-identity mismatches between the dist and the source versions.
-import { useSocketAPI, SocketAPI } from '@anupheaus/socket-api/client';
+import { useNexus, Nexus } from '@anupheaus/nexus/client';
 import { Logger } from '@anupheaus/common';
 import { LoggerProvider } from '@anupheaus/react-ui';
 import { waitUntilAsync } from './utils';
@@ -90,7 +90,7 @@ const SyncClientDriverInner = forwardRef<SyncClientDriverRef, { clientId: string
     // (Without an active query/subscription, some setups won't push local mutations to the server.)
     useQuery();
     const { disconnect, connect, isSynchronising } = useMXDB();
-    const { getIsConnected, getSocket } = useSocketAPI();
+    const { getIsConnected, getSocket } = useNexus();
     const c2sInstance = useClientToServerSyncInstance();
     const { db } = useDb();
     const getAllSubscriptionRecordsRef = useRef<E2eTestRecord[]>([]);
@@ -285,7 +285,7 @@ export function createSyncClient(
 
     root.render(
       <LoggerProvider logger={reactTreeLogger} loggerName="MXDB">
-        <SocketAPI host={serverUrl} name={socketName} auth={sessionToken != null ? { sessionToken } : undefined}>
+        <Nexus host={serverUrl} name={socketName} auth={sessionToken != null ? { sessionToken } : undefined}>
           <DbsProvider name={dbName} collections={[e2eTestCollection]} encryptionKey={encryptionKey} logger={reactTreeLogger.createSubLogger('db')}>
             <ClientToServerSyncProvider collections={[e2eTestCollection]}>
               <ClientToServerProvider />
@@ -293,7 +293,7 @@ export function createSyncClient(
               <SyncClientDriverInner ref={saveDriver} clientId={clientId} log={runLogger.log} />
             </ClientToServerSyncProvider>
           </DbsProvider>
-        </SocketAPI>
+        </Nexus>
       </LoggerProvider>,
     );
 

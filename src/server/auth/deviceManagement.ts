@@ -1,4 +1,4 @@
-import type { SocketAPIAuthRecord } from '@anupheaus/nexus/common/auth';
+import type { NexusAuthRecord } from '@anupheaus/nexus/common';
 import type { AuthCollection } from './AuthCollection';
 import type { MXDBDeviceInfo } from '../../common/models';
 
@@ -11,11 +11,11 @@ import type { MXDBDeviceInfo } from '../../common/models';
  */
 
 export async function getDevices(
-  authColl: AuthCollection<SocketAPIAuthRecord>,
+  authColl: AuthCollection<NexusAuthRecord>,
   userId: string,
 ): Promise<MXDBDeviceInfo[]> {
   const records = await authColl.findAllByUserId(userId);
-  return records.map((r: SocketAPIAuthRecord) => ({
+  return records.map((r: NexusAuthRecord) => ({
     requestId: r.requestId,
     userId: r.userId,
     deviceDetails: r.deviceDetails,
@@ -25,14 +25,14 @@ export async function getDevices(
 }
 
 export async function enableDevice(
-  authColl: AuthCollection<SocketAPIAuthRecord>,
+  authColl: AuthCollection<NexusAuthRecord>,
   requestId: string,
 ): Promise<void> {
   await authColl.update(requestId, { isEnabled: true });
 }
 
 export async function disableDevice(
-  authColl: AuthCollection<SocketAPIAuthRecord>,
+  authColl: AuthCollection<NexusAuthRecord>,
   requestId: string,
 ): Promise<void> {
   await authColl.update(requestId, { isEnabled: false });

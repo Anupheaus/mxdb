@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import type { Record } from '@anupheaus/common';
+
 import type { MXDBCollection } from '../../common';
 import type { ServerToClientSynchronisation } from '../ServerToClientSynchronisation';
 import { pushSubscriptionResultRecords } from './pushSubscriptionResultRecords';

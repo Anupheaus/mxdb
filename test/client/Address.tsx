@@ -1,6 +1,6 @@
 import { createComponent } from '@anupheaus/react-ui';
 import { useCollection } from '../../src/client';
-import { useAction } from '@anupheaus/socket-api/client';
+import { useAction } from '@anupheaus/nexus/client';
 import { addresses, testAction } from '../common';
 
 interface Props {

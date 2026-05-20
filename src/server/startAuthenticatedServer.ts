@@ -19,7 +19,7 @@ import { mxdbServerToClientSyncAction } from '../common/internalActions';
 import type { Socket } from 'socket.io';
 import type { ServerAuthConfig, ServerConfig } from './internalModels';
 import type { AuthCollection } from './auth/AuthCollection';
-import type { SocketAPIAuthRecord } from '@anupheaus/nexus/common/auth';
+import type { NexusAuthRecord } from '@anupheaus/nexus/common';
 import { Logger } from '@anupheaus/common';
 import type { MXDBAccount, MXDBUser } from '../common/models';
 
@@ -63,9 +63,9 @@ function buildOnGetUser(authConfig: ServerAuthConfig) {
 function createAuthCollection(
   auth: ServerAuthConfig,
   db: ServerDb,
-): AuthCollection<SocketAPIAuthRecord> {
+): AuthCollection<NexusAuthRecord> {
   if (auth.mode === 'webauthn') return new WebAuthnAuthCollection(db);
-  return new GoogleOAuthAuthCollection(db) as unknown as AuthCollection<SocketAPIAuthRecord>;
+  return new GoogleOAuthAuthCollection(db) as unknown as AuthCollection<NexusAuthRecord>;
 }
 
 export async function startAuthenticatedServer({

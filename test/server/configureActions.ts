@@ -1,7 +1,7 @@
-import { createServerActionHandler, useAuthentication, type SocketAPIServerAction } from '@anupheaus/nexus/server';
+import { createServerActionHandler, useAuthentication, type NexusServerAction } from '@anupheaus/nexus/server';
 import { signInAction, testAction } from '../common';
 
-export const actions: SocketAPIServerAction[] = [
+export const actions: NexusServerAction[] = [
   createServerActionHandler(testAction, async ({ foo }) => {
     return { bar: foo };
   }),
