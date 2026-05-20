@@ -17,7 +17,7 @@ const alias: Record<string, string> = {
   'react-dom': path.resolve(__dirname, 'node_modules/react-dom'),
 };
 
-const socketApiSrc = localAlias('../socket-api/src');
+const socketApiSrc = localAlias('../nexus/src');
 if (socketApiSrc) {
   alias['@anupheaus/nexus/server'] = path.join(socketApiSrc, 'server');
   alias['@anupheaus/nexus/client'] = path.join(socketApiSrc, 'client');
@@ -38,6 +38,13 @@ const sharedResolve = { alias };
  *
  * Forked workers read NODE_OPTIONS at startup (TLS preload + trust e2e CA).
  */
+const cssStubPlugin = {
+  name: 'stub-css',
+  transform(_code: string, id: string) {
+    if (id.endsWith('.css')) return 'export default {}';
+  },
+};
+
 export default defineConfig(({ mode }) => {
   const isCrud = mode === 'crud';
   const isPerformance = mode === 'performance';
@@ -56,6 +63,7 @@ export default defineConfig(({ mode }) => {
   const testTimeout = isStress ? 300_000 : 120_000;
 
   return {
+    plugins: [cssStubPlugin],
     resolve: sharedResolve,
     test: {
       env: vitestE2eTlsEnv(__dirname),
