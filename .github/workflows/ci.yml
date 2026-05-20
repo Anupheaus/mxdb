@@ -26,6 +26,7 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
           node-auth-token: ${{ secrets.GITHUB_TOKEN }}
           patch-package-json: 'true'
+          install-args: '--no-frozen-lockfile'
 
   # ── VALIDATE ───────────────────────────────────────────────────────────────
   Validate:
@@ -43,6 +44,7 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
           node-auth-token: ${{ secrets.GITHUB_TOKEN }}
           patch-package-json: 'true'
+          install-args: '--no-frozen-lockfile'
 
       - name: Type check
         run: pnpm run typecheck
@@ -86,6 +88,7 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
           node-auth-token: ${{ secrets.GITHUB_TOKEN }}
           patch-package-json: 'true'
+          install-args: '--no-frozen-lockfile'
 
       - name: Run unit tests with coverage
         run: pnpm run test:ci -- --coverage
@@ -113,6 +116,7 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
           node-auth-token: ${{ secrets.GITHUB_TOKEN }}
           patch-package-json: 'true'
+          install-args: '--no-frozen-lockfile'
 
       - name: Run CRUD E2E tests
         run: pnpm run test:crud
@@ -134,6 +138,7 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
           node-auth-token: ${{ secrets.GITHUB_TOKEN }}
           patch-package-json: 'true'
+          install-args: '--no-frozen-lockfile'
 
       - name: Run performance E2E tests
         run: pnpm run test:performance
@@ -155,6 +160,7 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
           node-auth-token: ${{ secrets.GITHUB_TOKEN }}
           patch-package-json: 'true'
+          install-args: '--no-frozen-lockfile'
 
       - name: Run stress tests
         run: pnpm run test:stress
@@ -177,6 +183,7 @@ jobs:
           node-auth-token: ${{ secrets.GITHUB_TOKEN }}
           patch-package-json: 'true'
           fetch-depth: '0'
+          install-args: '--no-frozen-lockfile'
 
       - name: Build
         run: pnpm run build
