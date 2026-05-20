@@ -34,16 +34,16 @@
         "../react-ui/src"
       ],
       "@anupheaus/nexus/server": [
-        "../socket-api/src/server"
+        "../nexus/src/server"
       ],
       "@anupheaus/nexus/client": [
-        "../socket-api/src/client"
+        "../nexus/src/client"
       ],
       "@anupheaus/nexus/common": [
-        "../socket-api/src/common"
+        "../nexus/src/common"
       ],
       "@anupheaus/nexus/common/auth": [
-        "../socket-api/src/common/auth"
+        "../nexus/src/common/auth"
       ]
     }
   },

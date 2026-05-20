@@ -171,6 +171,8 @@ export async function startServerInstance(
   if (child.stderr) {
     child.stderr.setEncoding('utf8');
     child.stderr.on('data', chunk => {
+      // Always forward to process.stderr so crash output appears in CI logs.
+      process.stderr.write(`[e2e-server] ${String(chunk)}`);
       if (!serverLogCallback) return;
       String(chunk)
         .split(/\r?\n/u)
