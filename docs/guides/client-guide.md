@@ -84,6 +84,7 @@ Local mutations go through **`DbCollection`**, which **`ClientToServerProvider`*
 **`useMXDB()`** exposes:
 
 - **`isConnected`**, **`clientId`**
+- **`isDbReady`**, **`waitForDbReady()`** — local SQLite is open (encryption key + `dbName` available); await readiness before first collection access when auth/PRF may still be in flight
 - **`onConnectionStateChanged`** (from nexus)
 - **`disconnect`**, **`connect`** (testing helpers)
 - **`isSynchronising`** — tracks sync state via **`SyncStateContext`**

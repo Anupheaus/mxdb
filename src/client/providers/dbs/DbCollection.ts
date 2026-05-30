@@ -142,13 +142,11 @@ export class DbCollection<RecordType extends Record = Record> {
     for (const id of recordIds) {
       const audit = this.#auditRecords.get(id);
       if (audit == null) {
-        this.#logger?.silly(`[db-diag] getStatesSync "${this.#name}" MISS id=${id} auditRecordsSize=${this.#auditRecords.size} recordsSize=${this.#records.size} recordsHas=${this.#records.has(id)}`);
         continue;
       }
       const record = this.#records.get(id);
       if (record != null) out.push({ record, audit: audit.entries });
       else out.push({ recordId: id, audit: audit.entries });
-      this.#logger?.silly(`[db-diag] getStatesSync "${this.#name}" HIT id=${id} hasLive=${record != null} entries=${audit.entries.length} lastType=${audit.entries[audit.entries.length - 1]?.type} lastId=${audit.entries[audit.entries.length - 1]?.id}`);
     }
     return out;
   }
@@ -198,9 +196,36 @@ export class DbCollection<RecordType extends Record = Record> {
     const branchedAudit = auditor.createBranchFrom<RecordType>(record.id, lastAuditEntryId || ulid());
     this.#auditRecords.set(record.id, branchedAudit);
     this.#pendingIds.delete(record.id); // Branched audit has no pending changes
-    this.#logger?.silly(`[db-diag] applyServerWriteSync "${this.#name}" id=${record.id} anchor=${lastAuditEntryId} auditRecordsSizeAfter=${this.#auditRecords.size} recordsSizeAfter=${this.#records.size}`);
     void this.#persist([record], [branchedAudit]);
     this.#invokeOnChange({ type: 'upsert', records: [record], auditAction: 'branched' });
+  }
+
+  /**
+   * Apply multiple active record writes coming from the server (CR.onUpdate) as a single batch.
+   *
+   * Prefer this over looping {@link applyServerWriteSync} during reconciliation.  All N records
+   * are persisted in **one** {@link execBatch} call (one SQLite transaction, one OPFS flush when
+   * encrypted) and change subscribers are notified once rather than once per record.
+   *
+   * Without batching, reconciliation with N records queues N exec-batch messages in the SQLite
+   * worker before any query can run. With encryption each flush serialises the entire DB, so
+   * N × flush_time easily reaches tens of seconds on a large database.
+   */
+  @bind
+  public batchApplyServerWriteSync(items: Array<{ record: RecordType; lastAuditEntryId: string }>): void {
+    if (items.length === 0) return;
+    const allRecords: RecordType[] = [];
+    const allAudits: AuditOf<RecordType>[] = [];
+    for (const { record, lastAuditEntryId } of items) {
+      this.#records.set(record.id, record);
+      const branchedAudit = auditor.createBranchFrom<RecordType>(record.id, lastAuditEntryId || ulid());
+      this.#auditRecords.set(record.id, branchedAudit);
+      this.#pendingIds.delete(record.id); // Branched audit has no pending changes
+      allRecords.push(record);
+      allAudits.push(branchedAudit);
+    }
+    void this.#persist(allRecords, allAudits);
+    this.#invokeOnChange({ type: 'upsert', records: allRecords, auditAction: 'branched' });
   }
 
   /**
@@ -232,9 +257,7 @@ export class DbCollection<RecordType extends Record = Record> {
     for (const id of recordIds) {
       const audit = this.#auditRecords.get(id);
       const hadLive = this.#records.delete(id);
-      const hadAudit = audit != null;
-      const pending = hadAudit ? auditor.hasPendingChanges(audit) : false;
-      this.#logger?.silly(`[db-diag] applyServerDeleteSync "${this.#name}" id=${id} hadLive=${hadLive} hadAudit=${hadAudit} pending=${pending}`);
+      const pending = audit != null ? auditor.hasPendingChanges(audit) : false;
       if (audit != null && pending) {
         // Keep the audit so CD can still push the pending entries to the server.
         if (hadLive || audit != null) preservedPending.push(id);
@@ -326,7 +349,6 @@ export class DbCollection<RecordType extends Record = Record> {
     const newAudit = auditor.collapseToAnchor(existingAudit, anchorUlid);
     this.#auditRecords.set(recordId, newAudit);
     this.#setPendingId(recordId, newAudit);
-    this.#logger?.silly('collapsed audit', { recordId, anchorUlid, existingAudit, newAudit });
     this.#persistAudits([newAudit]);
   }
 
@@ -577,7 +599,6 @@ export class DbCollection<RecordType extends Record = Record> {
     const stmts: Array<{ sql: string; params: unknown[]; }> = [
       { sql: `DELETE FROM ${auditTable} WHERE recordId = ?`, params: [audit.id] },
     ];
-    this.#logger?.silly('Writing audit entries to SQL Lite', { audit });
     for (const row of entriesToRows(audit.id, audit.entries)) {
       stmts.push({
         sql: `INSERT INTO ${auditTable}(id, recordId, type, timestamp, record, ops) VALUES (?, ?, ?, ?, ?, ?)`,

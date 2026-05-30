@@ -10,7 +10,8 @@ Exposes one public function (`startServer`) and one composable extension hook (`
 
 ### Entry points
 - `startServer.ts` — `startServer(config)` — main async init; connects to MongoDB, starts socket server, returns `ServerInstance`
-- `startAuthenticatedServer.ts` — inner bootstrap called by `startServer`; wires auth namespace, socket actions, and Koa
+- `startAuthenticatedServer.ts` — inner bootstrap called by `startServer`; wires auth namespace, socket actions, and Koa. Registers per-socket S2C **before** auth `await`s so C2S handlers never hit a no-op S2C fallback during connect.
+- `index.ts` exports — `useAuthDevices()` for invite/device admin inside socket actions and HTTP routes (after `startServer`)
 
 ### Collections API (`collections/`)
 `extendCollection` (lifecycle hooks + seeding) and `useCollection` (server-side collection accessor). See [collections/AGENTS.md](collections/AGENTS.md).

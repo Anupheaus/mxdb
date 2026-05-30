@@ -2,7 +2,9 @@
 
 ## Before making changes
 
-- **Read**: `c:/code/personal/agents/global-agent.md`
+<EXTREMELY_IMPORTANT>
+You MUST read `C:\code\personal\agents\agents.md` before doing anything else in this repo. This is non-negotiable and cannot be skipped under any circumstances.
+</EXTREMELY_IMPORTANT>
 - **Search `@anupheaus/common` before writing utility functions**: The common library (`c:/code/personal/common/src/`) provides many utilities — serialisation (`to.serialise`, `to.deserialise`), deep equality (`is.deepEqual`, handles Luxon DateTime, Date, functions), object cloning (`Object.clone`), type guards, and more. Before implementing anything locally, search the common library first. Using existing common utilities avoids duplicated logic and benefits from already-correct edge-case handling (e.g. `is.deepEqual` uses `DateTime.equals()` for Luxon, not naive JSON comparison).
 
 ## Documentation

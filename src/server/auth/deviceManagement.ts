@@ -37,3 +37,22 @@ export async function disableDevice(
 ): Promise<void> {
   await authColl.update(requestId, { isEnabled: false });
 }
+
+export async function deleteDevice(
+  authColl: AuthCollection<NexusAuthRecord>,
+  requestId: string,
+): Promise<void> {
+  await authColl.delete(requestId);
+}
+
+export async function expireStalePendingInvites(
+  authColl: AuthCollection<NexusAuthRecord>,
+  ttlMs: number,
+): Promise<number> {
+  const createdBeforeMs = Date.now() - ttlMs;
+  const records = await authColl.findStalePendingInvites(createdBeforeMs);
+  await records.mapAsync(async record => {
+    await authColl.delete(record.requestId);
+  });
+  return records.length;
+}

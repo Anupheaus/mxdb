@@ -22,8 +22,7 @@ import type { AuthCollection } from './auth/AuthCollection';
 import type { NexusAuthRecord } from '@anupheaus/nexus/common';
 import { Logger } from '@anupheaus/common';
 import type { MXDBAccount, MXDBUser } from '../common/models';
-
-const SESSION_COOKIE_NAME = 'socketapi_session';
+import { parseSessionTokenFromHandshake } from './auth/parseSessionTokenFromHandshake';
 
 const clientS2CInstances = new WeakMap<Socket, ServerToClientSynchronisation>();
 const connectedUsers = new WeakMap<Socket, MXDBUser>();
@@ -37,16 +36,12 @@ interface Props extends ServerConfig {
 }
 
 function parseSessionToken(client: Socket): string | undefined {
-  const cookieHeader = client.handshake.headers.cookie as string | undefined;
-  const fromCookie = cookieHeader
-    ?.split(';')
-    .map(s => s.trim())
-    .find(s => s.startsWith(`${SESSION_COOKIE_NAME}=`))
-    ?.slice(SESSION_COOKIE_NAME.length + 1);
-  const fromAuth = (client.handshake.auth as Record<string, unknown>)?.sessionToken as
-    | string
-    | undefined;
-  return fromCookie ?? fromAuth;
+  return parseSessionTokenFromHandshake({
+    cookieHeader: client.handshake.headers.cookie as string | undefined,
+    sessionTokenFromAuth: (client.handshake.auth as Record<string, unknown>)?.sessionToken as
+      | string
+      | undefined,
+  });
 }
 
 function buildOnGetUser(authConfig: ServerAuthConfig) {
@@ -151,32 +146,9 @@ export async function startAuthenticatedServer({
 
     onClientConnected: async (client: Socket) => {
       client.once('disconnect', (reason: string) => disconnectReasons.set(client, reason));
-      const socketAuthCtx = useSocketAuthentication<MXDBUser, MXDBAccount>();
 
-      if (socketAuthCtx.user != null) {
-        if (socketAuthCtx.account == null && onGetAccountDetails != null) {
-          const sessionToken = parseSessionToken(client);
-          if (sessionToken != null) {
-            const record = await authColl.findBySessionToken(sessionToken);
-            if (record?.accountId != null) {
-              const resolvedAccount = await onGetAccountDetails(record.accountId).catch(
-                () => undefined,
-              );
-              if (resolvedAccount != null) await socketAuthCtx.setAccount(resolvedAccount);
-            }
-          }
-        }
-        await socketAuthCtx.setUser(socketAuthCtx.user);
-        connectedUsers.set(client, socketAuthCtx.user);
-        const currentAccount = socketAuthCtx.account;
-        if (currentAccount != null) connectedAccounts.set(client, currentAccount);
-        await onConnected?.({ user: socketAuthCtx.user, account: currentAccount });
-      }
-      // Signal the client that the session-cookie auth check is complete, regardless of
-      // whether the user was found. The client waits for this before triggering WebAuthn,
-      // so it can skip the ceremony when a valid cookie already authenticated the user.
-      client.emit('socketapi:authCheckComplete');
-
+      // Register the real S2C instance BEFORE any await so that C2S action handlers
+      // arriving during the auth awaits below never see the no-op fallback.
       const s2cLogger = (
         logger ?? Logger.getCurrent() ?? new Logger('mxdb')
       ).createSubLogger(`s2c:${client.id}`);
@@ -191,6 +163,65 @@ export async function startAuthenticatedServer({
       registerClientS2C(client, s2c);
       setServerToClientSync(s2c);
       addClientWatches(client, collections, s2c);
+
+      const socketAuthCtx = useSocketAuthentication<MXDBUser, MXDBAccount>();
+
+      if (socketAuthCtx.user != null) {
+        if (socketAuthCtx.account == null && onGetAccountDetails != null) {
+          const sessionToken = parseSessionToken(client);
+          if (sessionToken != null) {
+            const record = await authColl.findBySessionToken(sessionToken);
+            logger?.info('[Auth] Resolving account from session auth record', {
+              userId: socketAuthCtx.user.id,
+              hasSessionToken: true,
+              authRecordAccountId: record?.accountId,
+            });
+            if (record?.accountId != null) {
+              const resolvedAccount = await onGetAccountDetails(record.accountId).catch(
+                () => undefined,
+              );
+              if (resolvedAccount != null) {
+                await socketAuthCtx.setAccount(resolvedAccount);
+              } else {
+                logger?.warn('[Auth] Auth record accountId could not be resolved', {
+                  userId: socketAuthCtx.user.id,
+                  accountId: record.accountId,
+                });
+              }
+            } else {
+              logger?.warn('[Auth] Session auth record has no accountId — client account will be unset', {
+                userId: socketAuthCtx.user.id,
+                requestId: record?.requestId,
+              });
+            }
+          } else {
+            logger?.warn('[Auth] Cannot resolve account — no session token available after connect', {
+              userId: socketAuthCtx.user.id,
+            });
+          }
+        }
+        await socketAuthCtx.setUser(socketAuthCtx.user);
+        connectedUsers.set(client, socketAuthCtx.user);
+        const currentAccount = socketAuthCtx.account;
+        // Re-emit account on every connect. Server auth context can retain account across
+        // reconnects (same Connection scope) while the client resets on each new socket —
+        // skipping setAccount when account is already set leaves the client with no account.
+        if (currentAccount != null) {
+          await socketAuthCtx.setAccount(currentAccount);
+          connectedAccounts.set(client, currentAccount);
+          logger?.info('[Auth] Account synced to client on connect', {
+            userId: socketAuthCtx.user.id,
+            accountId: currentAccount.id,
+          });
+        }
+        await onConnected?.({ user: socketAuthCtx.user, account: currentAccount });
+      }
+      // Signal the client that the session-cookie auth check is complete, regardless of
+      // whether the user was found. The client waits for this before triggering WebAuthn,
+      // so it can skip the ceremony when a valid cookie already authenticated the user.
+      client.emit('socketapi:authCheckComplete');
+      client.emit('nexus:authCheckComplete');
+
       await onClientConnected?.(client);
     },
 

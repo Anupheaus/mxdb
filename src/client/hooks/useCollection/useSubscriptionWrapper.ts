@@ -59,13 +59,10 @@ export function useSubscriptionWrapper<RecordType extends Record, Request extend
     const isActionRequired = !is.function(onResponse);
 
     const execute = async () => {
-      logger.silly('Executing query locally', { disable, request });
       if (disable) {
-        logger.silly('Query is disabled, returning default', { disable, request });
         return onDefaultResponse();
       }
       const requestId = lastRequestIdRef.current = Math.uniqueId();
-      logger.debug(`[${requestId}] Querying records for collection "${collection.name}"...`, props);
       const startTime = DateTime.now();
       const response = await onExecute(request);
       if (lastRequestIdRef.current !== requestId) return RequestCancelled;
@@ -73,10 +70,7 @@ export function useSubscriptionWrapper<RecordType extends Record, Request extend
       if (disable) return onDefaultResponse();
       if (slowThreshold != null && timeTaken > slowThreshold) {
         logger.warn(`[${requestId}] Query on collection "${collection.name}" took ${timeTaken}ms`, props);
-      } else {
-        logger.debug(`[${requestId}] Query on collection "${collection.name}" completed (time taken: ${timeTaken}ms).`);
       }
-      logger.silly('Finished executing query locally', { disable, request, response });
       return response;
     };
 
@@ -91,7 +85,6 @@ export function useSubscriptionWrapper<RecordType extends Record, Request extend
       if (!okToExecute()) return;
       const result = await execute();
       if (result === RequestCancelled) {
-        logger.silly('Request cancelled, so not validating and updating', { disable, request });
         return;
       }
       validateAndUpdate(result);
@@ -102,23 +95,19 @@ export function useSubscriptionWrapper<RecordType extends Record, Request extend
       if (!okToExecute()) return;
       const resultHash = Object.hash(response);
       if (lastResultHashRef.current === resultHash) {
-        logger.silly('Result has not changed, so calling onSameResponse', { disable, request });
         onSameResponse?.();
         return;
       }
-      logger.silly('Result has changed, so calling onResponse', { disable, request });
       lastResultHashRef.current = resultHash;
       onResponse?.(response);
     };
 
-    logger.silly('Invoking remote query', { disable, isActionRequired, request });
     remoteQueryCalledRef.current = await withTimeout(
       remoteInvoke({
         request: (onRequestTransform?.(request) ?? request) as RemoteRequest,
         disable: disable || isActionRequired,
         onEmptyUpdate: onRemoteDefaultResponse,
         onUpdate: async response => {
-          logger.silly('Received remote query response', { disable, isActionRequired, request, response });
           await onRemoteResponse?.(response);
           await executeValidateAndUpdate();
           remoteQueryCalledRef.current = false;
@@ -129,21 +118,17 @@ export function useSubscriptionWrapper<RecordType extends Record, Request extend
     );
 
     if (isActionRequired) {
-      logger.silly('Invoking action', { disable, isActionRequired, request });
       const result = await withTimeout(
         actionResult[action.name]!((onRequestTransform?.(request) ?? request) as RemoteRequest),
         ACTION_TIMEOUT_MS,
         `${action.name}(${collection.name})`,
       );
-      logger.silly('Received action response', { disable, isActionRequired, request, result });
       await onRemoteResponse?.(result);
     }
 
     let result = await execute();
-    logger.silly('Finished calling local execute', { disable, isActionRequired, request, result, remoteQueryCalled: remoteQueryCalledRef.current });
     if (result === RequestCancelled) result = onDefaultResponse();
     if (!remoteQueryCalledRef.current) {
-      logger.silly('Validating and updating result after local execution', { disable, isActionRequired, request, result });
       validateAndUpdate(result);
     }
 

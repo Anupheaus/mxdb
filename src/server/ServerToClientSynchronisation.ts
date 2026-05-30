@@ -226,7 +226,6 @@ export class ServerToClientSynchronisation {
         const auditAfter = auditAfterMap.get(id);
 
         if ((auditBefore != null && auditor.isDeleted(auditBefore)) || (auditAfter != null && auditor.isDeleted(auditAfter))) {
-          this.#logger.silly('[s2c] #buildAndPush: filtered tombstoned record', { collectionName, recordId: id });
           continue;
         }
 
@@ -236,14 +235,10 @@ export class ServerToClientSynchronisation {
         if (idBefore === idAfter) {
           const freshRecord = freshRecordMap.get(id);
           if (freshRecord == null) {
-            this.#logger.silly('[s2c] #buildAndPush: live record missing after audit — skipping', { collectionName, recordId: id });
             continue;
           }
           consistent.push({ id, freshRecord, lastAuditEntryId: idAfter });
         } else {
-          this.#logger.silly('[s2c] #buildAndPush: audit changed between reads — falling back to per-record retry', {
-            collectionName, recordId: id, idBefore, idAfter,
-          });
           needsRetry.push(id);
         }
       }

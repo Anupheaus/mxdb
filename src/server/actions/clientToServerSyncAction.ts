@@ -113,7 +113,6 @@ export const clientToServerSyncAction = createServerActionHandler(
             }
           }
           const perColMs = Math.round(performance.now() - perColT0);
-          logger.debug('[C2S] retrieve', { collection: item.collectionName, requested: item.recordIds.length, audits: audits.length, live: liveRecords.length, returned: records.length, ms: perColMs });
           if (perColMs >= 500) {
             logger.warn('[C2S] slow retrieve', { collection: item.collectionName, ms: perColMs, requested: item.recordIds.length });
           }
@@ -194,14 +193,6 @@ export const clientToServerSyncAction = createServerActionHandler(
       for (const rec of col.records) {
         const hasMergeableEntry = rec.entries.some(e => e.type !== AuditEntryType.Branched);
         if (hasMergeableEntry) lockKeys.push(`${col.collectionName}::${rec.id}`);
-      }
-    }
-
-    // Log incoming record ids + entry types at the socket boundary for tracing.
-    for (const col of request) {
-      for (const rec of col.records) {
-        const entryTypes = rec.entries.map(e => `${e.type}:${e.id}`).join(',');
-        logger.debug(`[C2S-IN] "${col.collectionName}" recId=${rec.id} hash=${rec.hash ?? 'null'} entries=[${entryTypes}]`);
       }
     }
 

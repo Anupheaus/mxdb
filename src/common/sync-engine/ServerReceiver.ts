@@ -38,11 +38,14 @@ interface ServerReceiverProps {
  * 4. For each client record, process:
  *      a. Branched-only: no entries to merge; compare client hash vs server
  *         hash. Match → nothing to push. Mismatch → disparity push (active or
- *         delete cursor).
+ *         delete cursor). If the server has no state at all and the client still
+ *         reports an active hash, push a delete (reconnect ghost cleanup).
  *      b. Has entries: merge into server audit, replay to get the live record,
  *         persist via `onUpdate`. If the post-merge hash differs from the client
  *         hash, or the merged result is a deletion that the client didn't know
- *         about, push the disparity cursor.
+ *         about, push the disparity cursor. Records whose first non-Branched entry
+ *         is not Created and the server has no state are treated as server-origin
+ *         ghosts and receive a delete cursor — client Created records are excluded.
  * 5. All disparity pushes go through `sd.push(payload)` with the default
  *    `addToFilter=true`. Since the mirror set in step 2 has the client's old
  *    hash and the cursor carries the new (server/merged) hash, the SD's filter
@@ -69,7 +72,6 @@ export class ServerReceiver {
 
     // Step 1: Pause the SD so queued/pending dispatches hold until we finish.
     serverDispatcher.pause();
-    this.#logger.debug('[SR] process.begin', { srId, collections: request.length, records: totalRecords });
 
     // Step 2: Synchronously mirror the client's claimed state into #filter.
     // MUST happen before any await — any change-stream event that races with
@@ -114,6 +116,7 @@ export class ServerReceiver {
         collectionName: string;
         recordId: string;
         clientHash?: string;
+        lastAuditEntryId: string;
         serverState: MXDBActiveRecordState | MXDBDeletedRecordState | undefined;
       }> = [];
       const branchOnlySuccessIds = new Map<string, string[]>();
@@ -130,7 +133,13 @@ export class ServerReceiver {
             // Branched-only: nothing to merge. Compare with server state and
             // queue a disparity push if needed.
             const serverState = colServerMap.get(recordId);
-            branchOnlyDisparities.push({ collectionName: colName, recordId, clientHash: rec.hash, serverState });
+            branchOnlyDisparities.push({
+              collectionName: colName,
+              recordId,
+              clientHash: rec.hash,
+              lastAuditEntryId: this.#getLastAuditEntryId(rec.entries),
+              serverState,
+            });
             if (!branchOnlySuccessIds.has(colName)) branchOnlySuccessIds.set(colName, []);
             branchOnlySuccessIds.get(colName)!.push(recordId);
             continue;
@@ -156,8 +165,19 @@ export class ServerReceiver {
               if (isClientDeletion) {
                 if (!branchOnlySuccessIds.has(colName)) branchOnlySuccessIds.set(colName, []);
                 branchOnlySuccessIds.get(colName)!.push(recordId);
+              } else if (rec.hash != null) {
+                // Existing / updated record the server no longer has — tell the client to drop it.
+                branchOnlyDisparities.push({
+                  collectionName: colName,
+                  recordId,
+                  clientHash: rec.hash,
+                  lastAuditEntryId: this.#getLastAuditEntryId(rec.entries),
+                  serverState: undefined,
+                });
+                if (!branchOnlySuccessIds.has(colName)) branchOnlySuccessIds.set(colName, []);
+                branchOnlySuccessIds.get(colName)!.push(recordId);
               } else {
-                this.#logger.error('[SR] ORPHAN: new record does not have Created as first entry — skipping', {
+                this.#logger.error('[SR] ORPHAN: record has no server state and is not a client Created or Deleted — skipping', {
                   srId, collectionName: colName, recordId, clientEntryTypes: strippedEntries.map(e => e.type),
                 });
               }
@@ -258,10 +278,17 @@ export class ServerReceiver {
       const persistedHashByKey = new Map<string, string>();
       persistedActive.forEach((item, i) => persistedHashByKey.set(`${item.collectionName}::${item.recordId}`, persistedHashes[i]!));
 
-      // Branched-only disparities
+      // Branched-only disparities (and server-missing ghosts — branched or updated records with no server state).
       let branchedActiveIdx = 0;
       for (const d of branchOnlyDisparities) {
-        if (d.serverState == null) continue;
+        if (d.serverState == null) {
+          // Server has no record or audit tombstone. Only push a delete when the client still
+          // considers the record active — never for client Created records (handled above).
+          if (d.clientHash == null) continue;
+          const cursor: MXDBDeletedRecordCursor = { recordId: d.recordId, lastAuditEntryId: d.lastAuditEntryId };
+          ensureCol(d.collectionName).records.push(cursor);
+          continue;
+        }
         if (isActiveRecordState(d.serverState)) {
           const serverHash = branchedHashByIdx.get(branchedActiveIdx++)!;
           if (serverHash === d.clientHash) continue; // already consistent
@@ -314,7 +341,6 @@ export class ServerReceiver {
       const totalMs = Math.round(performance.now() - processT0);
       const pushedRecords = pushPayload.reduce((a, c) => a + c.records.length, 0);
       const timings = { srId, records: totalRecords, totalMs, mirrorMs, retrieveMs, mergeMs, persistMs, disparityMs, pushedRecords };
-      this.#logger.debug('[SR] process.done', timings);
       if (totalMs >= 2000) this.#logger.warn('[SR] slow process', timings);
 
       return successResponse;
@@ -328,7 +354,6 @@ export class ServerReceiver {
     } finally {
       // Step 8: Resume the SD unconditionally.
       serverDispatcher.resume();
-      this.#logger.silly('[SR] process complete, SD resumed', { srId });
     }
   }
 

@@ -22,7 +22,7 @@ One SR + SD pair per connected client on the server. One CD + CR pair per client
 - `ClientDispatcher.ts` / `.tests.ts`
 - `ServerReceiver.ts` / `.tests.ts`
 - `ServerDispatcher.ts` / `.tests.ts`
-- `ClientReceiver.ts` / `.tests.ts`
+- `ClientReceiver.ts` / `.tests.ts` (delete-is-final; diagnostic logging only in hot path)
 - `syncEngine.stress.tests.ts` — 12-client convergence stress test (run 5+ times when touching race-sensitive code)
 - `models.ts` — shared request/response types (`MXDBRecordStates`, `MXDBRecordCursors`, `MXDBUpdateRequest`, `ServerDispatcherFilter`, `SyncPausedError`)
 - `utils.ts` — helpers shared across components

@@ -36,20 +36,10 @@ export function addClientWatches(
       switch (event.type) {
         case 'insert':
         case 'update': {
-          watchLog?.debug('changeStream batch → S2C (upsert)', {
-            socketId: client.id,
-            collectionName: event.collectionName,
-            recordIds: event.records.ids(),
-          });
           await s2c.onDbChange({ type: 'upsert', collectionName: event.collectionName, records: event.records });
           break;
         }
         case 'delete': {
-          watchLog?.debug('changeStream batch → S2C (delete)', {
-            socketId: client.id,
-            collectionName: event.collectionName,
-            recordIds: event.recordIds,
-          });
           await s2c.onDbChange({ type: 'delete', collectionName: event.collectionName, recordIds: event.recordIds });
           break;
         }

@@ -3,6 +3,7 @@ import { is } from '@anupheaus/common';
 import { useNexus } from '@anupheaus/nexus/client';
 import { useSyncState } from './providers/client-to-server/SyncStateContext';
 import { DbsContext } from './providers/dbs/DbContext';
+import { MxdbReadyContext } from './auth/MxdbReadyContext';
 
 export function useMXDB() {
   const { getIsConnected, onConnectionStateChanged, getSocket, disconnect, connect } = useNexus();
@@ -13,6 +14,7 @@ export function useMXDB() {
   const updateWhenSyncChangedRef = useRef(false);
   const [isSyncingState, setIsSyncingState] = useState(isSyncing);
   const { dbs, lastDb } = useContext(DbsContext);
+  const { waitForDbReady, getIsDbReady } = useContext(MxdbReadyContext);
 
   onConnectionStateChanged((newIsConnected, socket) => {
     if (!updateWhenChangedRef.current) return;
@@ -30,7 +32,10 @@ export function useMXDB() {
     },
     get isConnected() { updateWhenChangedRef.current = true; return isConnected; },
     get clientId() { updateWhenChangedRef.current = true; return clientId; },
-    get isDbReady() { return !is.empty(lastDb) && dbs.has(lastDb); },
+    get isDbReady() {
+      return getIsDbReady() || (!is.empty(lastDb) && dbs.has(lastDb));
+    },
+    waitForDbReady,
     onConnectionStateChanged,
     disconnect,
     connect,

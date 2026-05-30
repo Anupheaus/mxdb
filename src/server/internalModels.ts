@@ -61,5 +61,6 @@ export interface ServerInstance {
   getDevices(userId: string): Promise<MXDBDeviceInfo[]>;
   enableDevice(requestId: string): Promise<void>;
   disableDevice(requestId: string): Promise<void>;
+  deleteDevice(requestId: string): Promise<void>;
   close(): Promise<void>;
 }

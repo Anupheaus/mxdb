@@ -7,6 +7,7 @@ const mockInsertOne = vi.fn();
 const mockFindOne = vi.fn();
 const mockFind = vi.fn();
 const mockUpdateOne = vi.fn();
+const mockDeleteOne = vi.fn();
 const mockListCollections = vi.fn();
 const mockGetCollection = vi.fn();
 
@@ -15,6 +16,7 @@ const fakeCollection = {
   findOne: mockFindOne,
   find: mockFind,
   updateOne: mockUpdateOne,
+  deleteOne: mockDeleteOne,
   createIndex: vi.fn(),
 };
 
@@ -114,5 +116,29 @@ describe('AuthCollection (base class)', () => {
     const coll = new ConcreteCollection(makeFakeDb());
     await coll.update('req-1', {});
     expect(mockUpdateOne).not.toHaveBeenCalled();
+  });
+
+  it('delete: removes document by requestId', async () => {
+    const coll = new ConcreteCollection(makeFakeDb());
+    await coll.delete('req-1');
+    expect(mockDeleteOne).toHaveBeenCalledWith({ _id: 'req-1' });
+  });
+
+  it('findStalePendingInvites: queries disabled invites without device or last connection', async () => {
+    mockFind.mockReturnValue({
+      toArray: vi.fn().mockResolvedValue([
+        { _id: 'invite-1', sessionToken: 't1', userId: 'u1', deviceId: 'd1', isEnabled: false, createdAt: 1 },
+      ]),
+    });
+    const coll = new ConcreteCollection(makeFakeDb());
+    const results = await coll.findStalePendingInvites(1_000);
+    expect(mockFind).toHaveBeenCalledWith({
+      isEnabled: false,
+      deviceDetails: { $exists: false },
+      lastConnectedAt: { $exists: false },
+      createdAt: { $lt: 1_000 },
+    });
+    expect(results).toHaveLength(1);
+    expect(results[0]).toEqual(expect.objectContaining({ requestId: 'invite-1' }));
   });
 });

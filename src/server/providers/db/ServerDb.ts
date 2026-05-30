@@ -305,7 +305,6 @@ export class ServerDb {
         operationType: validOperationType,
         debounceMs: this.#changeStreamDebounceMs,
         onAfterDispatch: event => this.#runExtensionHooksAfterChange(event),
-        logger: this.#logger,
       }));
       events.process(change as ChangeStreamDocument<MongoDocOf<Record>>);
     });

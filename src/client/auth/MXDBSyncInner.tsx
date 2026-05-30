@@ -1,12 +1,14 @@
-import { createComponent, useLogger } from '@anupheaus/react-ui';
+import { createComponent, useBound, useLogger } from '@anupheaus/react-ui';
 import type { ReactNode, MutableRefObject } from 'react';
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useMemo } from 'react';
 import { useAuthentication } from '@anupheaus/nexus/client';
 import { DbsProvider } from '../providers/dbs';
 import { ClientToServerSyncProvider, ClientToServerProvider } from '../providers/client-to-server';
 import { ServerToClientProvider } from '../providers/server-to-client';
 import { deriveKey } from './deriveKey';
 import { saveEncryptionToSession, loadEncryptionFromSession, clearEncryptionFromSession } from './encryptionSessionCache';
+import { createDbReadyWaitHandle } from './dbReadyWait';
+import { DB_READY_TIMEOUT_MS, MxdbReadyContext } from './MxdbReadyContext';
 import type { MXDBCollection, MXDBError } from '../../common';
 import type { MXDBAccount, MXDBUser } from '../../common/models';
 
@@ -44,6 +46,17 @@ export const MXDBSyncInner = createComponent('MXDBSyncInner', ({
   const channelRef = useRef<BroadcastChannel | null>(null);
   const prevUserRef = useRef<MXDBUser | undefined>(undefined);
   const reauthInProgressRef = useRef(false);
+  const isDbReady = encryptionKey != null && dbName != null;
+  const dbReadyWaitRef = useRef(createDbReadyWaitHandle(DB_READY_TIMEOUT_MS));
+  dbReadyWaitRef.current.setIsDbReady(isDbReady);
+
+  const waitForDbReady = useBound(() => dbReadyWaitRef.current.waitForDbReady());
+  const getIsDbReady = useBound(() => dbReadyWaitRef.current.getIsDbReady());
+
+  const mxdbReadyContext = useMemo(
+    () => ({ waitForDbReady, getIsDbReady }),
+    [waitForDbReady, getIsDbReady],
+  );
 
   // Dev bypass (non-production only)
   useEffect(() => {
@@ -144,16 +157,22 @@ export const MXDBSyncInner = createComponent('MXDBSyncInner', ({
   }, [user]); // eslint-disable-line react-hooks/exhaustive-deps
 
   if (encryptionKey == null || dbName == null) {
-    return <>{children}</>;
+    return (
+      <MxdbReadyContext.Provider value={mxdbReadyContext}>
+        {children}
+      </MxdbReadyContext.Provider>
+    );
   }
 
   return (
-    <DbsProvider name={dbName} encryptionKey={encryptionKey} collections={collections} logger={logger}>
-      <ClientToServerSyncProvider collections={collections} onError={onError}>
-        <ClientToServerProvider />
-        <ServerToClientProvider />
-        {children}
-      </ClientToServerSyncProvider>
-    </DbsProvider>
+    <MxdbReadyContext.Provider value={mxdbReadyContext}>
+      <DbsProvider name={dbName} encryptionKey={encryptionKey} collections={collections} logger={logger}>
+        <ClientToServerSyncProvider collections={collections} onError={onError}>
+          <ClientToServerProvider />
+          <ServerToClientProvider />
+          {children}
+        </ClientToServerSyncProvider>
+      </DbsProvider>
+    </MxdbReadyContext.Provider>
   );
 });

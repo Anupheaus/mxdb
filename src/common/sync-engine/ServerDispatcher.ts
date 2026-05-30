@@ -108,7 +108,6 @@ export class ServerDispatcher {
           const deletedSet = this.#deletedRecordIds.get(colName);
           if (deletedSet?.has(rec.id)) {
             deletedSet.delete(rec.id);
-            this.#logger.debug(`[SD] updateFilter: cleared premature tombstone for ${rec.id} in ${colName} — client reports active`);
           }
         }
       }
@@ -121,7 +120,6 @@ export class ServerDispatcher {
         for (const id of filterItem.deletedRecordIds) deletedSet.add(id);
       }
     }
-    this.#logger.debug('[SD] filter updated (SR seed)');
   }
 
   /**
@@ -138,7 +136,6 @@ export class ServerDispatcher {
    */
   push<T extends MXDBRecord>(request: MXDBRecordCursors<T>, addToFilter: boolean = true): void {
     this.#queue.push({ cursors: request as MXDBRecordCursors, addToFilter });
-    this.#logger.debug(`[SD] push received (addToFilter=${addToFilter}), queue length=${this.#queue.length}`);
     if (!this.#isPaused && !this.#inFlight && this.#retryTimer == null) {
       void this.#dispatch();
     }
@@ -225,7 +222,6 @@ export class ServerDispatcher {
 
         // Delete-is-final: anything targeting a confirmed-deleted id is skipped.
         if (inDeletedSet) {
-          this.#logger.debug(`[SD] filter: drop ${isDeletedCursor(cursor) ? 'delete' : 'active'} for confirmed-deleted ${id} in ${colName}`);
           continue;
         }
 
@@ -246,7 +242,6 @@ export class ServerDispatcher {
               // active cursors queued for a record, then the delete fanned out via
               // change-stream and was dropped here — the queued active cursors then
               // dispatched and re-created the record on that client.)
-              this.#logger.debug(`[SD] filter: drop change-stream delete for unknown record ${id} in ${colName} — recording tombstone`);
               if (!this.#deletedRecordIds.has(colName)) {
                 this.#deletedRecordIds.set(colName, new Set());
               }
@@ -255,7 +250,6 @@ export class ServerDispatcher {
             }
             // Authoritative delete for unknown record — send anyway (e.g. query result
             // discovered the record was deleted and wants the CR to know).
-            this.#logger.debug(`[SD] filter: send authoritative delete for unknown record ${id} in ${colName}`);
             freshRecords.push(cursor);
           } else if (filterRec.hash == null) {
             // Pending deletion — pick the latest ULID between the cursor and the filter's
@@ -274,30 +268,18 @@ export class ServerDispatcher {
           // Active cursor
           if (filterRec == null) {
             if (!addToFilter) {
-              // Change-stream update for a record the CR doesn't know about — drop.
-              this.#logger.debug(`[SD] filter: drop change-stream update for unknown record ${id} in ${colName}`);
               continue;
             }
             // Authoritative push of a new record — send.
             freshRecords.push(cursor);
           } else if (filterRec.hash == null) {
-            // Pending deletion — re-send the delete cursor rather than the update.
-            this.#logger.debug(`[SD] filter: re-send pending deletion for ${id} in ${colName}`);
             freshRecords.push({ recordId: id, lastAuditEntryId: filterRec.lastAuditEntryId });
           } else {
-            // Compare hash + ULID against the filter to skip no-op pushes.
             const cursorHash = (cursor as unknown as { hash?: string }).hash;
             if (filterRec.hash === cursorHash && filterRec.lastAuditEntryId === cursor.lastAuditEntryId) {
-              this.#logger.debug(`[SD] filter: skip — CR already up to date for ${id} in ${colName}`);
               continue;
             }
-            // Staleness: if the cursor is OLDER than what we've already delivered to
-            // the CR, drop it. This prevents a stale push (e.g. a query snapshot that
-            // read the record before a more-recent change-stream fan-out landed) from
-            // looping forever — the CR would skip it as stale and never ack, so the
-            // SD would keep retrying the same cursor.
             if (cursor.lastAuditEntryId < filterRec.lastAuditEntryId) {
-              this.#logger.debug(`[SD] filter: drop stale cursor for ${id} in ${colName} — cursor=${cursor.lastAuditEntryId} < filter=${filterRec.lastAuditEntryId}`);
               continue;
             }
             freshRecords.push(cursor);
@@ -307,13 +289,6 @@ export class ServerDispatcher {
       }
 
       if (freshRecords.length > 0) {
-        for (const cursor of freshRecords) {
-          const id = getCursorId(cursor);
-          const kind = isDeletedCursor(cursor) ? 'delete' : 'active';
-          const filterHasIt = filterRecordsMap?.has(id) ?? false;
-          const flag = colFlags.get(id);
-          this.#logger.debug(`[SD] dispatch ${kind} ${id} in ${colName} filterHas=${filterHasIt} addToFilter=${flag}`);
-        }
         freshRequest.push({ collectionName: colName, records: freshRecords });
         flagsByCol.set(colName, colFlags);
       }
@@ -321,7 +296,6 @@ export class ServerDispatcher {
 
     // Step 3: If empty, return without dispatching
     if (freshRequest.length === 0) {
-      this.#logger.debug('[SD] dispatch: fresh request empty, skipping');
       this.#queue.splice(0, queueLength);
       return;
     }
@@ -333,7 +307,6 @@ export class ServerDispatcher {
     let response: MXDBSyncEngineResponse | undefined;
 
     try {
-      this.#logger.debug('[SD] dispatching fresh request');
       response = await this.#props.onDispatch(freshRequest);
       success = true;
 
@@ -362,7 +335,6 @@ export class ServerDispatcher {
                 this.#deletedRecordIds.set(colName, new Set());
               }
               this.#deletedRecordIds.get(colName)!.add(id);
-              this.#logger.debug(`[SD] successfully deleted ${id} in ${colName}`);
             } else {
               // Unsuccessfully deleted: mark as pending deletion (remove hash, keep ULID).
               if (filterRecordsMap == null) {
@@ -376,7 +348,6 @@ export class ServerDispatcher {
               } else {
                 filterRecordsMap.set(id, { id, lastAuditEntryId: cursor.lastAuditEntryId });
               }
-              this.#logger.debug(`[SD] unsuccessfully deleted ${id} in ${colName} — marked pending`);
             }
           } else if (isActiveCursor(cursor)) {
             if (!successSet.has(id)) continue;

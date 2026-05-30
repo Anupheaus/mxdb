@@ -260,18 +260,11 @@ export class ServerDbCollection<RecordType extends Record = Record> {
             }
           });
           const wtMs = Math.round(performance.now() - wtT0);
-          this.#logger.debug('[sync] upsert txn', { collection: this.#collection.name, recordId: record.id, attempts: txnAttempts, wtMs, writeRecMs: lastWriteRecordsMs, writeAudMs: lastWriteAuditMs });
           if (wtMs >= 2_000 || txnAttempts > 1) {
             this.#logger.warn('[sync] slow/retried upsert txn', { collection: this.#collection.name, recordId: record.id, attempts: txnAttempts, wtMs, writeRecMs: lastWriteRecordsMs, writeAudMs: lastWriteAuditMs });
           }
         });
         const recordSyncMs = Math.round(performance.now() - recordSyncT0);
-        this.#logger.debug('[sync] upsert committed', {
-          collection: this.#collection.name,
-          recordId: record.id,
-          durationMs: recordSyncMs,
-          txnAttempts,
-        });
         if (recordSyncMs >= 2_000) {
           this.#logger.warn('[sync] slow upsert', { collection: this.#collection.name, recordId: record.id, durationMs: recordSyncMs, txnAttempts });
         }
@@ -304,37 +297,26 @@ export class ServerDbCollection<RecordType extends Record = Record> {
       const session = db.client.startSession();
       const unregister = this.#registerSession?.(session);
       let txnAttempts = 0;
-      let lastFindMs = 0;
-      let lastDelMs = 0;
-      let lastWriteAuditMs = 0;
       try {
         await this.#withRecordRetry(id, async () => {
           const wtT0 = performance.now();
           await session.withTransaction(async () => {
             txnAttempts += 1;
-            const findT0 = performance.now();
             const doc = await liveCollection.findOne({ _id: id as any }, { session });
-            lastFindMs = Math.round(performance.now() - findT0);
             const live = doc == null ? undefined : (dbUtils.deserialize(doc) as RecordType);
-            const delT0 = performance.now();
             await liveCollection.deleteOne({ _id: id as any }, { session });
-            lastDelMs = Math.round(performance.now() - delT0);
             if (audit) {
-              const writeAudT0 = performance.now();
               await this.#writeAuditRecords([audit], session, {
                 deleteSnapshots: live != null ? { [id]: live } : undefined,
               });
-              lastWriteAuditMs = Math.round(performance.now() - writeAudT0);
             }
           });
           const wtMs = Math.round(performance.now() - wtT0);
-          this.#logger.debug('[sync] delete txn', { collection: this.#collection.name, recordId: id, attempts: txnAttempts, wtMs, findMs: lastFindMs, delMs: lastDelMs, writeAudMs: lastWriteAuditMs });
           if (wtMs >= 2_000 || txnAttempts > 1) {
             this.#logger.warn('[sync] slow/retried delete txn', { collection: this.#collection.name, recordId: id, attempts: txnAttempts, wtMs });
           }
         });
         const deleteSyncMs = Math.round(performance.now() - deleteSyncT0);
-        this.#logger.debug('[sync] delete committed', { collection: this.#collection.name, recordId: id, durationMs: deleteSyncMs, txnAttempts });
         if (deleteSyncMs >= 2_000) {
           this.#logger.warn('[sync] slow delete', { collection: this.#collection.name, recordId: id, durationMs: deleteSyncMs, txnAttempts });
         }

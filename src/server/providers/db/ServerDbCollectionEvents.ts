@@ -1,4 +1,4 @@
-import type { Logger, Record } from '@anupheaus/common';
+import type { Record } from '@anupheaus/common';
 import type { ServerDbChangeEvent } from './server-db-models';
 import type { MongoDocOf } from '../../../common';
 import type { ChangeStreamDocument } from 'mongodb';
@@ -17,18 +17,15 @@ interface Props {
   debounceMs?: number;
   /** Runs before change callbacks; awaited so clients are notified only after this completes. */
   onAfterDispatch?: (event: ServerDbChangeEvent) => void | Promise<void>;
-  /** When set, logs batched change-stream output (enable `LOGGING_*` silly/debug for `ServerDb`). */
-  logger?: Logger;
 }
 
 export class ServerDbCollectionEvents {
-  constructor({ collectionName, callbacks, operationType, debounceMs, onAfterDispatch, logger }: Props) {
+  constructor({ collectionName, callbacks, operationType, debounceMs, onAfterDispatch }: Props) {
     this.#collectionName = collectionName;
     this.#callbacks = callbacks;
     this.#operationType = operationType;
     this.#debounceMs = debounceMs ?? DEFAULT_DEBOUNCE_MS;
     this.#onAfterDispatch = onAfterDispatch;
-    this.#logger = logger;
     this.#insertUpdateEvents = new Map();
     this.#deleteEvents = new Set();
   }
@@ -37,7 +34,6 @@ export class ServerDbCollectionEvents {
   #operationType: OperationType;
   #debounceMs: number;
   #onAfterDispatch: ((event: ServerDbChangeEvent) => void | Promise<void>) | undefined;
-  #logger: Logger | undefined;
   #insertUpdateEvents: Map<string, Record>;
   #deleteEvents: Set<string>;
   #timer: NodeJS.Timeout | undefined;
@@ -51,13 +47,6 @@ export class ServerDbCollectionEvents {
         const record = 'fullDocument' in streamEvent && streamEvent.fullDocument != null ? dbUtils.deserialize(streamEvent.fullDocument) : undefined;
         if (record != null) {
           this.#insertUpdateEvents.set(record.id, record);
-          const updatedAt = (record as { updatedAt?: number }).updatedAt;
-          this.#logger?.silly('changeStream:batch add (insert/update)', {
-            collection: this.#collectionName,
-            recordId: record.id,
-            updatedAt,
-            pendingBatchSize: this.#insertUpdateEvents.size,
-          });
         }
         break;
       }
@@ -65,11 +54,6 @@ export class ServerDbCollectionEvents {
         const recordId = 'documentKey' in streamEvent && streamEvent.documentKey != null && '_id' in streamEvent.documentKey ? streamEvent.documentKey._id.toString() : undefined;
         if (recordId == null) return;
         this.#deleteEvents.add(recordId);
-        this.#logger?.silly('changeStream:batch add (delete)', {
-          collection: this.#collectionName,
-          recordId,
-          pendingBatchSize: this.#deleteEvents.size,
-        });
         break;
       }
     }
@@ -102,25 +86,6 @@ export class ServerDbCollectionEvents {
       this.#deleteEvents.clear();
     } else {
       this.#insertUpdateEvents.clear();
-    }
-
-    if (operationType === 'delete') {
-      this.#logger?.debug('changeStream:dispatch (debounced)', {
-        collection: this.#collectionName,
-        type: 'delete',
-        recordIds: deleteIds,
-        subscriberCount: this.#callbacks.size,
-      });
-    } else {
-      const ids = upsertRecords.ids();
-      const updatedAts = upsertRecords.map((r: Record) => (r as { updatedAt?: number }).updatedAt);
-      this.#logger?.debug('changeStream:dispatch (debounced)', {
-        collection: this.#collectionName,
-        type: operationType,
-        recordIds: ids,
-        updatedAts,
-        subscriberCount: this.#callbacks.size,
-      });
     }
 
     await Promise.resolve(this.#onAfterDispatch?.(event));

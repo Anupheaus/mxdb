@@ -46,7 +46,7 @@ export function useCollection<RecordType extends Record>(collection: MXDBCollect
   const get = createGet(dbCollection);
   const upsert = createUpsert(dbCollection, logger);
   const remove = createRemove(dbCollection, logger);
-  const useSubscription = createUseSubscription(logger);
+  const useSubscription = createUseSubscription();
   const getAll = createGetAll(dbCollection, useSubscription, logger);
   const query = createQuery(dbCollection, useSubscription, logger);
   const distinct = createDistinct(dbCollection, useSubscription, logger);

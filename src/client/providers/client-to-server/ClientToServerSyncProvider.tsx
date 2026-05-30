@@ -61,9 +61,12 @@ export const ClientToServerSyncProvider = createComponent('ClientToServerSyncPro
           try { collection = db.use(item.collectionName); }
           catch { continue; }
           const successfulRecordIds: string[] = [];
-          for (const rec of item.records ?? []) {
-            collection.applyServerWriteSync(rec.record, rec.lastAuditEntryId);
-            successfulRecordIds.push(rec.record.id);
+          if ((item.records?.length ?? 0) > 0) {
+            // Use batch method: one exec-batch + one onChange instead of N of each.
+            // This prevents reconciliation with N records from queueing N SQLite writes
+            // (and N OPFS flushes with encryption) before any query can run.
+            collection.batchApplyServerWriteSync(item.records!);
+            successfulRecordIds.push(...item.records!.map(r => r.record.id));
           }
           if ((item.deletedRecordIds?.length ?? 0) > 0) {
             collection.applyServerDeleteSync(item.deletedRecordIds!);

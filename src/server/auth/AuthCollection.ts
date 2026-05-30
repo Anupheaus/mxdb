@@ -88,6 +88,18 @@ export abstract class AuthCollection<TRecord extends NexusAuthRecord>
     return docs.map(doc => fromDoc(doc as AuthDoc<TRecord>));
   }
 
+  /** Pending invites that were created before `createdBeforeMs` (unix ms). */
+  async findStalePendingInvites(createdBeforeMs: number): Promise<TRecord[]> {
+    const coll = await this.getColl();
+    const docs = await coll.find({
+      isEnabled: false,
+      deviceDetails: { $exists: false },
+      lastConnectedAt: { $exists: false },
+      createdAt: { $lt: createdBeforeMs },
+    } as any).toArray();
+    return docs.map(doc => fromDoc(doc as AuthDoc<TRecord>));
+  }
+
   async update(requestId: string, patch: Partial<TRecord>): Promise<void> {
     const coll = await this.getColl();
     const setFields: Record<string, unknown> = {};
@@ -102,5 +114,10 @@ export abstract class AuthCollection<TRecord extends NexusAuthRecord>
     if (Object.keys(update).length > 0) {
       await coll.updateOne({ _id: requestId } as any, update);
     }
+  }
+
+  async delete(requestId: string): Promise<void> {
+    const coll = await this.getColl();
+    await coll.deleteOne({ _id: requestId } as any);
   }
 }

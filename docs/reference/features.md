@@ -75,7 +75,7 @@ Legacy **`mxdbSyncCollectionsAction`**, **`mxdbUpsertAction`**, **`mxdbRemoveAct
 | **Query / get / distinct** | Standard CRUD/query actions | [`src/server/actions/`](../../src/server/actions/) |
 | **Subscriptions** | Query, distinct, and get-all subscriptions | [`src/server/subscriptions/`](../../src/server/subscriptions/) |
 | **Seeding** | Optional collection seed on startup | [`src/server/seeding/`](../../src/server/seeding/) |
-| **Auth helpers** | Invite links, device list, enable/disable device | Returned from **`startServer`** (`createInviteLink`, `getDevices`, …) |
+| **Auth helpers** | Invite links, device list, enable/disable/delete device, stale-invite cleanup | **`useAuthDevices()`** after **`startServer`**; legacy helpers on **`ServerInstance`** (`createInvite`, `getDevices`, `deleteDevice`, …) |
 
 ### Server collection hook
 

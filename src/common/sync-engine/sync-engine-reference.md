@@ -326,13 +326,15 @@ Runs on the server, one instance per connected client. Given a `ClientDispatcher
         - Has `hash` (active): compare with server state for disparity detection. No merge needed. Included in `successfulRecordIds`.
         - No `hash` (deleted): client deletion for absent server record. Already consistent.
     - **Entries remain** -> merge with server audit via `auditor.merge()`, replay via `replayHistoryEndState` -> materialised state (active or deleted). If merge/replay throws, log and skip that record.
-    - **New record** (no server state, first entry is `Created`): use client entries directly (no merge needed).
+    - **New record** (no server state, first entry is `Created`): use client entries directly (no merge needed). Never push a delete for these — the client is uploading a record it created locally.
+    - **Server-missing ghost** (no server state, first non-`Branched` entry is not `Created`, client still has `hash`): included in `successfulRecordIds`; a delete cursor is pushed in step 7 so reconnect cleans stale SQLite rows. Skipped when the client is already deleting (no `hash`) or the payload is a client `Deleted` for an already-absent record.
     - **Tombstoned server state**: NOT a short-circuit. Entries are still merged into the audit (replay keeps `live = undefined` after a Delete — post-delete updates change the audit length without resurrecting the record).
 5. Call `onUpdate(states)` to persist all merged/new results. Returns `MXDBSyncEngineResponse` of successfully-persisted ids.
 6. Collect `successfulRecordIds` = persisted ids + branched-only ids.
 7. Build disparity push payload by comparing merged/server state against what the client sent:
     - **Branched-only active, server hash differs from client hash** -> active cursor in payload.
     - **Branched-only active, server is deleted but client thinks active** -> delete cursor.
+    - **Branched-only or updated active, server has no record/audit at all** -> delete cursor (reconnect ghost cleanup).
     - **Persisted active, merged hash differs from client hash** -> active cursor.
     - **Persisted as deleted, client thought active** -> delete cursor.
 8. Push disparities via `serverDispatcher.push(payload)` (authoritative, `addToFilter=true`). The SD's filter deduplicates — if the client's mirror matches, the push is a no-op.
@@ -404,6 +406,10 @@ If a regression causes a stress-test flake, check if one of these unit tests wou
 | CD `#pendingReEnqueue` in-flight race | `ClientDispatcher.tests.ts` | "re-enqueues a record whose enqueue arrived while it was in-flight" |
 | CD drops queue entries whose state disappeared | `ClientDispatcher.tests.ts` | "drops queue entries whose state has disappeared before dispatch" |
 | CD uses insertion-order `lastAuditEntryId`, not max ULID | `ClientDispatcher.tests.ts` | "uses the last audit entry (insertion order) for lastAuditEntryId, not the max ULID" |
+| Server-missing ghost → delete push (branched-only) | `ServerReceiver.tests.ts` | "pushes delete for branched-only ghost when server has no record" |
+| Server-missing ghost → delete push (Updated orphan) | `ServerReceiver.tests.ts` | "pushes delete for Updated ghost when server has no record" |
+| Client Created on empty server must not push delete | `ServerReceiver.tests.ts` | "does not push delete for client Created record when server has no state" |
+| Orphan Updated without hash is skipped (no push) | `ServerReceiver.tests.ts` | "skips orphan Updated record without hash when server has no state" |
 
 ---
 

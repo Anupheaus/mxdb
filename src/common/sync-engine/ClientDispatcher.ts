@@ -57,7 +57,6 @@ export class ClientDispatcher {
     }
     this.#queue.push(item);
     this.#queueSet.add(key);
-    this.#logger.debug(`[CD] enqueued ${item.recordId} in ${item.collectionName}, queue length=${this.#queue.length}`);
     if (!this.#timer && !this.#inFlight) {
       this.#startTimer();
     }

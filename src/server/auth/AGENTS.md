@@ -19,7 +19,10 @@ This auth layer is intentionally isolated from the sync collection system: `Auth
 - `InviteNamespace.ts` — dedicated `socket.io` Server mounted at `/{name}/register` (separate from the main socket). Two-step flow: (1) client connects with `{ requestId }`, server validates invite and emits `INVITE_DETAILS`; (2) client emits `COMPLETE_REGISTRATION`, server stores key hash, issues initial token, emits `AUTH_SUCCESS`.
 
 ### Device management
-- `deviceManagement.ts` — `getDevices(db, userId)`, `enableDevice(db, requestId)`, `disableDevice(db, requestId)`. Called by the `ServerInstance` surface exposed from `startServer`.
+- `deviceManagement.ts` — `getDevices`, `enableDevice`, `disableDevice`, `deleteDevice`, `expireStalePendingInvites`. Registered on **`useAuthDevices()`** at startup; also exposed on the **`ServerInstance`** from `startServer`.
+- `authDevicesContext.ts` — module-level `AuthDevicesApi` store; `setAuthDevices` (called from `startServer`), `useAuthDevices()` for handlers.
+- `useAuthDevices.ts` — re-exports `authDevicesContext` (`listForUser`, `createInvite`, `setEnabled`, `deleteDevice`, `expireStalePendingInvites`).
+- `parseSessionTokenFromHandshake.ts` — reads `nexus_session` / `socketapi_session` cookies, then handshake `sessionToken` (used by `startAuthenticatedServer`).
 
 ### Dev tooling
 - `registerDevAuthRoute.ts` — registers a `POST /{name}/dev/signin` Koa route that issues a dev auth token without WebAuthn. **Excluded in `NODE_ENV=production`** — this is the server-side counterpart to `setupBrowserTools`'s `setDevAuth`.

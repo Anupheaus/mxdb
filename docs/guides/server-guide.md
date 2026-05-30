@@ -35,9 +35,10 @@ Use the **same** `defineCollection()` definitions as the client (shared module r
 **Return value (`ServerInstance`):**
 
 - **`app`** — Koa app (mount or listen as you prefer)
-- **`createInviteLink`**, **`getDevices`**, **`enableDevice`**, **`disableDevice`** — device / invite management
+- **`createInvite`** (WebAuthn mode only), **`getDevices`**, **`enableDevice`**, **`disableDevice`**, **`deleteDevice`** — device / invite management on the instance
+- **`useAuthDevices()`** — same operations as a hook inside socket actions and HTTP routes after `startServer` (`listForUser`, `createInvite`, `setEnabled`, `deleteDevice`, `expireStalePendingInvites`)
 
-Internally: **`provideDb`** opens Mongo + change streams, then **`startAuthenticatedServer`** starts the socket server with **internal actions** and **subscriptions**, per-socket **`ServerToClientSynchronisation`**, token rotation, and **client DB watches**.
+Internally: **`provideDb`** opens Mongo + change streams, then **`startAuthenticatedServer`** starts the socket server with **internal actions** and **subscriptions**, per-socket **`ServerToClientSynchronisation`** (registered before auth awaits complete), and **client DB watches**.
 
 ---
 

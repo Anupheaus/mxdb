@@ -113,14 +113,15 @@ describe('ServerReceiver', () => {
     expect(successIds).toContain('r1');
   });
 
-  it('skips new record if first entry is not Created', async () => {
+  it('skips orphan Updated record without hash when server has no state', async () => {
     const { sd } = makeSD();
 
     const onRetrieve = vi.fn().mockResolvedValue([]);
     const onUpdate = vi.fn().mockResolvedValue([]);
+    const pushSpy = vi.spyOn(sd, 'push');
     const sr = new ServerReceiver(mockLogger, { onRetrieve, onUpdate, serverDispatcher: sd });
 
-    // Entry that is Updated, not Created
+    // Entry that is Updated, not Created, and no active hash — client is not claiming a live row.
     const fakeUpdateEntry = { type: AuditEntryType.Updated, id: 'ulid-1', ops: [] };
     const request: ClientDispatcherRequest = [{
       collectionName: 'items',
@@ -129,8 +130,88 @@ describe('ServerReceiver', () => {
 
     const result = await sr.process(request);
     expect(mockLogger.error).toHaveBeenCalled();
+    expect(pushSpy).not.toHaveBeenCalled();
     const successIds = result.find(r => r.collectionName === 'items')?.successfulRecordIds ?? [];
     expect(successIds).not.toContain('r1');
+  });
+
+  it('pushes delete for branched-only ghost when server has no record', async () => {
+    const { sd } = makeSD();
+    const pushSpy = vi.spyOn(sd, 'push');
+
+    const onRetrieve = vi.fn().mockResolvedValue([]);
+    const onUpdate = vi.fn().mockResolvedValue([]);
+    const sr = new ServerReceiver(mockLogger, { onRetrieve, onUpdate, serverDispatcher: sd });
+
+    const branchId = auditor.generateUlid();
+    const request: ClientDispatcherRequest = [{
+      collectionName: 'items',
+      records: [{ id: 'ghost-1', hash: 'mock-hash-ghost-1', entries: [{ type: AuditEntryType.Branched, id: branchId }] }],
+    }];
+
+    const result = await sr.process(request);
+
+    expect(onUpdate).not.toHaveBeenCalled();
+    expect(pushSpy).toHaveBeenCalledOnce();
+    const pushPayload = pushSpy.mock.calls[0]![0] as MXDBRecordCursors;
+    const pushedCursor = pushPayload[0]?.records[0];
+    expect('record' in pushedCursor!).toBe(false);
+    expect((pushedCursor as { recordId: string }).recordId).toBe('ghost-1');
+    expect((pushedCursor as { lastAuditEntryId: string }).lastAuditEntryId).toBe(branchId);
+
+    const successIds = result.find(r => r.collectionName === 'items')?.successfulRecordIds ?? [];
+    expect(successIds).toContain('ghost-1');
+  });
+
+  it('pushes delete for Updated ghost when server has no record', async () => {
+    const { sd } = makeSD();
+    const pushSpy = vi.spyOn(sd, 'push');
+
+    const onRetrieve = vi.fn().mockResolvedValue([]);
+    const onUpdate = vi.fn().mockResolvedValue([]);
+    const sr = new ServerReceiver(mockLogger, { onRetrieve, onUpdate, serverDispatcher: sd });
+
+    const fakeUpdateEntry = { type: AuditEntryType.Updated, id: 'ulid-update-1', ops: [] };
+    const request: ClientDispatcherRequest = [{
+      collectionName: 'items',
+      records: [{ id: 'ghost-2', hash: 'mock-hash-ghost-2', entries: [fakeUpdateEntry as any] }],
+    }];
+
+    const result = await sr.process(request);
+
+    expect(onUpdate).not.toHaveBeenCalled();
+    expect(mockLogger.error).not.toHaveBeenCalled();
+    expect(pushSpy).toHaveBeenCalledOnce();
+    const pushPayload = pushSpy.mock.calls[0]![0] as MXDBRecordCursors;
+    expect((pushPayload[0]?.records[0] as { recordId: string }).recordId).toBe('ghost-2');
+
+    const successIds = result.find(r => r.collectionName === 'items')?.successfulRecordIds ?? [];
+    expect(successIds).toContain('ghost-2');
+  });
+
+  it('does not push delete for client Created record when server has no state', async () => {
+    const { sd } = makeSD();
+    const pushSpy = vi.spyOn(sd, 'push');
+
+    const record = makeRecord('new-1', 'Alice');
+    const audit = auditor.createAuditFrom(record);
+
+    const onRetrieve = vi.fn().mockResolvedValue([]);
+    const onUpdate = vi.fn().mockResolvedValue([{
+      collectionName: 'items',
+      successfulRecordIds: ['new-1'],
+    }]);
+    const sr = new ServerReceiver(mockLogger, { onRetrieve, onUpdate, serverDispatcher: sd });
+
+    const request: ClientDispatcherRequest = [{
+      collectionName: 'items',
+      records: [{ id: 'new-1', hash: 'mock-hash-new-1', entries: audit.entries }],
+    }];
+
+    await sr.process(request);
+
+    expect(onUpdate).toHaveBeenCalledOnce();
+    expect(pushSpy).not.toHaveBeenCalled();
   });
 
   it('merges existing record audit', async () => {

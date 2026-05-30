@@ -132,7 +132,7 @@ interface ServerInstance {
 }
 ```
 
-Use `createInvite` to generate a time-limited URL you can send to a user. They open it in the browser, the client calls `useMXDBInvite()(url)`, WebAuthn registers a new device, and the device receives an auth token. Use `getDevices` / `enableDevice` / `disableDevice` to manage registered devices per user.
+Use `createInvite` to generate a time-limited URL you can send to a user. They open it in the browser, the client calls `useMXDBInvite()(url)`, WebAuthn registers a new device, and the device receives an auth token. Use **`useAuthDevices()`** (or the legacy `ServerInstance` helpers) to list, enable/disable, and delete devices per user.
 
 ## Client setup
 
