@@ -31,6 +31,25 @@ let serverChild: ChildProcess | null = null;
 type ServerLogCallback = (stream: 'stdout' | 'stderr', line: string) => void;
 let serverLogCallback: ServerLogCallback | null = null;
 
+/**
+ * Resolve `process.execPath` through any OS-level symlinks or junctions so
+ * that `fork()` receives the real filesystem path.
+ *
+ * On Windows with nvm, `process.execPath` is often a junction path like
+ * `C:\Program Files\nodejs\node.exe`. Windows `CreateProcess` (used by
+ * Node's `spawn`/`fork` internally) can fail with ENOENT when the path goes
+ * through a directory junction, even though the path resolves correctly via
+ * other APIs. `realpathSync` follows the junction to the versioned binary,
+ * e.g. `C:\Users\...\nvm\v22.14.0\node.exe`, which always works.
+ */
+function resolveNodeExecPath(): string {
+  try {
+    return fs.realpathSync(process.execPath);
+  } catch {
+    return process.execPath;
+  }
+}
+
 function lifecycleLog(event: string, detail?: Record<string, unknown>) {
   if (!serverLogCallback) return;
   serverLogCallback('stdout', JSON.stringify({ type: 'lifecycle', event, detail, ts: new Date().toISOString() }));
@@ -81,6 +100,10 @@ export async function startMongo(): Promise<{ getUri: () => string; stop: () => 
         storageEngine: 'wiredTiger',
         // Pin the port on restart (null on first boot — library picks one, we capture).
         ...(persistentMongoPort != null ? { port: persistentMongoPort } : {}),
+        // After a hard-kill restart the wiredTiger journal replay can take longer
+        // than the default 10 s, especially under stress-test load. 60 s gives
+        // ample headroom without masking genuine "mongod never started" failures.
+        launchTimeout: 60_000,
       }],
     });
     // Capture the port on first boot so subsequent hard-kill restarts can pin it.
@@ -155,6 +178,7 @@ export async function startServerInstance(
 
   lifecycleLog('startServerInstance.spawn', { requestedPort: port });
   const child = fork(SERVER_PROCESS_PATH, {
+    execPath: resolveNodeExecPath(),
     execArgv: ['--import', 'tsx/esm', '--no-warnings'],
     stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
     env: {
@@ -375,7 +399,9 @@ export async function stopLifecycle(stopMongo = true): Promise<void> {
       catch { try { child.kill('SIGTERM'); } catch { /* ignore */ } }
     });
   }
-  if (stopMongo) {
+  if (stopMongo && memoryServer != null) {
+    // Only stop if actually running — calling startMongo() here would create a
+    // new instance just to stop it (or hang retrying) if the server never started.
     const mongo = await startMongo();
     await mongo.stop();
   }

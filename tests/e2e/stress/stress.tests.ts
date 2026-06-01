@@ -59,7 +59,7 @@ describe('client sync integration', () => {
   afterAll(async () => {
     await emitFinalReport('afterAll');
     await teardownE2E();
-  }, 15_000);
+  }, 60_000);
 
   it('runs clients with random create/update/delete (capped live rows + capped deletes), then asserts integrity', async () => {
     await runStressRandomMixWorkload({ clients, emitFinalReport });
