@@ -68,12 +68,10 @@ export default defineConfig(({ mode }) => {
     test: {
       env: vitestE2eTlsEnv(__dirname),
       pool: 'forks',
-      environment: 'jsdom',
-      environmentOptions: {
-        jsdom: {
-          url: 'https://localhost',
-        },
-      },
+      // Use Node (not Vitest's jsdom env) so engine.io-client uses the `ws` package, which
+      // respects preload-tls.cjs for wss:// to the self-signed e2e HTTPS server. Browser
+      // globals come from installBrowserEnvironment() in vitestGlobals.ts.
+      environment: 'node',
       include,
       exclude,
       testTimeout,

@@ -26,6 +26,8 @@ import { waitUntilAsync } from './utils';
  * Obtain a session token from the dev-auth bypass route. Uses https.request so it goes through
  * the preload-tls.cjs patch that sets rejectUnauthorized=false for the self-signed test cert.
  */
+const SESSION_COOKIE_PATTERN = /(?:^|;\s*)(?:nexus_session|socketapi_session)=([^;]+)/;
+
 function fetchDevSessionToken(serverUrl: string, userId: string): Promise<string | undefined> {
   return new Promise<string | undefined>((resolve) => {
     const body = JSON.stringify({ userId });
@@ -38,12 +40,29 @@ function fetchDevSessionToken(serverUrl: string, userId: string): Promise<string
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) },
     }, (res) => {
-      if (res.statusCode !== 200) { resolve(undefined); return; }
-      const setCookie = res.headers['set-cookie'];
-      if (!setCookie) { resolve(undefined); return; }
-      const cookieStr = (Array.isArray(setCookie) ? setCookie[0] : setCookie) ?? '';
-      const match = cookieStr.match(/socketapi_session=([^;]+)/);
-      resolve(match?.[1] ?? undefined);
+      const chunks: Buffer[] = [];
+      res.on('data', chunk => chunks.push(chunk as Buffer));
+      res.on('end', () => {
+        if (res.statusCode !== 200) {
+          resolve(undefined);
+          return;
+        }
+        let fromBody: string | undefined;
+        try {
+          const parsed = JSON.parse(Buffer.concat(chunks).toString('utf8')) as { sessionToken?: unknown };
+          if (typeof parsed.sessionToken === 'string' && parsed.sessionToken.length > 0) {
+            fromBody = parsed.sessionToken;
+          }
+        } catch {
+          // ignore malformed body
+        }
+        const setCookie = res.headers['set-cookie'];
+        const cookieStr = setCookie == null
+          ? ''
+          : (Array.isArray(setCookie) ? setCookie.join('; ') : setCookie);
+        const match = cookieStr.match(SESSION_COOKIE_PATTERN);
+        resolve(fromBody ?? match?.[1] ?? undefined);
+      });
     });
     req.on('error', () => resolve(undefined));
     req.write(body);
@@ -263,15 +282,23 @@ export function createSyncClient(
   let root: Root | null = null;
   let container: HTMLElement | null = null;
   let driver: SyncClientDriverRef;
-  let resolveConnected: (() => void) | null = null;
-  const connectedPromise = new Promise<void>(resolve => {
-    resolveConnected = resolve;
+  let resolveDriverReady: (() => void) | null = null;
+  let driverReadyPromise = new Promise<void>(resolve => {
+    resolveDriverReady = resolve;
   });
   let sessionToken: string | undefined;
 
+  function resetDriverReadyPromise(): void {
+    driverReadyPromise = new Promise<void>(resolve => {
+      resolveDriverReady = resolve;
+    });
+  }
+
   async function connect(serverUrl: string): Promise<void> {
     if (container != null) {
-      return connectedPromise;
+      await driverReadyPromise;
+      await waitUntilAsync(async () => getIsConnected(), `Client ${clientId} socket connected`, 30_000);
+      return;
     }
     sessionToken ??= await fetchDevSessionToken(serverUrl, clientId);
 
@@ -280,7 +307,8 @@ export function createSyncClient(
     root = createRoot(container);
     const saveDriver = (innerDriver: SyncClientDriverRef) => {
       driver = innerDriver;
-      if (resolveConnected) resolveConnected();
+      resolveDriverReady?.();
+      resolveDriverReady = null;
     };
 
     root.render(
@@ -298,7 +326,8 @@ export function createSyncClient(
     );
 
     runLogger.log('client_connect', { clientId, dbName, socketName });
-    return connectedPromise;
+    await driverReadyPromise;
+    await waitUntilAsync(async () => getIsConnected(), `Client ${clientId} socket connected`, 30_000);
   }
 
   async function disconnect() {
@@ -398,6 +427,7 @@ export function createSyncClient(
       container.remove();
       root = null;
       container = null;
+      resetDriverReadyPromise();
     }
   }
 

@@ -3,6 +3,8 @@
  *
  * - **fake-indexeddb**: `global.indexedDB` for client Db/DbCollection.
  * - **JSDOM**: `window` / `document` so client and react-ui imports that touch the DOM succeed.
+ * - **Node `ws` as `WebSocket`**: so code paths that still use the browser WebSocket API get TLS behaviour
+ *   compatible with `preload-tls.cjs` (Vitest e2e uses `environment: 'node'` for engine.io itself).
  *
  * Loaded via {@link ./vitestGlobals.ts} from repo-root `vitest.e2e.config.ts` (`pnpm run test:e2e` / `test:stress`).
  * (after {@link ./e2eVitestSetup.ts}, which mocks `@anupheaus/common`). Do not import
@@ -18,6 +20,7 @@
  */
 import 'fake-indexeddb/auto';
 import { JSDOM } from 'jsdom';
+import WS from 'ws';
 
 declare global {
   // eslint-disable-next-line no-var -- test global gate
@@ -44,6 +47,11 @@ export function installBrowserEnvironment(): void {
   }
   (globalThis as unknown as { URL: unknown }).URL = urlGlobal;
   (globalThis as unknown as { self: unknown }).self = dom.window as unknown;
+
+  // JSDOM's WebSocket cannot use our TLS preload (self-signed e2e HTTPS). Node `ws` uses
+  // `tls.connect`, which preload-tls.cjs patches, so socket.io wss upgrades succeed in Vitest.
+  (globalThis as unknown as { WebSocket: typeof WebSocket }).WebSocket = WS as unknown as typeof WebSocket;
+  (dom.window as unknown as { WebSocket: typeof WebSocket }).WebSocket = WS as unknown as typeof WebSocket;
 
   globalThis.__mxdbE2eBrowserInstalled = true;
 }

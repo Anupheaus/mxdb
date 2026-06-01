@@ -45,6 +45,11 @@ export function getLastLocalAuditEntry(audit: AuditOf<E2eTestRecord> | undefined
 
 export async function connectBoth(a: E2EClientHandle, b: E2EClientHandle): Promise<void> {
   await Promise.all([a.connect(), b.connect()]);
+  await waitUntilAsync(
+    async () => a.getIsConnected() && b.getIsConnected(),
+    'both clients socket connected',
+    30_000,
+  );
 }
 
 /** A creates on server; B subscribes get-all and observes the row. */

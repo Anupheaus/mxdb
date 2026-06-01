@@ -70,7 +70,7 @@ import {
 
 Most tests only need a subset: `setupE2E`, `resetE2E`, `teardownE2E`, `useClient`, `useServer`, and the wait helpers.
 
-**Vitest:** `vitest.e2e.config.ts` sets `test.env` from `vitestE2eTlsEnv(__dirname)` (trusts the local CA via `preload-tls.cjs` + `certs/ca.crt`) and `setupFiles`: `e2eVitestSetup.ts` then `vitestGlobals.ts` (`installBrowserEnvironment`). Run with `pnpm test:e2e`. Logs default to `tests/e2e/logs/{prefix}-{timestamp}.log` (nanosecond-prefixed lines; `server_log` / `app_logger` entries condensed).
+**Vitest:** `vitest.e2e.config.ts` uses `environment: 'node'` (not Vitest’s built-in `jsdom`) so `engine.io-client` uses the Node `ws` stack, which honors `preload-tls.cjs` for `wss://` to the self-signed e2e HTTPS server. Browser globals come from `installBrowserEnvironment()` in `vitestGlobals.ts` (JSDOM + `fake-indexeddb` + Node `ws` as `WebSocket`). `test.env` is set from `vitestE2eTlsEnv(__dirname)` (`preload-tls.cjs` + `certs/ca.crt`). `setupFiles`: `e2eVitestSetup.ts` then `vitestGlobals.ts`. Run CRUD with `pnpm test:crud`. Logs default to `tests/e2e/logs/{prefix}-{timestamp}.log` (nanosecond-prefixed lines; `server_log` / `app_logger` entries condensed).
 
 ---
 
