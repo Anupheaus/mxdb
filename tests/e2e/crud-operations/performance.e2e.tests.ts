@@ -34,11 +34,22 @@ const THRESHOLDS = {
   serverReadAll: 1_000,
   /** Time to subscribe to get-all and receive the initial snapshot of N records (ms). */
   getAllSubscription: 3_000,
+  /**
+   * Total time for a single update on a record that already has DEEP_AUDIT_COUNT audit
+   * entries, including the full server-side merge + replay + MongoDB write round-trip.
+   * Exists to catch O(n) or O(n²) regressions in audit processing as history grows.
+   */
+  deepAuditUpdateMs: 5_000,
 } as const;
 
 // ─── Record counts ────────────────────────────────────────────────────────────
 const SMALL = 10;
 const MEDIUM = 50;
+/**
+ * Number of audit entries to build on a single record before timing the final
+ * update. Reproduces the "700 audit entries" slowness regression.
+ */
+const DEEP_AUDIT_COUNT = 700;
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -379,5 +390,40 @@ describe('e2e performance tests', () => {
       elapsed,
       `offline sync of ${MEDIUM} records took ${elapsed}ms, threshold ${THRESHOLDS.offlineSyncTotal}ms`,
     ).toBeLessThan(THRESHOLDS.offlineSyncTotal);
+  }, 120_000);
+
+  // ── Deep audit history ───────────────────────────────────────────────────────
+
+  it(`single update on a record with ${DEEP_AUDIT_COUNT} existing audit entries: within ${THRESHOLDS.deepAuditUpdateMs}ms`, async () => {
+    const a = useClient('a');
+    await a.connect();
+
+    // ── Setup (not timed): build DEEP_AUDIT_COUNT audit entries on one record ──
+    // 1 Created entry + (DEEP_AUDIT_COUNT - 1) Updated entries = DEEP_AUDIT_COUNT total.
+    const record: E2eTestRecord = {
+      id: newRecordId('perf-deep-audit'),
+      clientId: 'a',
+      value: 'v0',
+    };
+    await a.upsert(record);
+    for (let i = 1; i < DEEP_AUDIT_COUNT; i++) {
+      await a.upsert({ ...record, value: `v${i}` });
+    }
+
+    // Drain the C2S queue — all DEEP_AUDIT_COUNT entries must be on the server
+    // before we start timing, so the measured update hits a full audit history.
+    await waitForAllClientsIdle([a]);
+    await useServer().waitForLiveRecord(record.id, { timeoutMs: 60_000 });
+
+    // ── Timed window: one more update against the deep audit history ──
+    const start = Date.now();
+    await a.upsert({ ...record, value: 'final' });
+    await waitForAllClientsIdle([a]);
+    const elapsed = Date.now() - start;
+
+    expect(
+      elapsed,
+      `update on record with ${DEEP_AUDIT_COUNT} audit entries took ${elapsed}ms, budget ${THRESHOLDS.deepAuditUpdateMs}ms`,
+    ).toBeLessThan(THRESHOLDS.deepAuditUpdateMs);
   }, 120_000);
 });
