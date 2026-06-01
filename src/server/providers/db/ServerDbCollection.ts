@@ -166,6 +166,13 @@ export class ServerDbCollection<RecordType extends Record = Record> {
     records = Array.isArray(records) ? records : [records];
     if (records.length === 0) return;
     const existingRecords = await this.get(records.ids());
+    if (!resetAudit) {
+      records = records.filter(record => {
+        const existing = existingRecords.findById(record.id);
+        return existing == null || !is.deepEqual(existing, record);
+      });
+      if (records.length === 0) return;
+    }
     const result = await collection.bulkWrite(records.map(record => ({ replaceOne: { replacement: dbUtils.serialize(record), filter: { _id: record.id as any }, upsert: true } })));
     if (!result.isOk()) throw new InternalError('Bulk write failed - result is not as expected');
     const upsertedCount = result.matchedCount + result.upsertedCount;

@@ -1,3 +1,4 @@
+import { DateTime } from 'luxon';
 import { to, is, type Record as MXDBRecord } from '@anupheaus/common';
 import { OperationType, type AuditOperation } from './auditor-models';
 import { contentHash } from './hash';
@@ -29,11 +30,12 @@ function toOpValue(val: unknown): unknown {
 
 /**
  * Equality check for non-traversable (scalar/rich-type) values.
- * Uses `is.deepEqual` from `@anupheaus/common` which handles Luxon DateTime
- * via `DateTime.equals()`, JS Date via `getTime()`, functions via
- * `toString()` + `name`, NaN via `sameValueZeroEqual`, and circular refs.
+ * DateTimes are compared by millisecond value so that the same instant in
+ * different zones (e.g. UTC vs Europe/London) is treated as equal.
+ * All other types delegate to `is.deepEqual`.
  */
 function scalarEqual(a: unknown, b: unknown): boolean {
+  if (DateTime.isDateTime(a) && DateTime.isDateTime(b)) return a.toMillis() === b.toMillis();
   return is.deepEqual(a, b);
 }
 
