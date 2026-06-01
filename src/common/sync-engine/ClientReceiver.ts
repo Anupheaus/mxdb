@@ -138,7 +138,15 @@ export class ClientReceiver {
         // Staleness guard: skip active cursors whose anchor is older than the client's.
         // Delete cursors bypass this check — delete-is-final. A client's update may carry
         // a newer ULID than the server's Deleted entry, but the record must still be deleted.
-        if (isActiveCursor(cursor)) {
+        //
+        // An EMPTY anchor means the collection is not server-audited (`disableAudit`): there
+        // is no audit ULID to order versions by, so the staleness comparison is meaningless
+        // and the server's write is authoritative. Without this bypass the client anchors the
+        // first synced record to a random ULID (`lastAuditEntryId || ulid()` in DbCollection),
+        // and every subsequent update — which also carries an empty anchor — would be skipped
+        // as "stale", leaving the client stuck on the first version (e.g. a job permanently
+        // showing "working"). Empty-anchor active cursors therefore always apply.
+        if (isActiveCursor(cursor) && cursor.lastAuditEntryId !== '') {
           const branchUlid = auditor.getBranchUlid(localAudit);
           const localBranchId = branchUlid ?? '';
 

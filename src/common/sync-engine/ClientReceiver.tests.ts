@@ -154,6 +154,38 @@ describe('ClientReceiver', () => {
       expect(successIds).not.toContain('r1');
     });
 
+    it('accepts active cursor with empty anchor over a non-empty local branch (disableAudit updates)', () => {
+      // Non-audited collections always emit an empty lastAuditEntryId, and the client
+      // anchors the first synced record to a random ULID. A subsequent update also carries
+      // an empty anchor; it must still apply (server is authoritative) rather than be skipped
+      // as stale — otherwise the record is frozen on its first version forever.
+      const record = makeRecord('r1', 'Alice');
+      const audit = auditor.createAuditFrom(record);
+      const branchUlid = auditor.generateUlid(); // non-empty local anchor, as DbCollection would create
+      const branchedAudit = auditor.collapseToAnchor(audit, branchUlid);
+
+      const localStates: MXDBRecordStates = [{
+        collectionName: 'items',
+        records: [{ record, audit: branchedAudit.entries }],
+      }];
+
+      const onRetrieve = vi.fn().mockReturnValue(localStates);
+      const onUpdate = vi.fn().mockImplementation((updates: MXDBUpdateRequest): MXDBSyncEngineResponse =>
+        updates.map(u => ({ collectionName: u.collectionName, successfulRecordIds: u.records?.map(r => r.record.id) ?? [] })),
+      );
+      const cr = new ClientReceiver(mockLogger, { onRetrieve, onUpdate });
+
+      const payload: MXDBRecordCursors = [{
+        collectionName: 'items',
+        records: [{ record: makeRecord('r1', 'Bob'), lastAuditEntryId: '' }],
+      }];
+
+      const result = cr.process(payload);
+      expect(onUpdate).toHaveBeenCalledOnce();
+      const successIds = result.find(r => r.collectionName === 'items')?.successfulRecordIds ?? [];
+      expect(successIds).toContain('r1');
+    });
+
     it('accepts branch-only cursor when cursor is newer than branch ULID', () => {
       const record = makeRecord('r1', 'Alice');
       const audit = auditor.createAuditFrom(record);
