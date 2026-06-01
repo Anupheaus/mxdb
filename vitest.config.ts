@@ -20,7 +20,7 @@ const alias: Record<string, string> = {
   'react-dom': path.resolve(__dirname, 'node_modules/react-dom'),
 };
 
-const socketApiSrc = localAlias('../socket-api/src');
+const socketApiSrc = localAlias('../nexus/src');
 if (socketApiSrc) {
   alias['@anupheaus/nexus/server'] = path.join(socketApiSrc, 'server');
   alias['@anupheaus/nexus/client'] = path.join(socketApiSrc, 'client');
