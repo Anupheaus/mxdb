@@ -13,6 +13,7 @@ describe('handleRemoteSqliteQuery', () => {
       requestId: 'r1',
       sql: 'UPDATE users SET name = ?',
       params: ['Alice'],
+      requestedBy: 'operator-1',
     }, ensureMutatingAllowed);
 
     expect(queryRaw).not.toHaveBeenCalled();
@@ -34,6 +35,7 @@ describe('handleRemoteSqliteQuery', () => {
       requestId: 'r1b',
       sql: 'UPDATE users SET name = ?',
       params: ['Alice'],
+      requestedBy: 'operator-1',
     }, ensureMutatingAllowed);
 
     expect(queryRaw).not.toHaveBeenCalled();
@@ -53,6 +55,7 @@ describe('handleRemoteSqliteQuery', () => {
     const res = await handleRemoteSqliteQuery(db, {
       requestId: 'r2',
       sql: 'select 1 as a',
+      requestedBy: 'operator-1',
     }, ensureMutatingAllowed);
 
     expect(queryRaw).toHaveBeenCalledTimes(1);

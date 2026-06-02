@@ -55,7 +55,7 @@ describe('createMcpTools', () => {
     await expect(
       tools.callTool({
         name: 'mxdb_client_sqlite_query',
-        arguments: { socketId: 'abc', sql: 'select 1', params: [1] },
+        arguments: { socketId: 'abc', sql: 'select 1', params: [1], requestedBy: 'tester' },
       }),
     ).resolves.toMatchObject({ rows: [], elapsedMs: 1 });
 
@@ -89,7 +89,7 @@ describe('createMcpTools', () => {
     await expect(
       tools.callTool({
         name: 'mxdb_client_sqlite_query',
-        arguments: { socketId: 'abc', sql: 'select 1' },
+        arguments: { socketId: 'abc', sql: 'select 1', requestedBy: 'tester' },
       }),
     ).rejects.toThrowError('MXDB_REMOTE_SQL_TIMEOUT');
   });

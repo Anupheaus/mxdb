@@ -113,7 +113,7 @@ describe('MCP HTTP endpoint', () => {
       method: 'tools/call',
       params: {
         name: 'mxdb_client_sqlite_query',
-        arguments: { socketId: 'socket-1', sql: 'select 1' },
+        arguments: { socketId: 'socket-1', sql: 'select 1', requestedBy: 'tester' },
       },
     });
     expect(status).toBe(200);

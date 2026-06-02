@@ -17,9 +17,8 @@ export async function handleRemoteSqliteQuery(
 
   if (isMutating) {
     const allowed = await ensureMutatingAllowed({
-      sql: request.sql,
-      params: request.params,
       requestedBy: 'mcp',
+      operator: request.requestedBy,
     });
     if (!allowed) {
       const end = nowMs();

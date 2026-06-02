@@ -26,9 +26,9 @@ Configure on `MXDBSync`:
 <MXDBSync
   // ...
   remoteAssistance={{
-    onRemoteMutatingSqlRequested: async ({ sql, params }) => {
+    onRemoteMutatingSqlRequested: async ({ operator }) => {
       // Your app should prompt the user here. Return true to allow.
-      return window.confirm(`Allow remote assistance to run a mutating SQL statement?\n\n${sql}`);
+      return window.confirm(`Allow remote assistance (operator: ${operator}) to run a mutating SQL statement?`);
     },
   }}
 />

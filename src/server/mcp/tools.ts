@@ -26,6 +26,7 @@ type SqliteQueryArgs = Readonly<{
   socketId: string;
   sql: string;
   params?: unknown[];
+  requestedBy: string;
 }>;
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
@@ -37,12 +38,19 @@ function parseSqliteQueryArgs(raw: unknown): SqliteQueryArgs {
   const socketId = raw.socketId;
   const sql = raw.sql;
   const params = raw.params;
+  const requestedBy = raw.requestedBy;
 
   if (typeof socketId !== 'string' || socketId.length === 0) throw new Error('invalid_socketId');
   if (typeof sql !== 'string' || sql.length === 0) throw new Error('invalid_sql');
   if (params != null && !Array.isArray(params)) throw new Error('invalid_params');
+  if (typeof requestedBy !== 'string' || requestedBy.trim().length === 0) throw new Error('invalid_requestedBy');
 
-  return { socketId, sql, params: Array.isArray(params) ? params : undefined };
+  return {
+    socketId,
+    sql,
+    params: Array.isArray(params) ? params : undefined,
+    requestedBy: requestedBy.trim(),
+  };
 }
 
 function findClientStateBySocketId(
@@ -94,8 +102,9 @@ export function createMcpTools(input: CreateMcpToolsInput): McpTools {
           socketId: { type: 'string' },
           sql: { type: 'string' },
           params: { type: 'array' },
+          requestedBy: { type: 'string' },
         },
-        required: ['socketId', 'sql'],
+        required: ['socketId', 'sql', 'requestedBy'],
       },
     },
   ];
@@ -119,6 +128,7 @@ export function createMcpTools(input: CreateMcpToolsInput): McpTools {
           requestId: `mcp-${Math.random().toString(16).slice(2)}`,
           sql: parsed.sql,
           params: parsed.params,
+          requestedBy: parsed.requestedBy,
         };
 
         const res = await withTimeout(
