@@ -5,3 +5,5 @@ export * from './internalEvents';
 export * from './internalSubscriptions';
 export * from './registries';
 export * from './auditor';
+export * from './mcpModels';
+export * from './mcpActions';

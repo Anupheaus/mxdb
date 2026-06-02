@@ -11,11 +11,14 @@ import { createDbReadyWaitHandle } from './dbReadyWait';
 import { DB_READY_TIMEOUT_MS, MxdbReadyContext } from './MxdbReadyContext';
 import type { MXDBCollection, MXDBError } from '../../common';
 import type { MXDBAccount, MXDBUser } from '../../common/models';
+import type { MXDBRemoteAssistanceConfig } from '../remote-assistance/models';
+import { RemoteAssistanceContext } from '../remote-assistance/RemoteAssistanceContext';
 
 interface Props {
   appName: string;
   authMode: 'webauthn' | 'google-oauth';
   collections: MXDBCollection[];
+  remoteAssistance?: MXDBRemoteAssistanceConfig;
   onPrfRef: MutableRefObject<
     ((userId: string, prfOutput: ArrayBuffer, accountId?: string) => void | Promise<void>) | undefined
   >;
@@ -33,6 +36,7 @@ export const MXDBSyncInner = createComponent('MXDBSyncInner', ({
   appName,
   authMode,
   collections,
+  remoteAssistance,
   onPrfRef,
   onError,
   onSignedIn,
@@ -168,9 +172,11 @@ export const MXDBSyncInner = createComponent('MXDBSyncInner', ({
     <MxdbReadyContext.Provider value={mxdbReadyContext}>
       <DbsProvider name={dbName} encryptionKey={encryptionKey} collections={collections} logger={logger}>
         <ClientToServerSyncProvider collections={collections} onError={onError}>
-          <ClientToServerProvider />
-          <ServerToClientProvider />
-          {children}
+          <RemoteAssistanceContext.Provider value={remoteAssistance}>
+            <ClientToServerProvider />
+            <ServerToClientProvider />
+            {children}
+          </RemoteAssistanceContext.Provider>
         </ClientToServerSyncProvider>
       </DbsProvider>
     </MxdbReadyContext.Provider>

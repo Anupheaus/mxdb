@@ -1,7 +1,12 @@
 import { createComponent, useLogger } from '@anupheaus/react-ui';
 import { useServerActionHandler } from '@anupheaus/nexus/client';
-import { mxdbServerToClientSyncAction } from '../../../common';
+import { useMemo } from 'react';
+import { mxdbAdminClientSqlQueryAction, mxdbServerToClientSyncAction } from '../../../common';
 import { SyncPausedError, type MXDBSyncEngineResponse } from '../../../common/sync-engine';
+import { useDb } from '../dbs/useDb';
+import { handleRemoteSqliteQuery } from '../../remote-assistance/remoteSqliteHandler';
+import { createMutatingConsentGate } from '../../remote-assistance/consentGate';
+import { useRemoteAssistanceConfig } from '../../remote-assistance/RemoteAssistanceContext';
 import { useClientReceiver } from './ClientReceiverContext';
 
 /**
@@ -15,6 +20,12 @@ import { useClientReceiver } from './ClientReceiverContext';
 export const ServerToClientProvider = createComponent('ServerToClientProvider', () => {
   const logger = useLogger('s2c');
   const cr = useClientReceiver();
+  const db = useDb();
+  const remoteAssistance = useRemoteAssistanceConfig();
+  const ensureMutatingAllowed = useMemo(
+    () => createMutatingConsentGate(remoteAssistance?.onRemoteMutatingSqlRequested),
+    [remoteAssistance?.onRemoteMutatingSqlRequested],
+  );
 
   useServerActionHandler(mxdbServerToClientSyncAction)(async payload => {
     if (cr == null) {
@@ -33,6 +44,10 @@ export const ServerToClientProvider = createComponent('ServerToClientProvider', 
       logger.error('S2C process failed', { error: error as Record<string, unknown> });
       throw error;
     }
+  });
+
+  useServerActionHandler(mxdbAdminClientSqlQueryAction)(async payload => {
+    return handleRemoteSqliteQuery(db.db, payload, ensureMutatingAllowed);
   });
 
   return null;

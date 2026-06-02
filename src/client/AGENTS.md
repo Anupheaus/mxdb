@@ -16,6 +16,29 @@ Local state lives in a per-device SQLite database (OPFS shared worker in browser
 - `useRecord.ts` — `useRecord(id | localCopy, collection)` — optimistic form-edit hook with server-rebase semantics
 - `internalModels.ts` — client-private types
 
+### Remote assistance (mutating SQL consent)
+
+When the server forwards a **remote SQLite query** (via MCP), the client can optionally allow mutating SQL (INSERT/UPDATE/DELETE/DDL) after prompting the end-user.
+
+Configure on `MXDBSync`:
+
+```ts
+<MXDBSync
+  // ...
+  remoteAssistance={{
+    onRemoteMutatingSqlRequested: async ({ sql, params }) => {
+      // Your app should prompt the user here. Return true to allow.
+      return window.confirm(`Allow remote assistance to run a mutating SQL statement?\n\n${sql}`);
+    },
+  }}
+/>
+```
+
+Semantics:
+- The callback is invoked **only for mutating SQL**.
+- It is invoked **at most once per MXDBSync mount** (decision memoized in-memory).
+- A page refresh resets the decision (it will ask again).
+
 ### Hooks (`hooks/`)
 See [hooks/AGENTS.md](hooks/AGENTS.md) for the full directory. Key exports:
 - `useCollection(collection)` — primary raw API (imperative + reactive). See [hooks/useCollection/AGENTS.md](hooks/useCollection/AGENTS.md).

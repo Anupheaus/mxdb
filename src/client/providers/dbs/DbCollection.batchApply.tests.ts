@@ -28,7 +28,7 @@ async function createCollection(): Promise<{
   worker: SqliteWorkerClient;
 }> {
   const worker = new SqliteWorkerClient();
-  const ddl = buildTableDDL(collectionConfig.name, collectionConfig.indexes ?? [], true);
+  const ddl = buildTableDDL(collectionConfig.name, (collectionConfig.indexes ?? []) as any, true);
   const openReady = worker.open(collectionConfig.name, ddl);
   const collection = new DbCollection<TestRecord>(worker, openReady, collectionConfig);
   await collection.whenReady();

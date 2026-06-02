@@ -139,6 +139,8 @@ The script runs Unit, CRUD, Performance, and Stress sequentially, records the wa
 ## Related
 
 - [src/AGENTS.md](src/AGENTS.md) — source code navigation (common / client / server)
+- [src/server/AGENTS.md](src/server/AGENTS.md) — includes **Remote MCP** (API key + IP allowlist; client SQLite query forwarding)
+- [src/client/AGENTS.md](src/client/AGENTS.md) — includes **Remote assistance consent** (`remoteAssistance.onRemoteMutatingSqlRequested`)
 - [docs/README.md](docs/README.md) — documentation index
 - [tests/AGENTS.md](tests/AGENTS.md) — e2e test infrastructure
 - [test/AGENTS.md](test/AGENTS.md) — manual test app

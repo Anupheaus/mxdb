@@ -23,13 +23,47 @@ import type { NexusAuthRecord } from '@anupheaus/nexus/common';
 import { Logger } from '@anupheaus/common';
 import type { MXDBAccount, MXDBUser } from '../common/models';
 import { parseSessionTokenFromHandshake } from './auth/parseSessionTokenFromHandshake';
+import { registerMcpRoutes } from './mcp/McpRouter';
+import { mxdbAdminClientSqlQueryAction } from '../common/mcpActions';
+import type { MXDBRemoteSqliteQueryRequest, MXDBRemoteSqliteQueryResponse } from '../common/mcpModels';
 
-const clientS2CInstances = new WeakMap<Socket, ServerToClientSynchronisation>();
-const connectedUsers = new WeakMap<Socket, MXDBUser>();
-const connectedAccounts = new WeakMap<Socket, MXDBAccount>();
-const disconnectReasons = new WeakMap<Socket, string>();
+export type ClientS2CState = {
+  s2c: ServerToClientSynchronisation;
+  emitAdminSqlQuery: (req: MXDBRemoteSqliteQueryRequest) => Promise<MXDBRemoteSqliteQueryResponse>;
+};
+
+const clientS2CInstances = new Map<Socket, ClientS2CState>();
+const connectedUsers = new Map<Socket, MXDBUser>();
+const connectedAccounts = new Map<Socket, MXDBAccount>();
+const disconnectReasons = new Map<Socket, string>();
 
 const adminUser = { id: Math.emptyId() } as MXDBUser;
+
+export type ConnectedClientInfo = Readonly<{
+  socketId: string;
+  userId?: string;
+  accountId?: string;
+}>;
+
+/**
+ * Enumerate currently connected sockets with any resolved auth metadata.
+ *
+ * Auth metadata can be absent for newly connected sockets until the auth awaits
+ * in `onClientConnected` complete.
+ */
+export function listConnectedClients(): ConnectedClientInfo[] {
+  const out: ConnectedClientInfo[] = [];
+  for (const socket of clientS2CInstances.keys()) {
+    const user = connectedUsers.get(socket);
+    const account = connectedAccounts.get(socket);
+    out.push({
+      socketId: socket.id,
+      userId: user?.id,
+      accountId: account?.id,
+    });
+  }
+  return out;
+}
 
 interface Props extends ServerConfig {
   db: ServerDb;
@@ -137,6 +171,11 @@ export async function startAuthenticatedServer({
     },
 
     onRegisterRoutes: async router => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      registerMcpRoutes(router as any, {
+        logger,
+        clientS2CInstances,
+      });
       if (process.env.NODE_ENV !== 'production') {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         registerDevAuthRoute(router as any, config.name, authColl, auth.mode);
@@ -153,13 +192,17 @@ export async function startAuthenticatedServer({
         logger ?? Logger.getCurrent() ?? new Logger('mxdb')
       ).createSubLogger(`s2c:${client.id}`);
       const emitS2C = useAction(mxdbServerToClientSyncAction);
+      const emitAdminSqlQuery = useAction(mxdbAdminClientSqlQueryAction);
       const s2c = new ServerToClientSynchronisation({
         emitS2C: async payload => emitS2C(payload),
         getDb: () => db,
         collections,
         logger: s2cLogger,
       });
-      clientS2CInstances.set(client, s2c);
+      clientS2CInstances.set(client, {
+        s2c,
+        emitAdminSqlQuery: async req => emitAdminSqlQuery(req),
+      });
       registerClientS2C(client, s2c);
       setServerToClientSync(s2c);
       addClientWatches(client, collections, s2c);
@@ -229,9 +272,9 @@ export async function startAuthenticatedServer({
       removeClientWatches(client);
       unregisterClientS2C(client);
 
-      const s2c = clientS2CInstances.get(client);
-      if (s2c != null) {
-        s2c.close();
+      const state = clientS2CInstances.get(client);
+      if (state != null) {
+        state.s2c.close();
         clientS2CInstances.delete(client);
       }
 
@@ -240,11 +283,12 @@ export async function startAuthenticatedServer({
       connectedUsers.delete(client);
       connectedAccounts.delete(client);
 
+      const rawReason = disconnectReasons.get(client) ?? '';
+      disconnectReasons.delete(client);
+
       if (user != null) {
-        const rawReason = disconnectReasons.get(client) ?? '';
         const reason =
           rawReason === 'server namespace disconnect' ? 'signedOut' : 'connectionLost';
-        disconnectReasons.delete(client);
         await onDisconnected?.({ user, account, reason });
       }
 

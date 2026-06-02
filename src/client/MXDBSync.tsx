@@ -10,6 +10,7 @@ import { MXDBSyncInner } from './auth/MXDBSyncInner';
 import { setupBrowserTools } from './utils/setupBrowserTools';
 import type { MXDBCollection, MXDBError } from '../common';
 import type { MXDBUser } from '../common/models';
+import type { MXDBRemoteAssistanceConfig } from './remote-assistance/models';
 
 interface Props {
   host?: string;
@@ -17,6 +18,7 @@ interface Props {
   logger?: Logger;
   autoConnect?: boolean;
   collections: MXDBCollection[];
+  remoteAssistance?: MXDBRemoteAssistanceConfig;
   /** Defaults to `'webauthn'`. Set to `'google-oauth'` when the server uses Google OAuth. */
   authMode?: 'webauthn' | 'google-oauth';
   onDeviceDisabled?(): void;
@@ -34,6 +36,7 @@ export const MXDBSync = createComponent('MXDBSync', ({
   logger,
   autoConnect,
   collections,
+  remoteAssistance,
   authMode = 'webauthn',
   onDeviceDisabled,
   onSignedIn,
@@ -81,6 +84,7 @@ export const MXDBSync = createComponent('MXDBSync', ({
             appName={name}
             authMode={authMode}
             collections={collections}
+            remoteAssistance={remoteAssistance}
             onPrfRef={onPrfRef}
             onError={onError}
             onSignedIn={onSignedIn}

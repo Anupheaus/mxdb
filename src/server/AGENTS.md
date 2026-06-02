@@ -50,6 +50,20 @@ See [hooks/AGENTS.md](hooks/AGENTS.md) for the full directory. Key exports:
 - `clientDbWatches.ts` — tracks which clients are subscribed to which collections
 - `internalModels.ts` — `ServerConfig` and `ServerInstance` type definitions
 
+### Remote MCP (admin / AI integration)
+
+The server exposes a minimal MCP-over-HTTP endpoint intended for remote assistance and diagnostics.
+
+- **Route**: `POST /mcp` (JSON-RPC 2.0), `GET /mcp` (stub; SSE not supported yet)
+- **Auth** (deny-by-default): both required
+  - `MXDB_MCP_API_KEY` — API key value checked against `Authorization: Bearer <key>`
+  - `MXDB_MCP_IP_ALLOWLIST` — comma-separated IPv4/CIDR allowlist (e.g. `1.2.3.4/32,10.0.0.0/24`)
+- **Tools**
+  - `mxdb_clients_list` — list connected clients (`socketId`, `userId?`, `accountId?`)
+  - `mxdb_client_sqlite_query` — forward a SQL query to a specific connected client (by `socketId`) and return results
+
+Implementation lives under `src/server/mcp/`.
+
 ## Architecture
 
 `startServer` wires everything in order:

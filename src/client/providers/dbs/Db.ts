@@ -58,6 +58,30 @@ export class Db {
     await this.#worker.close();
   }
 
+  /**
+   * Execute a read-only SQL query and return rows as objects.
+   *
+   * This is intentionally minimal and does not expose the worker directly.
+   */
+  public async queryRaw<T extends object = { [key: string]: unknown }>(
+    sql: string,
+    params?: unknown[],
+  ): Promise<T[]> {
+    await this.#ready;
+    return this.#worker.query<T>(sql, params);
+  }
+
+  /**
+   * Execute a mutating SQL statement.
+   *
+   * This is used by remote-assistance handlers when the consumer has explicitly
+   * opted-in to allow mutating SQL for the current in-memory session.
+   */
+  public async execRaw(sql: string, params?: unknown[]): Promise<void> {
+    await this.#ready;
+    await this.#worker.exec(sql, params);
+  }
+
   // ─── Auth token persistence (internal mxdb_authentication table) ────────────
 
   /** Read the stored auth credentials, or undefined if not yet stored. */
