@@ -83,6 +83,8 @@ describe('getAllSubscription', () => {
     const ctx = makeContext();
     await (serverGetAllSubscription as any)(ctx);
     expect(h.getAll).toHaveBeenCalledTimes(1);
+    expect(h.getData).toHaveBeenCalledWith('subscription-data.additional.sub-1');
+    expect(ctx.updateAdditionalData).toHaveBeenCalledWith(['r1', 'r2']);
   });
 
   it('pushes initial records via pushSubscriptionResultRecords', async () => {
