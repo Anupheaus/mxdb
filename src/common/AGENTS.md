@@ -15,7 +15,7 @@ Neither the client nor the server may import from each other; all cross-layer co
 - `registries.ts` — runtime `Map` from collection token to `MXDBCollectionConfig`; read by both client and server at mount
 
 ### Models (`models/`)
-- `collectionsModels.ts` — `MXDBCollection`, `MXDBCollectionConfig`, `MXDBCollectionIndex`, `QueryProps`, `MongoDocOf`
+- `collectionsModels.ts` — `MXDBCollection`, `MXDBCollectionConfig`, `MXDBCollectionIndex`, `QueryProps`, `ServerQueryHints`, `MongoDocOf`. `QueryProps.serverHints` is server-only query metadata interpreted by the `onQuery` collection hook — see [../server/collections/AGENTS.md](../server/collections/AGENTS.md#server-query-hints-serverhints)
 - `authModels.ts` — `MXDBUserDetails`, `MXDBDeviceInfo`, auth shapes
 - `hookModels.ts` — shared types for the factory-hook pattern: `RecordTypeOfCollection<C>`, `ExtensionsType`, `RemoveDasherized<Name>` (converts `'order-item'` → `'orderItem'` at the type level). Used by both client and server `createUseRecord` / `createUseRecords`.
 - `internalModels.ts` — library-private types
@@ -25,6 +25,10 @@ Neither the client nor the server may import from each other; all cross-layer co
 - `internalActions.ts` — C2S socket action descriptors
 - `internalEvents.ts` — S2C socket event descriptors
 - `internalSubscriptions.ts` — socket subscription descriptors
+
+### MCP / remote assistance
+- `mcpActions.ts` — `mxdbAdminClientSqlQueryAction` — S2C socket action that triggers remote SQL execution on the target client's local SQLite; dispatched by the server MCP tools and handled by `src/client/remote-assistance/`
+- `mcpModels.ts` — `MXDBRemoteSqliteQueryRequest` (sql, params, requestedBy, requestId, maxRows?, timeoutMs?) and `MXDBRemoteSqliteQueryResponse` (requestId, rows, elapsedMs, truncated?, error?)
 
 ### Auditor (`auditor/`)
 All audit trail logic: create, update, delete, merge, replay, diff. See [auditor/AGENTS.md](auditor/AGENTS.md).
