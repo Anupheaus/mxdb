@@ -60,6 +60,8 @@ React context providers composing the `MXDBSync` tree. See [providers/AGENTS.md]
 - `MxdbReadyContext.ts` — context providing `waitForDbReady()` / `getIsDbReady()`; resolved by `MXDBSyncInner` when the encryption key is available
 - `dbReadyWait.ts` — `createDbReadyWaitHandle()` — promise + timeout logic backing `waitForDbReady()` (tested in `dbReadyWait.tests.ts`)
 - `MXDBSyncInner.tsx` — auth-aware inner provider component mounted by `MXDBSync`. Responsibilities: (1) branches on `authMode` (webauthn vs google-oauth), (2) wires the PRF callback from socket-api into key derivation and session cache, (3) monitors user state changes to trigger sign-in/sign-out flows, (4) broadcasts sign-out across tabs via `BroadcastChannel`, (5) implements dev-bypass (non-production only: reads `mxdb:dev-auth:{appName}` from localStorage), (6) exposes `waitForDbReady()` so consumers can await DB initialisation without polling. Only mounts `DbsProvider` once an `encryptionKey` and `dbName` are both available.
+- `dbReadyWait.ts` — `createDbReadyWaitHandle(timeoutMs)` — a handle with `setIsDbReady`, `getIsDbReady`, and `waitForDbReady`; resolves `true` once the encryption key is available, or `false` if the timeout elapses first; used to block socket actions until the DB is open
+- `MxdbReadyContext.ts` — `MxdbReadyContext` (React context exposing `waitForDbReady()` and `getIsDbReady()`) and `DB_READY_TIMEOUT_MS = 3000`; consumed by socket action wrappers to gate calls until the DB is ready
 
 ### Components (`components/UseRecord/`)
 - `UseRecordContext.ts` — React context carrying the `useRecord` instance
@@ -67,6 +69,9 @@ React context providers composing the `MXDBSync` tree. See [providers/AGENTS.md]
 - `UseRecordWithRecord.tsx` — variant that accepts a full record object
 - `UseRecordWithRecordId.tsx` — variant that accepts a record id
 - `UseRecord.tsx` — top-level dispatcher (currently commented out / work in progress)
+
+### Remote assistance (`remote-assistance/`)
+MCP-initiated remote SQL queries against the local SQLite database: consent gate, SQL classifier, socket action handler, and React context. See [remote-assistance/AGENTS.md](remote-assistance/AGENTS.md).
 
 ### Utilities (`utils/`)
 - `actionTimeout.ts` — `withTimeout(promise, ms, label)` races a promise against a timeout rejection; `ACTION_TIMEOUT_MS = 5000` is the default socket action timeout. Used wherever socket calls could stall indefinitely.
@@ -82,4 +87,5 @@ React context providers composing the `MXDBSync` tree. See [providers/AGENTS.md]
 - [hooks/useCollection/AGENTS.md](hooks/useCollection/AGENTS.md) — collection API
 - [db-worker/AGENTS.md](db-worker/AGENTS.md) — SQLite worker
 - [providers/AGENTS.md](providers/AGENTS.md) — React provider tree
+- [remote-assistance/AGENTS.md](remote-assistance/AGENTS.md) — MCP-initiated remote SQL query handling
 - [../common/AGENTS.md](../common/AGENTS.md) — shared types and sync engine
