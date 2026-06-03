@@ -72,6 +72,28 @@ export function addIdsToResponse(
   return [...response, { collectionName, successfulRecordIds: [...new Set(ids)] }];
 }
 
+export function getDeclinedIds(response: MXDBSyncEngineResponse, collectionName: string): string[] {
+  return response.find(r => r.collectionName === collectionName)?.declinedRecordIds ?? [];
+}
+
+export function addDeclinedIdsToResponse(
+  response: MXDBSyncEngineResponse,
+  collectionName: string,
+  ids: string[],
+): MXDBSyncEngineResponse {
+  if (ids.length === 0) return response;
+  const existing = response.find(r => r.collectionName === collectionName);
+  if (existing) {
+    const deduped = [...new Set([...(existing.declinedRecordIds ?? []), ...ids])];
+    return response.map(r =>
+      r.collectionName === collectionName
+        ? { ...r, declinedRecordIds: deduped }
+        : r,
+    );
+  }
+  return [...response, { collectionName, successfulRecordIds: [], declinedRecordIds: [...new Set(ids)] }];
+}
+
 // ─── Squash ───────────────────────────────────────────────────────────────────
 
 /**

@@ -73,9 +73,13 @@ type MXDBRecordCursors<T extends Record = Record> = {
 
 ### `MXDBSyncEngineResponse`
 ```typescript
-type MXDBSyncEngineResponse = { collectionName: string; successfulRecordIds: string[]; }[];
+type MXDBSyncEngineResponse = {
+  collectionName: string;
+  successfulRecordIds: string[];
+  declinedRecordIds?: string[];
+}[];
 ```
-Used everywhere a component needs to report which ids it accepted.
+Used everywhere a component needs to report which ids it accepted. `declinedRecordIds` (CR→SD only) lists records the client **deliberately** did not apply and never will from this push — pending C2S merge, stale anchor, or local tombstone. The SD uses it to stop re-sending those without mistaking the non-ack for a stuck client (see 5.9 and 6.2).
 
 ### `MXDBUpdateRequest`
 Passed by CD and CR to their `onUpdate` callback — what the local store should commit:
@@ -263,8 +267,25 @@ Additionally, if a client reports an active record (hash present) but `#deletedR
 interface ServerDispatcherProps {
   onDispatch<T>(payload: MXDBRecordCursors<T>): Promise<MXDBSyncEngineResponse>;
   retryInterval?: number; // default 250ms
+  clientId?: string;      // socket id, for diagnostics
 }
 ```
+
+### 5.9 Acknowledge / decline / anomaly — and the ignored-record cap
+
+On a **resolved** dispatch the response classifies every record the SD sent into exactly one of three buckets:
+
+- **Acknowledged** (`successfulRecordIds`) — applied (or already consistent). Step 5 updates the filter; step 6 clears the record's ignore streak.
+- **Declined** (`declinedRecordIds`) — the CR *deliberately* did not apply it and never will from this push (pending C2S merge, stale anchor, or local tombstone; see 6.3). Step 6 **stops re-queuing it** (it converges via another path — C2S/SR) and clears its streak. It is **not** counted and **not** re-sent until the record next changes. This is what keeps normal concurrent editing quiet.
+- **Neither** — the record was sent, the client answered, yet it appears in neither list. That is an anomaly (lost/silently-dropped record): step 6 re-queues it and increments its per-record streak (`#ignoredCounts`).
+
+A record that lands in **Neither** `MAX_CONSECUTIVE_IGNORES` (3) times **in a row** is **dropped** from the queue and an **error** is logged. This is the safety valve against an unbounded re-send loop (e.g. the pre-fix empty-anchor case in 6.3, before the CR learned to apply or decline every cursor). Because the CR now classifies *every* cursor as acknowledged or declined, this cap should never fire in correct operation — that is exactly why it logs an error.
+
+Only a **resolved** dispatch is classified. A **rejected** dispatch (`SyncPausedError` / transport failure) is not an answer at all and never counts — it is retried wholesale via the retry timer (5.7). The dropped record is not blacklisted: a later change re-enqueues it fresh (counter starts from zero), so a drop is recoverable, not permanent.
+
+The error is deliberately loud and detailed (clientId, collectionName, recordId, cursor type/hash/anchor, plus the ids the client acknowledged and declined in the batch) and states that execution has **not** stopped but that this should never happen and must be investigated.
+
+Regression tests: [ServerDispatcher.tests.ts](ServerDispatcher.tests.ts) — "does not count, error, or re-send a record the client explicitly declines", "drops a record and logs a detailed error after the client ignores it 3 times…", "does not count or drop a record when the dispatch is rejected…", "tracks the streak independently per record id", and "resets a record's streak after it is acknowledged…".
 
 ---
 
@@ -283,21 +304,29 @@ Runs on the client. Accepts `MXDBRecordCursors` pushes from the SD, filters them
 3. For each cursor, look up its local state and decide:
     - **No local state + active cursor** -> accept (new record).
     - **No local state + delete cursor** -> no-op, but include the id in `successfulRecordIds` so the SD clears it from its queue. Logged at warn.
-    - **Local state is a tombstone + active cursor** -> **refuse**. This is the delete-is-final enforcement point on the CR. The client has just deleted this record locally; the active cursor was dispatched before the local delete was written (or while it was still in-flight through the network). The client's local tombstone wins. Logged at debug — this is an expected race, not a bug.
+    - **Local state is a tombstone + active cursor** -> **refuse** (reported in `declinedRecordIds`). This is the delete-is-final enforcement point on the CR. The client has just deleted this record locally; the active cursor was dispatched before the local delete was written (or while it was still in-flight through the network). The client's local tombstone wins. Logged at debug — this is an expected race, not a bug.
     - **Local state is a tombstone + delete cursor** -> already consistent. Include the id in `successfulRecordIds`.
     - **Local state has pending local changes (not branch-only) + delete cursor** -> **accept the delete**. Delete-is-final overrides pending C2S changes — once the server tombstones a record, the client's pending updates are moot (the SR would reject them anyway). Writes a local tombstone.
-    - **Local state has pending local changes (not branch-only) + active cursor** -> skip. The CD will merge via C2S.
-    - **Local state is branch-only + active cursor whose `lastAuditEntryId` is older than the local branch ULID** -> skip (stale). Delete cursors bypass this staleness check — delete-is-final overrides staleness.
+    - **Local state has pending local changes (not branch-only) + active cursor** -> skip (reported in `declinedRecordIds`). The CD will merge via C2S.
+    - **Local state is branch-only + active cursor whose `lastAuditEntryId` is older than the local branch ULID** -> skip (stale; reported in `declinedRecordIds`). Delete cursors bypass this staleness check — delete-is-final overrides staleness. An **empty** `lastAuditEntryId` also bypasses it — see 6.3.
     - **Local state is branch-only + cursor is newer** -> accept.
-4. Build an `MXDBUpdateRequest` from the accepted cursors and call `onUpdate`. Merge any "no local state delete" and "tombstone delete" ids into the returned `MXDBSyncEngineResponse`.
+4. Build an `MXDBUpdateRequest` from the accepted cursors and call `onUpdate`. Merge "no local state delete" and "tombstone delete" ids into `successfulRecordIds`, and the deliberately-skipped ids (the three cases above) into `declinedRecordIds`, of the returned `MXDBSyncEngineResponse`. **Every cursor the SD sent is therefore classified as either acknowledged or declined** — see 5.9; this is what lets the SD distinguish a deliberate skip from a stuck client.
 
 Regression tests for the delete-is-final cases: [ClientReceiver.tests.ts](ClientReceiver.tests.ts) — "refuses to resurrect a locally-tombstoned record when an active cursor arrives" and "treats a delete cursor against a local tombstone as already-consistent (success, no resurrection)".
 
-### 6.3 Pause / resume
+### 6.3 Empty-anchor (`disableAudit`) cursors always apply
+
+A collection with `disableAudit: true` is not server-audited, so there is no audit ULID to order versions by: every cursor the server emits carries `lastAuditEntryId: ''` (hardcoded in [ServerToClientSynchronisation](../../server/ServerToClientSynchronisation.ts) for both active and delete cursors). The client anchors the first synced record to a random branch ULID (`lastAuditEntryId || ulid()` in [DbCollection](../../client/providers/dbs/DbCollection.ts) `applyServerWriteSync`).
+
+Because of that random anchor, the staleness comparison in 6.2 is meaningless for these collections — every subsequent empty-anchor update would compare `'' < <randomUlid>` and be skipped as "stale", freezing the client on the record's first version (e.g. a server-driven job status stuck on `working` forever). Worse, a CR that skips the cursor never acks it, so the SD treats the dispatch as failed and **re-queues it indefinitely** (a busy retry loop — see 5.9). The CR therefore bypasses the staleness guard whenever `cursor.lastAuditEntryId === ''`: the server's write is authoritative and always applies.
+
+Regression tests: [ClientReceiver.tests.ts](ClientReceiver.tests.ts) — "accepts active cursor with empty anchor over a non-empty local branch (disableAudit updates)"; and the full server→client integration path in [ServerToClientSynchronisation.disableAudit.tests.ts](../../server/ServerToClientSynchronisation.disableAudit.tests.ts) — "keeps flushing successive server-side updates — the record is never frozen on its first version".
+
+### 6.4 Pause / resume
 
 `pause()` is called by the CD before each `onDispatch` to prevent an S2C push from being processed while a C2S dispatch is in-flight (avoids cross-flow races). `resume()` is called after the dispatch completes.
 
-### 6.4 Props
+### 6.5 Props
 
 ```typescript
 interface ClientReceiverProps {

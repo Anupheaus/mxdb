@@ -13,6 +13,7 @@ import {
   isActiveRecordState,
   getCursorId,
   addIdsToResponse,
+  addDeclinedIdsToResponse,
 } from './utils';
 
 interface ClientReceiverProps {
@@ -73,6 +74,15 @@ export class ClientReceiver {
       deletedRecordIds: string[];
     }>();
     const noLocalStateDeleteIds = new Map<string, string[]>();
+    // Records this client DELIBERATELY declines to apply from this push (pending C2S merge, stale
+    // anchor, or local tombstone). Reported back so the SD stops re-sending them without treating
+    // the non-ack as a stuck-client anomaly. These are NOT lost in transit — the client chose.
+    const declinedByCollection = new Map<string, string[]>();
+    const declineRecord = (collectionName: string, recordId: string): void => {
+      const ids = declinedByCollection.get(collectionName);
+      if (ids == null) declinedByCollection.set(collectionName, [recordId]);
+      else ids.push(recordId);
+    };
 
     for (const col of payload) {
       const colName = col.collectionName;
@@ -106,6 +116,8 @@ export class ClientReceiver {
         // A concurrent delete cursor for the same record is a no-op and still succeeds.
         if (!isActiveRecordState(localState)) {
           if (isActiveCursor(cursor)) {
+            // Deliberate decline: delete-is-final, refuse resurrection. Tell the SD to stop sending.
+            declineRecord(colName, id);
             continue;
           }
           if (!noLocalStateDeleteIds.has(colName)) {
@@ -132,6 +144,9 @@ export class ClientReceiver {
             updatesByCollection.get(colName)!.deletedRecordIds.push(id);
             continue;
           }
+          // Deliberate decline: active cursor skipped while local pending changes exist; the CD
+          // will reconcile via C2S. Tell the SD to stop re-sending this version.
+          declineRecord(colName, id);
           continue;
         }
 
@@ -151,6 +166,8 @@ export class ClientReceiver {
           const localBranchId = branchUlid ?? '';
 
           if (cursor.lastAuditEntryId < localBranchId) {
+            // Deliberate decline: the local version is newer. Tell the SD to stop re-sending.
+            declineRecord(colName, id);
             continue;
           }
         }
@@ -186,6 +203,11 @@ export class ClientReceiver {
     // Step 4: Merge noLocalStateDeleteIds into response
     for (const [colName, ids] of noLocalStateDeleteIds) {
       response = addIdsToResponse(response, colName, ids);
+    }
+
+    // Step 5: Report deliberately-declined records so the SD stops re-sending them.
+    for (const [colName, ids] of declinedByCollection) {
+      response = addDeclinedIdsToResponse(response, colName, ids);
     }
 
     return response;

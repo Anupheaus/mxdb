@@ -30,6 +30,8 @@ export interface ServerToClientSynchronisationProps {
   getDb(): ServerDb;
   collections: MXDBCollection[];
   logger: Logger;
+  /** Identifies the connected client (socket id) for diagnostics. */
+  clientId?: string;
   /** When true, all outward S2C effects are skipped (server-startup no-op instance). */
   noOp?: boolean;
 }
@@ -58,6 +60,7 @@ export class ServerToClientSynchronisation {
     }
 
     this.#sd = new ServerDispatcher(this.#logger.createSubLogger('sd'), {
+      clientId: props.clientId,
       onDispatch: async (payload: MXDBRecordCursors): Promise<MXDBSyncEngineResponse> => {
         try {
           return await props.emitS2C(payload);

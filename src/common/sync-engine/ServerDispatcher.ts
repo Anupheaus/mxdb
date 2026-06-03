@@ -13,7 +13,20 @@ import { isActiveCursor, isDeletedCursor, getCursorId } from './utils';
 interface ServerDispatcherProps {
   onDispatch<T extends MXDBRecord>(payload: MXDBRecordCursors<T>): Promise<MXDBSyncEngineResponse>;
   retryInterval?: number;
+  /** Identifies the connected client (socket id) for diagnostics. Optional; defaults to `'unknown'`. */
+  clientId?: string;
 }
+
+/**
+ * How many times in a row a client may RESOLVE an S2C dispatch without acknowledging a given
+ * record before the SD stops re-queuing it. Counted PER RECORD ID: a resolved response (even an
+ * empty `[]`) that omits the record is a deliberate refusal and increments that id's streak; the
+ * id being acknowledged resets it to zero. A REJECTED dispatch (`SyncPausedError` / transport
+ * failure) is not an answer at all and never counts. On reaching this many consecutive ignores
+ * the SD drops the record from its queue and logs an error (see {@link ServerDispatcher.#dispatch}
+ * step 6).
+ */
+const MAX_CONSECUTIVE_IGNORES = 3;
 
 /**
  * One queue entry = one `push(...)` call. The `addToFilter` flag is tracked per batch
@@ -46,6 +59,10 @@ export class ServerDispatcher {
   // Map<collectionName, Map<recordId, FilterRecord>> — O(1) per-collection and per-record lookups.
   #filter: Map<string, Map<string, ServerDispatcherFilterRecord>> = new Map();
   #deletedRecordIds: Map<string, Set<string>> = new Map();
+  // Map<collectionName, Map<recordId, consecutiveIgnoreCount>> — how many times in a row a
+  // resolved dispatch has omitted (refused) each record. Reset to 0 (entry deleted) the moment
+  // the client acknowledges the record; cleared when the record is dropped after the cap.
+  #ignoredCounts: Map<string, Map<string, number>> = new Map();
 
   constructor(logger: Logger, props: ServerDispatcherProps) {
     this.#logger = logger;
@@ -310,8 +327,9 @@ export class ServerDispatcher {
       response = await this.#props.onDispatch(freshRequest);
       success = true;
 
-      // Build a Map from response for O(1) lookups in steps 5 and 6.
+      // Build Maps from response for O(1) lookups in steps 5 and 6.
       const responseByCol = new Map(response.map(r => [r.collectionName, r.successfulRecordIds]));
+      const declinedByCol = new Map(response.map(r => [r.collectionName, r.declinedRecordIds ?? []]));
 
       // Step 5: Update #filter and #deletedRecordIds on success
       for (const col of freshRequest) {
@@ -377,22 +395,84 @@ export class ServerDispatcher {
         }
       }
 
-      // Step 6: Trim #queue and push back failed records
+      // Step 6: Trim #queue and push back failed records.
+      //
+      // This block runs ONLY because `onDispatch` resolved (`success === true`) — i.e. the client
+      // answered the request. A record the client neither acknowledged (`successfulRecordIds`) nor
+      // explicitly declined (`declinedRecordIds`) was therefore lost or silently dropped: it counts
+      // toward the per-record ignore cap. A DECLINED record was deliberately not applied (pending
+      // C2S merge / stale / tombstone) and converges by another path — we stop re-sending it but
+      // never count it. A REJECTED dispatch (SyncPausedError / transport failure) never reaches
+      // here: it is caught below and retried wholesale without counting.
       this.#queue.splice(0, queueLength);
 
-      // Re-queue failed cursors preserving their original addToFilter flag.
+      // Re-queue failed cursors preserving their original addToFilter flag, but give up on any
+      // record the client has now ignored MAX_CONSECUTIVE_IGNORES times in a row.
       for (const col of freshRequest) {
         const colName = col.collectionName;
         const successIds = responseByCol.get(colName) ?? [];
         const successSet = new Set(successIds);
+        const declinedSet = new Set(declinedByCol.get(colName) ?? []);
         const colFlags = flagsByCol.get(colName) ?? new Map<string, boolean>();
+
+        // Any record the client acknowledged this round clears its ignore streak.
+        for (const ackedId of successSet) this.#clearIgnoredCount(colName, ackedId);
+
         const failed = col.records.filter(c => !successSet.has(getCursorId(c)));
         if (failed.length === 0) continue;
 
-        // Group failures by their addToFilter flag so each re-queued batch carries a
+        const toRequeue: (MXDBActiveRecordCursor | MXDBDeletedRecordCursor)[] = [];
+        for (const cursor of failed) {
+          const id = getCursorId(cursor);
+
+          // The client explicitly declined this record (pending C2S merge / stale / tombstone). It
+          // is deliberately not applying our version and will converge by another path — stop
+          // re-sending it, and do NOT treat the non-ack as the stuck-client anomaly.
+          if (declinedSet.has(id)) {
+            this.#clearIgnoredCount(colName, id);
+            continue;
+          }
+
+          const ignoredCount = this.#bumpIgnoredCount(colName, id);
+          if (ignoredCount < MAX_CONSECUTIVE_IGNORES) {
+            toRequeue.push(cursor);
+            continue;
+          }
+
+          // The client answered the request but neither applied nor declined this record
+          // MAX_CONSECUTIVE_IGNORES times running. Stop re-queuing it (drop) and record the error
+          // with as much cheap context as we can gather.
+          this.#clearIgnoredCount(colName, id);
+          const isDelete = isDeletedCursor(cursor);
+          this.#logger.error(
+            `[SD] Client neither applied nor declined an S2C record ${MAX_CONSECUTIVE_IGNORES} times in a row `
+            + `(while answering the dispatches it was sent in), so the server has DROPPED the pending update for `
+            + `this record to avoid an unbounded re-send loop. Execution has NOT stopped and the server continues to `
+            + `run normally — but this should never happen and is important to investigate: the client is likely stuck `
+            + `and will not receive this record's current state until it next changes.`,
+            {
+              clientId: this.#props.clientId ?? 'unknown',
+              collectionName: colName,
+              recordId: id,
+              consecutiveIgnores: MAX_CONSECUTIVE_IGNORES,
+              cursorType: isDelete ? 'delete' : 'active',
+              lastAuditEntryId: cursor.lastAuditEntryId,
+              cursorHash: isDelete ? undefined : (cursor as unknown as { hash?: string }).hash,
+              addToFilter: colFlags.get(id) ?? true,
+              recordsSentInBatch: col.records.length,
+              acknowledgedCountInBatch: successSet.size,
+              acknowledgedRecordIdsInBatch: [...successSet],
+              declinedRecordIdsInBatch: [...declinedSet],
+            },
+          );
+        }
+
+        if (toRequeue.length === 0) continue;
+
+        // Group the survivors by their addToFilter flag so each re-queued batch carries a
         // consistent flag value.
         const groups = new Map<boolean, (MXDBActiveRecordCursor | MXDBDeletedRecordCursor)[]>();
-        for (const cursor of failed) {
+        for (const cursor of toRequeue) {
           const flag = colFlags.get(getCursorId(cursor)) ?? true;
           if (!groups.has(flag)) groups.set(flag, []);
           groups.get(flag)!.push(cursor);
@@ -427,6 +507,26 @@ export class ServerDispatcher {
         this.#startRetryTimer();
       }
     }
+  }
+
+  /** Increment and return the consecutive-ignore count for a record (creating maps lazily). */
+  #bumpIgnoredCount(collectionName: string, recordId: string): number {
+    let counts = this.#ignoredCounts.get(collectionName);
+    if (counts == null) {
+      counts = new Map();
+      this.#ignoredCounts.set(collectionName, counts);
+    }
+    const next = (counts.get(recordId) ?? 0) + 1;
+    counts.set(recordId, next);
+    return next;
+  }
+
+  /** Reset a record's consecutive-ignore count (on acknowledgement or after dropping it). */
+  #clearIgnoredCount(collectionName: string, recordId: string): void {
+    const counts = this.#ignoredCounts.get(collectionName);
+    if (counts == null) return;
+    counts.delete(recordId);
+    if (counts.size === 0) this.#ignoredCounts.delete(collectionName);
   }
 
   #startRetryTimer(): void {

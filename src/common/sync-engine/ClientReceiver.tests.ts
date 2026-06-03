@@ -122,8 +122,10 @@ describe('ClientReceiver', () => {
 
       const result = cr.process(payload);
       expect(onUpdate).not.toHaveBeenCalled();
-      const successIds = result.find(r => r.collectionName === 'items')?.successfulRecordIds ?? [];
-      expect(successIds).not.toContain('r1');
+      const item = result.find(r => r.collectionName === 'items');
+      expect(item?.successfulRecordIds ?? []).not.toContain('r1');
+      // Reported as deliberately declined so the SD stops re-sending (will merge via C2S).
+      expect(item?.declinedRecordIds ?? []).toContain('r1');
     });
 
     it('skips stale cursor (cursor.lastAuditEntryId <= branchUlid)', () => {
@@ -150,8 +152,10 @@ describe('ClientReceiver', () => {
 
       const result = cr.process(payload);
       expect(onUpdate).not.toHaveBeenCalled();
-      const successIds = result.find(r => r.collectionName === 'items')?.successfulRecordIds ?? [];
-      expect(successIds).not.toContain('r1');
+      const item = result.find(r => r.collectionName === 'items');
+      expect(item?.successfulRecordIds ?? []).not.toContain('r1');
+      // Stale cursor reported as deliberately declined so the SD stops re-sending it.
+      expect(item?.declinedRecordIds ?? []).toContain('r1');
     });
 
     it('accepts active cursor with empty anchor over a non-empty local branch (disableAudit updates)', () => {
@@ -276,8 +280,10 @@ describe('ClientReceiver', () => {
       expect(onUpdate).not.toHaveBeenCalled();
 
       // The active cursor must not appear in successfulRecordIds
-      const successIds = result.find(r => r.collectionName === 'items')?.successfulRecordIds ?? [];
-      expect(successIds).not.toContain('r1');
+      const item = result.find(r => r.collectionName === 'items');
+      expect(item?.successfulRecordIds ?? []).not.toContain('r1');
+      // Delete-is-final refusal is reported as declined so the SD stops re-sending it.
+      expect(item?.declinedRecordIds ?? []).toContain('r1');
 
       // Should not log an error — the race is expected and handled
       expect(mockLogger.error).not.toHaveBeenCalled();

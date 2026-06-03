@@ -391,4 +391,124 @@ describe('ServerDispatcher', () => {
       expect(onDispatch).toHaveBeenCalledTimes(2);
     });
   });
+
+  describe('ignored-record cap (per record id)', () => {
+    it('drops a record and logs a detailed error after the client ignores it 3 times while resolving the dispatch', async () => {
+      // Client resolves every dispatch (even with an empty []), so the request IS answered, but
+      // never includes r1 — a deliberate, repeated refusal. The SD must give up after 3 tries.
+      const onDispatch = vi.fn().mockResolvedValue([{ collectionName: 'items', successfulRecordIds: [] }]);
+      const sd = new ServerDispatcher(mockLogger, { onDispatch, clientId: 'socket-xyz' });
+
+      sd.push([{ collectionName: 'items', records: [makeActiveCursor('r1', 'hash1', 'u1')] }]);
+      await vi.runAllTimersAsync();
+
+      // Sent exactly 3 times, then dropped (no 4th attempt) — the unbounded re-send loop is capped.
+      expect(onDispatch).toHaveBeenCalledTimes(3);
+      expect(mockLogger.error).toHaveBeenCalledOnce();
+
+      const errorCall = (mockLogger.error as unknown as { mock: { calls: [string, Record<string, unknown>][] } }).mock.calls[0]!;
+      const [message, meta] = errorCall;
+      expect(message).toContain('important to investigate');
+      expect(message).toMatch(/has NOT stopped/i);
+      expect(meta).toMatchObject({
+        clientId: 'socket-xyz',
+        collectionName: 'items',
+        recordId: 'r1',
+        consecutiveIgnores: 3,
+        cursorType: 'active',
+        lastAuditEntryId: 'u1',
+        cursorHash: 'hash1',
+      });
+
+      // The record is gone from the queue — nothing further is dispatched.
+      onDispatch.mockClear();
+      await vi.runAllTimersAsync();
+      expect(onDispatch).not.toHaveBeenCalled();
+    });
+
+    it('counts an empty [] response (request answered, nothing acknowledged) toward the cap', async () => {
+      // Sending one id and getting [] back is "answered but this id ignored" — it counts.
+      const onDispatch = vi.fn().mockResolvedValue([]);
+      const sd = new ServerDispatcher(mockLogger, { onDispatch, clientId: 'c' });
+
+      sd.push([{ collectionName: 'items', records: [makeActiveCursor('r1', 'hash1', 'u1')] }]);
+      await vi.runAllTimersAsync();
+
+      expect(onDispatch).toHaveBeenCalledTimes(3);
+      expect(mockLogger.error).toHaveBeenCalledOnce();
+    });
+
+    it('does not count, error, or re-send a record the client explicitly declines', async () => {
+      // The client answers the dispatch but reports r1 as declined (e.g. pending C2S merge). The
+      // SD must stop re-sending it WITHOUT counting it toward the cap or logging an error.
+      const onDispatch = vi.fn().mockResolvedValue([{ collectionName: 'items', successfulRecordIds: [], declinedRecordIds: ['r1'] }]);
+      const sd = new ServerDispatcher(mockLogger, { onDispatch, clientId: 'c' });
+
+      sd.push([{ collectionName: 'items', records: [makeActiveCursor('r1', 'hash1', 'u1')] }]);
+      await vi.runAllTimersAsync();
+
+      // Sent once, declined, dropped from the queue — never re-sent, never errored.
+      expect(onDispatch).toHaveBeenCalledTimes(1);
+      expect(mockLogger.error).not.toHaveBeenCalled();
+
+      onDispatch.mockClear();
+      await vi.runAllTimersAsync();
+      expect(onDispatch).not.toHaveBeenCalled();
+    });
+
+    it('does not count or drop a record when the dispatch is rejected (no answer at all)', async () => {
+      // A rejected dispatch (here SyncPausedError) is NOT an answer, so it must never count toward
+      // the ignore cap — the record keeps being retried, never dropped, no error.
+      const onDispatch = vi.fn().mockRejectedValue(new SyncPausedError());
+      const sd = new ServerDispatcher(mockLogger, { onDispatch, clientId: 'c', retryInterval: 100 });
+
+      sd.push([{ collectionName: 'items', records: [makeActiveCursor('r1', 'hash1', 'u1')] }]);
+      await vi.advanceTimersByTimeAsync(450);
+
+      expect(onDispatch.mock.calls.length).toBeGreaterThan(3);
+      expect(mockLogger.error).not.toHaveBeenCalled();
+    });
+
+    it('tracks the streak independently per record id', async () => {
+      // r-keep is acked every round; r-drop is always ignored. Only r-drop should be dropped,
+      // and r-keep's continuous acks must not interfere with r-drop's streak.
+      const onDispatch = vi.fn().mockResolvedValue([{ collectionName: 'items', successfulRecordIds: ['r-keep'] }]);
+      const sd = new ServerDispatcher(mockLogger, { onDispatch, clientId: 'c' });
+
+      sd.pause();
+      sd.push([{ collectionName: 'items', records: [makeActiveCursor('r-keep', 'h1', 'u1'), makeActiveCursor('r-drop', 'h2', 'u2')] }]);
+      sd.resume();
+      await vi.runAllTimersAsync();
+
+      expect(mockLogger.error).toHaveBeenCalledOnce();
+      const meta = (mockLogger.error as unknown as { mock: { calls: [string, Record<string, unknown>][] } }).mock.calls[0]![1];
+      expect(meta).toMatchObject({ recordId: 'r-drop' });
+    });
+
+    it('resets a record\'s streak after it is acknowledged (a later refusal starts from zero)', async () => {
+      // Phase 1: ignored twice (count → 2) then acknowledged on the 3rd dispatch (resets to 0).
+      let call = 0;
+      const onDispatch = vi.fn().mockImplementation(async () => {
+        call++;
+        if (call === 3) return [{ collectionName: 'items', successfulRecordIds: ['r1'] }];
+        return [{ collectionName: 'items', successfulRecordIds: [] }];
+      });
+      const sd = new ServerDispatcher(mockLogger, { onDispatch, clientId: 'c' });
+
+      sd.push([{ collectionName: 'items', records: [makeActiveCursor('r1', 'hash1', 'u1')] }]);
+      await vi.runAllTimersAsync();
+      expect(onDispatch).toHaveBeenCalledTimes(3);
+      expect(mockLogger.error).not.toHaveBeenCalled();
+
+      // Phase 2: a changed version is now ignored. If the streak reset, it takes a FULL 3 fresh
+      // refusals (dispatches 4,5,6) to drop — not 1 (which would mean the count was still at 2).
+      onDispatch.mockResolvedValue([{ collectionName: 'items', successfulRecordIds: [] }]);
+      sd.push([{ collectionName: 'items', records: [makeActiveCursor('r1', 'hash2', 'u2')] }]);
+      await vi.runAllTimersAsync();
+
+      expect(onDispatch).toHaveBeenCalledTimes(6);
+      expect(mockLogger.error).toHaveBeenCalledOnce();
+    });
+  });
+
 });

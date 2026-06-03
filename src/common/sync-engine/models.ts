@@ -16,7 +16,18 @@ export interface MXDBDeletedRecordCursor { recordId: string; lastAuditEntryId: s
 export interface MXDBRecordCursorsByCollection<T extends MXDBRecord = MXDBRecord> { collectionName: string; records: (MXDBActiveRecordCursor<T> | MXDBDeletedRecordCursor)[]; }
 export type MXDBRecordCursors<T extends MXDBRecord = MXDBRecord> = MXDBRecordCursorsByCollection<T>[];
 
-export interface MXDBSyncEngineResponseItem { collectionName: string; successfulRecordIds: string[]; }
+export interface MXDBSyncEngineResponseItem {
+  collectionName: string;
+  /** Records the client applied (or that are already consistent), e.g. deletes against an unknown/tombstoned id. */
+  successfulRecordIds: string[];
+  /**
+   * Records the client DELIBERATELY did not apply and never will from this push — it has pending
+   * local changes it will merge via C2S, the cursor is stale, or the record is locally tombstoned
+   * (delete-is-final). The ServerDispatcher must stop re-sending these (they are not lost in
+   * transit) without treating them as the "stuck client" anomaly. Absent ⇒ no declines.
+   */
+  declinedRecordIds?: string[];
+}
 export type MXDBSyncEngineResponse = MXDBSyncEngineResponseItem[];
 
 export interface MXDBUpdateItemRequest<T extends MXDBRecord = MXDBRecord> {

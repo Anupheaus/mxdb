@@ -198,6 +198,7 @@ export async function startAuthenticatedServer({
         getDb: () => db,
         collections,
         logger: s2cLogger,
+        clientId: client.id,
       });
       clientS2CInstances.set(client, {
         s2c,
