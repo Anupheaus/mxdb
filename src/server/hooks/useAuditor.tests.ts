@@ -78,6 +78,21 @@ describe('useAuditor', () => {
       const audit = auditor.createAuditFrom(record);
       expect(() => useAuditor(false).isAudit(audit)).not.toThrow();
     });
+
+    it('fullAudit=false accepts a sync-only (Branched + empty Updated) audit that fullAudit=true rejects', () => {
+      // A Branched anchor followed by an Updated entry with empty ops is the sync-only
+      // pending shape. isSyncOnlyAuditValid accepts it; isFullAuditValid rejects it.
+      // This verifies that useAuditor correctly forwards the fullAudit flag.
+      const syncOnlyAudit = {
+        id: 'r2',
+        entries: [
+          { type: 4, id: 'e1' },                        // AuditEntryType.Branched
+          { type: 1, id: 'e2', ops: [] as unknown[] },   // AuditEntryType.Updated, empty ops
+        ],
+      };
+      expect(useAuditor(false).isAudit(syncOnlyAudit)).toBe(true);
+      expect(useAuditor(true).isAudit(syncOnlyAudit)).toBe(false);
+    });
   });
 
   // ─── merge ───────────────────────────────────────────────────────────────────
