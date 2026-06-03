@@ -64,8 +64,8 @@ describe('ServerReceiver', () => {
       records: [{ record, lastAuditEntryId, hash: 'mock-hash-probe-1' } as never],
     }]);
 
-    // Allow the microtask queue to drain so the async dispatch can run.
-    await new Promise(r => setTimeout(r, 0));
+    // Drain the microtask queue so the async dispatch can run.
+    for (let i = 0; i < 10; i++) await Promise.resolve();
 
     expect(onDispatch).toHaveBeenCalled();
   });
@@ -403,8 +403,8 @@ describe('ServerReceiver', () => {
     expect('record' in pushedCursor!).toBe(false);
     expect((pushedCursor as { recordId: string }).recordId).toBe('r1');
 
-    // Confirm the SD actually dispatches — not stuck paused.
-    await new Promise(r => setTimeout(r, 0));
+    // Drain the microtask queue so the SD can confirm dispatch — not stuck paused.
+    for (let i = 0; i < 10; i++) await Promise.resolve();
     expect(onDispatch).toHaveBeenCalled();
   });
 });

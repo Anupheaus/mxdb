@@ -171,8 +171,8 @@ describe('DbCollection > batchApplyServerWriteSync', () => {
       { record: makeRecord('p1', 'Persisted'), lastAuditEntryId: ulid() },
     ]);
 
-    // Allow the fire-and-forget persist to complete
-    await new Promise(r => setTimeout(r, 50));
+    // Drain pending microtasks without a real timer
+    for (let i = 0; i < 20; i++) await Promise.resolve();
 
     await collection.reloadFromWorker();
     const all = await collection.getAll();

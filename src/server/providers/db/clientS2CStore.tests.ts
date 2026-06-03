@@ -47,4 +47,21 @@ describe('clientS2CStore', () => {
     expect(lookupClientS2C(socketA)).toBe(s2cA);
     expect(lookupClientS2C(socketB)).toBe(s2cB);
   });
+
+  it('overwrites existing registration with same socket — returns new instance', () => {
+    const socket = makeSocket();
+    const inst1 = makeS2C();
+    const inst2 = makeS2C();
+
+    registerClientS2C(socket, inst1);
+    registerClientS2C(socket, inst2);
+
+    expect(lookupClientS2C(socket)).toBe(inst2);
+  });
+
+  it('unregistering a non-existent socket is a no-op', () => {
+    const socket = makeSocket();
+    expect(() => unregisterClientS2C(socket)).not.toThrow();
+    expect(lookupClientS2C(socket)).toBeUndefined();
+  });
 });

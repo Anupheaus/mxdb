@@ -50,4 +50,17 @@ describe('handleQuery', () => {
     await handleQuery({ collectionName: 'items', filters: { active: true }, limit: 10 });
     expect(mockQuery).toHaveBeenCalledWith({ filters: { active: true }, limit: 10 });
   });
+
+  it('propagates rejection when query throws', async () => {
+    mockQuery.mockRejectedValue(new Error('DB error'));
+    await expect(handleQuery({ collectionName: 'items' })).rejects.toThrow('DB error');
+    expect(mockPushActive).not.toHaveBeenCalled();
+  });
+
+  it('returns 0 and skips pushActive when query returns empty data', async () => {
+    mockQuery.mockResolvedValue({ data: [], total: 0 });
+    const result = await handleQuery({ collectionName: 'items' });
+    expect(result).toEqual([]);
+    expect(mockPushActive).not.toHaveBeenCalled();
+  });
 });

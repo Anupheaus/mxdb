@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { defineCollection } from '../../common/defineCollection';
 import {
   extendCollection,
@@ -76,5 +76,21 @@ describe('extendCollection', () => {
   it('OnClearPayload has collectionName', () => {
     const payload: OnClearPayload = { collectionName: 'foo' };
     expect(payload.collectionName).toBe('foo');
+  });
+
+  it('returns undefined extensions when collection was never extended', () => {
+    const fresh = defineCollection({ name: 'never-extended', indexes: [] });
+    expect(getCollectionExtensions(fresh)).toBeUndefined();
+  });
+
+  it('merges hooks from two extendCollection calls on the same collection', () => {
+    const coll = defineCollection({ name: 'merge-test', indexes: [] });
+    const onBeforeUpsert = vi.fn();
+    const onAfterUpsert = vi.fn();
+    extendCollection(coll, { onBeforeUpsert });
+    extendCollection(coll, { onAfterUpsert });
+    const ext = getCollectionExtensions(coll);
+    expect(ext?.onBeforeUpsert).toBe(onBeforeUpsert);
+    expect(ext?.onAfterUpsert).toBe(onAfterUpsert);
   });
 });

@@ -150,6 +150,14 @@ function createHarness(): Harness {
   };
 }
 
+async function waitUntil(condition: () => boolean, maxMs = 3000): Promise<void> {
+  const deadline = Date.now() + maxMs;
+  while (!condition()) {
+    if (Date.now() > deadline) throw new Error(`waitUntil timed out after ${maxMs}ms`);
+    await new Promise(r => setTimeout(r, 10));
+  }
+}
+
 describe('ServerToClientSynchronisation — disableAudit server-side updates', () => {
   let harness: Harness;
 
@@ -197,7 +205,7 @@ describe('ServerToClientSynchronisation — disableAudit server-side updates', (
     await harness.serverUpdate({ id: 'job-unknown', status: 'working' });
 
     // Give the pipeline a chance to (incorrectly) deliver it.
-    for (let tick = 0; tick < 50; tick++) await Promise.resolve();
+    await waitUntil(() => harness.clientStore.has('job-unknown'), 500).catch(() => undefined);
     expect(harness.clientStore.has('job-unknown')).toBe(false);
   });
 });
