@@ -41,6 +41,9 @@ See [hooks/AGENTS.md](hooks/AGENTS.md) for the full directory. Key exports:
 ### S2C synchronisation
 - `ServerToClientSynchronisation.ts` — per-socket `ServerDispatcher` lifecycle; receives change-stream events and pushes S2C cursors to connected clients
 
+### MCP endpoint (`mcp/`)
+JSON-RPC 2.0 server at `POST /mcp` exposing `mxdb_clients_list` and `mxdb_client_sqlite_query` tools. Auth: Bearer API key + IP allowlist (`MXDB_MCP_API_KEY`, `MXDB_MCP_IP_ALLOWLIST`). See [mcp/AGENTS.md](mcp/AGENTS.md).
+
 ### Seeding (`seeding/`)
 - `seedCollections.ts` — called at startup when `shouldSeedCollections: true`; runs `onSeed` hooks
 - `seededData.ts` — tracks seeded record ids to prevent duplicate seeding across restarts
@@ -85,4 +88,5 @@ Implementation lives under `src/server/mcp/`.
 - [actions/AGENTS.md](actions/AGENTS.md) — socket action handlers
 - [subscriptions/AGENTS.md](subscriptions/AGENTS.md) — server-side subscriptions
 - [providers/db/AGENTS.md](providers/db/AGENTS.md) — MongoDB persistence
+- [mcp/AGENTS.md](mcp/AGENTS.md) — MCP endpoint for AI-assistant access to connected clients
 - [../common/AGENTS.md](../common/AGENTS.md) — shared types and sync engine
