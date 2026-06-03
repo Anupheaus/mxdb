@@ -27,6 +27,13 @@ This auth layer is intentionally isolated from the sync collection system: `Auth
 ### Dev tooling
 - `registerDevAuthRoute.ts` — registers a `POST /{name}/dev/signin` Koa route that issues a dev auth token without WebAuthn. **Excluded in `NODE_ENV=production`** — this is the server-side counterpart to `setupBrowserTools`'s `setDevAuth`.
 
+### Device management context
+- `authDevicesContext.ts` — `AuthDevicesApi` interface (`listForUser`, `createInvite`, `setEnabled`, `deleteDevice`, `expireStalePendingInvites`) plus a module-level singleton pattern: `setAuthDevices(api)` registers the implementation at startup; `useAuthDevices()` returns it and throws if called before registration
+- `useAuthDevices.ts` — barrel re-export of `AuthDevicesApi`, `setAuthDevices`, and `useAuthDevices`
+
+### Session token parsing
+- `parseSessionTokenFromHandshake.ts` — `parseSessionTokenFromHandshake(input)` — reads the session token from socket handshake cookies; checks both `nexus_session` and `socketapi_session` cookie names (the latter kept for backward compatibility after the socket-api → nexus rename); falls back to `input.sessionTokenFromAuth` if no cookie matches
+
 ### Auth context within handlers
 Auth context (userId, token for the current socket client) is not a file in this directory. Access it via `useClient()` in [`../hooks/useClient.ts`](../hooks/useClient.ts) — see [hooks/AGENTS.md](../hooks/AGENTS.md).
 
