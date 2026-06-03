@@ -117,4 +117,10 @@ describe('hashRecord', () => {
     const b = rec({ a: 1, z: 9 });
     expect(await hashRecord(a)).toBe(await hashRecord(b));
   });
+
+  it('hashes records with different ids differently', async () => {
+    const h1 = await hashRecord({ id: 'r1', value: 1 });
+    const h2 = await hashRecord({ id: 'r2', value: 1 });
+    expect(h1).not.toBe(h2);
+  });
 });

@@ -69,9 +69,7 @@ describe('removeConnectedClient', () => {
     upsertConnectedClient({ socketId: 'sock-1', userId: 'user-1' });
     upsertConnectedClient({ socketId: 'sock-2', userId: 'user-2' });
     removeConnectedClient('sock-1');
-    const clients = listConnectedClients();
-    expect(clients).toHaveLength(1);
-    expect(clients[0]!.socketId).toBe('sock-2');
+    expect(listConnectedClients()).toEqual([{ socketId: 'sock-2', userId: 'user-2', accountId: undefined }]);
   });
 });
 
