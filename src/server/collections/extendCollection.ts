@@ -9,13 +9,6 @@ export interface SeedWithPropsWithFixedRecords<RecordType extends Record> {
   fixedRecords: RecordType[];
   create?(): RecordType;
   validate?(record: RecordType): RecordType | boolean | void;
-  /**
-   * When true, records that exist in the database but were not created by seeding are never
-   * removed, even if the total record count exceeds `count`. Use this for collections where
-   * the application adds its own records (e.g. contacts created by leads or calendar sync)
-   * that must not be pruned when seeding re-runs.
-   */
-  preserveExtraRecords?: boolean;
 }
 
 export interface SeedWithPropsWithCreate<RecordType extends Record> {
@@ -23,8 +16,6 @@ export interface SeedWithPropsWithCreate<RecordType extends Record> {
   fixedRecords?: RecordType[];
   create(): RecordType;
   validate?(record: RecordType): RecordType | boolean | void;
-  /** When true, records not created by seeding are never removed even if total exceeds `count`. */
-  preserveExtraRecords?: boolean;
 }
 
 export type SeedWithProps<RecordType extends Record> = SeedWithPropsWithFixedRecords<RecordType> | SeedWithPropsWithCreate<RecordType>;
