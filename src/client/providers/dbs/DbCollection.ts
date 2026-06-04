@@ -571,6 +571,22 @@ export class DbCollection<RecordType extends Record = Record> {
     for (const audit of this.#auditRecords.values()) {
       if (auditor.hasPendingChanges(audit)) this.#pendingIds.add(audit.id);
     }
+
+    // Remove orphaned live records — those present in _live but absent from _audit.
+    // A legitimate record always has an audit entry (Created for local records, Branched
+    // for server-synced ones). An orphan has no audit trail and is invisible to the C2S
+    // reconnect sweep, so the server can never push a delete cursor for it. Cleaning up
+    // here ensures these ghosts don't persist across restarts.
+    const orphanIds = liveRows.map(r => r.id).filter(id => !this.#auditRecords.has(id));
+    if (orphanIds.length > 0) {
+      this.#logger?.warn(`[DbCollection:${this.#name}] Removing ${orphanIds.length} orphaned live record(s) with no audit entry`, { orphanIds });
+      for (const id of orphanIds) this.#records.delete(id);
+      const deleteStmts = orphanIds.map(id => ({
+        sql: `DELETE FROM ${liveTable} WHERE id = ?`,
+        params: [id],
+      }));
+      await this.#worker.execBatch(deleteStmts, this.#name);
+    }
   }
 
   // ─── Private: fire-and-forget SQLite writes ───────────────────────────────
