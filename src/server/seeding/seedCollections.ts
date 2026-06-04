@@ -18,7 +18,7 @@ function seedWith<RecordType extends Record>(
   updateSeedHash: (seedHash: string) => void,
   logger: Logger,
 ): SeedWithFn<RecordType> {
-  return async ({ count: providedCount, fixedRecords, create, validate }: SeedWithProps<RecordType>) => {
+  return async ({ count: providedCount, fixedRecords, create, validate, preserveExtraRecords }: SeedWithProps<RecordType>) => {
     const count = providedCount ?? fixedRecords?.length;
     if (count == null) throw new InternalError('Count or Fixed Records is required for seeding.');
     if (fixedRecords != null) {
@@ -48,7 +48,7 @@ function seedWith<RecordType extends Record>(
       }));
     }
 
-    if (records.length > count) {
+    if (!preserveExtraRecords && records.length > count) {
       const fixedIds = fixedRecords?.ids();
       const totalToRemoveCount = records.length - count;
       recordIdsToRemove.addMany((fixedIds == null ? records : records.filter(({ id }) => !fixedIds.includes(id))).slice(0, totalToRemoveCount).ids());

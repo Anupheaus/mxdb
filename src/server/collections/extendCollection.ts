@@ -1,5 +1,5 @@
-import type { DataRequest, PromiseMaybe, Record } from '@anupheaus/common';
-import type { MXDBCollection } from '../../common';
+import type { PromiseMaybe, Record } from '@anupheaus/common';
+import type { MXDBCollection, QueryProps } from '../../common';
 import type { UseCollection } from './useCollection';
 
 export type UseCollectionFn = <RecordType extends Record>(collection: MXDBCollection<RecordType>) => UseCollection<RecordType>;
@@ -9,6 +9,13 @@ export interface SeedWithPropsWithFixedRecords<RecordType extends Record> {
   fixedRecords: RecordType[];
   create?(): RecordType;
   validate?(record: RecordType): RecordType | boolean | void;
+  /**
+   * When true, records that exist in the database but were not created by seeding are never
+   * removed, even if the total record count exceeds `count`. Use this for collections where
+   * the application adds its own records (e.g. contacts created by leads or calendar sync)
+   * that must not be pruned when seeding re-runs.
+   */
+  preserveExtraRecords?: boolean;
 }
 
 export interface SeedWithPropsWithCreate<RecordType extends Record> {
@@ -16,6 +23,8 @@ export interface SeedWithPropsWithCreate<RecordType extends Record> {
   fixedRecords?: RecordType[];
   create(): RecordType;
   validate?(record: RecordType): RecordType | boolean | void;
+  /** When true, records not created by seeding are never removed even if total exceeds `count`. */
+  preserveExtraRecords?: boolean;
 }
 
 export type SeedWithProps<RecordType extends Record> = SeedWithPropsWithFixedRecords<RecordType> | SeedWithPropsWithCreate<RecordType>;
@@ -38,7 +47,7 @@ export interface OnClearPayload {
 }
 
 export interface OnQueryPayload {
-  request: DataRequest<any>;
+  request: QueryProps<any>;
   userId: string | undefined;
 }
 
@@ -77,10 +86,11 @@ export interface CollectionExtensionHooks<RecordType extends Record = Record> {
   onSeed?(seedWith: SeedWithFn<RecordType>): Promise<void>;
   /**
    * Run before a query is executed. Receives the request and the authenticated userId.
-   * Return a modified request to apply additional server-side filters (e.g. security scoping).
+   * Return a modified request to apply additional server-side filters (e.g. security scoping)
+   * or to interpret {@link QueryProps.serverHints}.
    * Return void/undefined to use the original request unchanged.
    */
-  onQuery?(payload: OnQueryPayload): PromiseMaybe<DataRequest<any> | void>;
+  onQuery?(payload: OnQueryPayload): PromiseMaybe<QueryProps<any> | void>;
 }
 
 const extensionRegistry = new WeakMap<MXDBCollection, CollectionExtensionHooks>();
