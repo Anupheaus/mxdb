@@ -43,7 +43,16 @@ export class Db {
 
   public use<RecordType extends Record>(collectionName: string): DbCollection<RecordType> {
     const collection = this.#collections.get(collectionName) as DbCollection<RecordType> | undefined;
-    if (collection == null) throw new InternalError(`Collection "${collectionName}" not found`);
+    if (collection == null) {
+      const availableCollections = Array.from(this.#collections.keys()).sort();
+      throw new InternalError({
+        message: `Collection "${collectionName}" is not registered in the "${this.#name}" database. `
+          + `${availableCollections.length} registered collection(s): ${availableCollections.join(', ') || '(none)'}. `
+          + `Add "${collectionName}" to this client's collections list (e.g. mobileCollections / webCollections), `
+          + `or ensure the provider that uses it is only mounted on clients that register it.`,
+        meta: { database: this.#name, requestedCollection: collectionName, availableCollections },
+      });
+    }
     return collection;
   }
 
