@@ -44,6 +44,7 @@ Reactive hooks subscribe to the in-memory change-notification bus inside `DbColl
 - **`useSubscription` is server-side** — calls a named subscription defined via `extendCollection` on the server. Completely separate from the local reactive hooks.
 - **`tableRequest` vs `useQuery`** — `tableRequest` is imperative (for library grid integrations); `useQuery` is the reactive equivalent.
 - **`createFind.tests.ts`** — the only hook file with its own unit tests; covers filter-to-SQL edge cases.
+- **`serverHints` on `query` / `useQuery` is server-only** — the optional `serverHints` field on a query request is *not* applied to the local SQLite query; it is passed through to the server's `onQuery` collection hook to interpret. It has no effect unless that hook reads it. See [../../../server/collections/AGENTS.md](../../../server/collections/AGENTS.md#server-query-hints-serverhints).
 
 ## Related
 

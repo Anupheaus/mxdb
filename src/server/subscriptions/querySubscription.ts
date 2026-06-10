@@ -1,15 +1,16 @@
+import type { Record } from '@anupheaus/common';
 import { mxdbQuerySubscription } from '../../common';
 import { getCollectionExtensions, useCollection } from '../collections';
 import { useDb, useServerToClientSynchronisation } from '../providers';
 import { createServerCollectionSubscription } from './createServerCollectionSubscription';
 import { pushSubscriptionResultRecords } from './pushSubscriptionResultRecords';
 import { useAuthentication, useLogger } from '@anupheaus/nexus/server';
-import type { DataRequest } from '@anupheaus/common';
+import type { QueryProps } from '../../common';
 
 export const serverQuerySubscription = createServerCollectionSubscription<string[]>()(mxdbQuerySubscription,
   async ({ request, previousResponse, subscriptionId, additionalData: previousRecordIds, updateAdditionalData, update, onUnsubscribe }) => {
     const logger = useLogger();
-    const { collectionName, filters, pagination, sorts } = request;
+    const { collectionName, filters, pagination, sorts, serverHints, getAccurateTotal } = request;
     const { collection, query, onChange, removeOnChange } = useCollection(collectionName);
     // Capture at subscription-setup time. onChange callbacks fire from the MongoDB change stream
     // outside any ALS context, so a late useServerToClientSynchronisation() would fall back to the no-op.
@@ -19,15 +20,26 @@ export const serverQuerySubscription = createServerCollectionSubscription<string
     const db = useDb();
     const dbCollection = db.use(collectionName);
     const extensions = dbCollection.collection != null ? getCollectionExtensions(dbCollection.collection) : undefined;
-    let baseRequest: DataRequest = { filters, pagination, sorts };
+    let baseRequest: QueryProps<Record> = { filters, pagination, sorts, serverHints, getAccurateTotal };
     if (extensions?.onQuery != null) {
       const userId = (() => { try { return useAuthentication().user?.id; } catch { return undefined; } })();
       const modified = await extensions.onQuery({ request: baseRequest, userId });
       if (modified != null) baseRequest = modified;
     }
-    const { filters: effectiveFilters, pagination: effectivePagination, sorts: effectiveSorts } = baseRequest;
+    const {
+      filters: effectiveFilters,
+      pagination: effectivePagination,
+      sorts: effectiveSorts,
+      serverHints: _effectiveHints,
+      getAccurateTotal: effectiveGetAccurateTotal,
+    } = baseRequest;
 
-    const runQuery = () => query({ filters: effectiveFilters as any, pagination: effectivePagination, sorts: effectiveSorts as any, getAccurateTotal: true });
+    const runQuery = () => query({
+      filters: effectiveFilters as any,
+      pagination: effectivePagination,
+      sorts: effectiveSorts as any,
+      getAccurateTotal: effectiveGetAccurateTotal ?? true,
+    });
 
     async function refreshQueryAndPushToSubscriber(): Promise<[string[], number]> {
       const { data: records, total } = await runQuery();

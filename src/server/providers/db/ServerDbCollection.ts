@@ -699,6 +699,7 @@ export class ServerDbCollection<RecordType extends Record = Record> {
     if (request.sorts != null && Object.keys(request.sorts).length > 0) return request;
     if (request.filters != null && Object.keys(request.filters).length > 0) return request;
     if (request.getAccurateTotal === true) return request;
+    if (request.serverHints != null && Object.values(request.serverHints).some(v => v !== undefined)) return request;
     return;
   }
 }

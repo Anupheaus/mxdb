@@ -107,7 +107,7 @@ beforeEach(() => {
 
 describe('querySubscription — serverHints handling', () => {
   it('delivers serverHints to the onQuery hook in the request', async () => {
-    const onQuery = vi.fn<OnQueryHook>(() => undefined);
+    const onQuery = vi.fn<Parameters<OnQueryHook>, ReturnType<OnQueryHook>>(() => undefined);
     registerOnQuery(onQuery);
 
     await runSubscription({ filters: { active: true }, serverHints: { latestPerSchedule: true } });
@@ -138,7 +138,7 @@ describe('querySubscription — serverHints handling', () => {
     // Hook interprets the hint and returns a request with extra server-side scoping.
     registerOnQuery(({ request }) =>
       request.serverHints?.scope === 'mine'
-        ? { filters: { tenantId: 't1' }, sorts: { name: 'asc' } } as QueryProps<{ id: string }>
+        ? { filters: { tenantId: 't1' }, sorts: { name: 'asc' } } as unknown as QueryProps<{ id: string }>
         : undefined);
 
     const queryArg = await runSubscription({ filters: { active: true }, serverHints: { scope: 'mine' } });
@@ -158,7 +158,7 @@ describe('querySubscription — serverHints handling', () => {
 
   it('passes the authenticated userId to the onQuery hook', async () => {
     h.auth.user = { id: 'user-42' };
-    const onQuery = vi.fn<OnQueryHook>(() => undefined);
+    const onQuery = vi.fn<Parameters<OnQueryHook>, ReturnType<OnQueryHook>>(() => undefined);
     registerOnQuery(onQuery);
 
     await runSubscription({ serverHints: { scope: 'mine' } });
@@ -168,7 +168,7 @@ describe('querySubscription — serverHints handling', () => {
 
   it('passes undefined userId to onQuery when there is no auth context', async () => {
     h.auth.throws = true;
-    const onQuery = vi.fn<OnQueryHook>(() => undefined);
+    const onQuery = vi.fn<Parameters<OnQueryHook>, ReturnType<OnQueryHook>>(() => undefined);
     registerOnQuery(onQuery);
 
     await runSubscription({ serverHints: { scope: 'mine' } });

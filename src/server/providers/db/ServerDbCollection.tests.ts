@@ -156,7 +156,7 @@ describe('ServerDbCollection', () => {
       await col.upsert(makeItem({ id: 'exists', name: 'Exists' }));
       const results = await col.get(['exists', 'does-not-exist']);
       expect(results).toHaveLength(1);
-      expect(results[0].id).toBe('exists');
+      expect(results[0]!.id).toBe('exists');
     });
   });
 
@@ -262,7 +262,7 @@ describe('ServerDbCollection', () => {
         makeItem({ id: 'o2', name: 'O2' }),
         makeItem({ id: 'o3', name: 'O3' }),
       ]);
-      const { data } = await col.query({ pagination: { offset: 2 } });
+      const { data } = await col.query({ pagination: { offset: 2, limit: 10 } });
       expect(data).toHaveLength(1);
     });
 
@@ -274,7 +274,7 @@ describe('ServerDbCollection', () => {
       ]);
       const { data } = await col.query({ filters: { category: 'x' } as any });
       expect(data).toHaveLength(1);
-      expect(data[0].id).toBe('f1');
+      expect(data[0]!.id).toBe('f1');
     });
   });
 

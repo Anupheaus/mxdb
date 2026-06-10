@@ -11,7 +11,7 @@ Each file registers one socket action using `createServerActionHandler`. Actions
 ### Read actions
 - `getAction.ts` — `mxdbGetAction` — fetch a single record by id
 - `getAllAction.ts` — `mxdbGetAllAction` — fetch all records in a collection
-- `queryAction.ts` — `mxdbQueryAction` — paginated, sorted, filtered query
+- `queryAction.ts` — `mxdbQueryAction` — paginated, sorted, filtered query. Forwards the request's `serverHints` to the collection's `onQuery` hook (see [../collections/AGENTS.md](../collections/AGENTS.md#server-query-hints-serverhints))
 - `distinctAction.ts` — `mxdbDistinctAction` — distinct field values for a given field
 
 ### Sync actions

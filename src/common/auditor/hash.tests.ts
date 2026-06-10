@@ -119,8 +119,8 @@ describe('hashRecord', () => {
   });
 
   it('hashes records with different ids differently', async () => {
-    const h1 = await hashRecord({ id: 'r1', value: 1 });
-    const h2 = await hashRecord({ id: 'r2', value: 1 });
+    const h1 = await hashRecord({ id: 'r1', value: 1 } as MXDBRecord);
+    const h2 = await hashRecord({ id: 'r2', value: 1 } as MXDBRecord);
     expect(h1).not.toBe(h2);
   });
 });

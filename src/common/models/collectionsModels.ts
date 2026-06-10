@@ -6,9 +6,16 @@ export type MongoDocOf<RecordType extends Record> = {
   [K in keyof RecordType as K extends 'id' ? '_id' : K]: RecordType[K] extends DateTime<any> ? string : RecordType[K];
 };
 
-export interface QueryProps<RecordType extends Record> extends DataRequest<RecordType> {
+export type ServerQueryHints = { [key: string]: unknown };
+
+export interface QueryProps<
+  RecordType extends Record,
+  Hints extends ServerQueryHints = ServerQueryHints,
+> extends DataRequest<RecordType> {
   getAccurateTotal?: boolean;
   disable?: boolean;
+  /** Server-only metadata for collection `onQuery` hooks; not applied to client SQLite queries. */
+  serverHints?: Hints;
 }
 
 export interface QueryResults<RecordType extends Record> {
@@ -16,7 +23,10 @@ export interface QueryResults<RecordType extends Record> {
   total: number;
 }
 
-export type QueryRequest<RecordType extends Record = Record> = Omit<QueryProps<RecordType>, 'disable'> & {
+export type QueryRequest<
+  RecordType extends Record = Record,
+  Hints extends ServerQueryHints = ServerQueryHints,
+> = Omit<QueryProps<RecordType, Hints>, 'disable'> & {
   collectionName: string;
 };
 

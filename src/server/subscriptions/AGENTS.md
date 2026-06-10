@@ -9,7 +9,7 @@ Subscriptions differ from actions in that they remain active after the initial r
 ## Contents
 
 - `getAllSubscription.ts` — `serverGetAllSubscription` — pushes a full snapshot initially, then diffs on each change and pushes added/removed ids
-- `querySubscription.ts` — `serverQuerySubscription` — paginated/filtered subscription; pushes matching records and total count on change
+- `querySubscription.ts` — `serverQuerySubscription` — paginated/filtered subscription; pushes matching records and total count on change. Forwards the request's `serverHints` to the collection's `onQuery` hook (see [../collections/AGENTS.md](../collections/AGENTS.md#server-query-hints-serverhints)), then drops them before the actual fetch
 - `distinctSubscription.ts` — `serverDistinctSubscription` — distinct field values; pushes updates on change
 - `createServerCollectionSubscription.ts` — factory that creates type-safe collection subscription handlers; wires `useCollection`, `onChange`, and `pushSubscriptionResultRecords`
 - `pushSubscriptionResultRecords.ts` — routes records to the client via the S2C dispatch path (updates the `ServerDispatcher` filter with `addToFilter=true`)

@@ -1,8 +1,9 @@
 import { createServerActionHandler, useAuthentication } from '@anupheaus/nexus/server';
+import type { Record } from '@anupheaus/common';
 import { mxdbQueryAction } from '../../common';
+import type { QueryProps } from '../../common';
 import { useDb, useServerToClientSynchronisation } from '../providers';
 import { getCollectionExtensions } from '../collections/extendCollection';
-import type { DataRequest } from '@anupheaus/common';
 
 export async function handleQuery(params: { collectionName: string;[key: string]: unknown; }) {
   const { collectionName, ...request } = params;
@@ -10,7 +11,7 @@ export async function handleQuery(params: { collectionName: string;[key: string]
   const s2c = useServerToClientSynchronisation();
   const dbCollection = db.use(collectionName);
 
-  let queryRequest = request as DataRequest;
+  let queryRequest = request as QueryProps<Record>;
   const extensions = dbCollection.collection != null ? getCollectionExtensions(dbCollection.collection) : undefined;
   if (extensions?.onQuery != null) {
     const userId = (() => { try { return useAuthentication().user?.id; } catch { return undefined; } })();
