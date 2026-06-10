@@ -83,6 +83,10 @@ export class DbCollection<RecordType extends Record = Record> {
     this.#callbacks = new Set();
     this.#logger = logger;
     this.#loadingPromise = ready.then(() => this.#loadData());
+    // Server-sync writes may arrive before the worker is open + loaded (e.g. a reconnect S2C
+    // push racing a slow open). Track completion so #runAfterReady can apply synchronously once
+    // ready, and defer otherwise. A rejected load (open failed) leaves this false on purpose.
+    void this.#loadingPromise.then(() => { this.#loadingComplete = true; }, () => undefined);
   }
 
   #name: string;
@@ -94,6 +98,7 @@ export class DbCollection<RecordType extends Record = Record> {
   // Keeps getPendingStatesSync O(pending) instead of O(all records).
   #pendingIds: Set<string>;
   #loadingPromise: Promise<void>;
+  #loadingComplete = false;
   #callbacks: Set<(event: MXDBCollectionEvent<RecordType>) => void>;
 
   public get name() { return this.#name; }
@@ -187,17 +192,38 @@ export class DbCollection<RecordType extends Record = Record> {
   }
 
   /**
+   * Apply a server-driven mutation, but only once the worker is open and the initial
+   * {@link #loadData} has completed.
+   *
+   * The C2S/S2C sync providers invoke the server-sync appliers synchronously and may do so
+   * before {@link SqliteWorkerClient.open} has run — e.g. a reconnect S2C push racing a slow
+   * OPFS/encrypted open on the cross-origin-isolated mobile app. Running before the DB is ready
+   * would (a) post to the worker before its port/tables exist (a null-port crash in shared-worker
+   * mode) and (b) be lost when {@link #loadData} replaces the in-memory maps. Once loaded we apply
+   * synchronously so the onChange notification stays in the same tick as the call (matching the
+   * pre-existing behaviour and the synchronous read layer used by reactive hooks).
+   */
+  #runAfterReady(apply: () => void): void {
+    if (this.#loadingComplete) { apply(); return; }
+    void this.#loadingPromise
+      .then(apply)
+      .catch(error => this.#logger?.error(`[DbCollection:${this.#name}] deferred server-sync write failed`, { error }));
+  }
+
+  /**
    * Apply an active record write coming from the server (CR.onUpdate).
    * Replaces the in-memory record and collapses its audit to a Branched anchor at lastAuditEntryId.
    */
   @bind
   public applyServerWriteSync(record: RecordType, lastAuditEntryId: string): void {
-    this.#records.set(record.id, record);
-    const branchedAudit = auditor.createBranchFrom<RecordType>(record.id, lastAuditEntryId || ulid());
-    this.#auditRecords.set(record.id, branchedAudit);
-    this.#pendingIds.delete(record.id); // Branched audit has no pending changes
-    void this.#persist([record], [branchedAudit]);
-    this.#invokeOnChange({ type: 'upsert', records: [record], auditAction: 'branched' });
+    this.#runAfterReady(() => {
+      this.#records.set(record.id, record);
+      const branchedAudit = auditor.createBranchFrom<RecordType>(record.id, lastAuditEntryId || ulid());
+      this.#auditRecords.set(record.id, branchedAudit);
+      this.#pendingIds.delete(record.id); // Branched audit has no pending changes
+      void this.#persist([record], [branchedAudit]);
+      this.#invokeOnChange({ type: 'upsert', records: [record], auditAction: 'branched' });
+    });
   }
 
   /**
@@ -214,18 +240,20 @@ export class DbCollection<RecordType extends Record = Record> {
   @bind
   public batchApplyServerWriteSync(items: Array<{ record: RecordType; lastAuditEntryId: string }>): void {
     if (items.length === 0) return;
-    const allRecords: RecordType[] = [];
-    const allAudits: AuditOf<RecordType>[] = [];
-    for (const { record, lastAuditEntryId } of items) {
-      this.#records.set(record.id, record);
-      const branchedAudit = auditor.createBranchFrom<RecordType>(record.id, lastAuditEntryId || ulid());
-      this.#auditRecords.set(record.id, branchedAudit);
-      this.#pendingIds.delete(record.id); // Branched audit has no pending changes
-      allRecords.push(record);
-      allAudits.push(branchedAudit);
-    }
-    void this.#persist(allRecords, allAudits);
-    this.#invokeOnChange({ type: 'upsert', records: allRecords, auditAction: 'branched' });
+    this.#runAfterReady(() => {
+      const allRecords: RecordType[] = [];
+      const allAudits: AuditOf<RecordType>[] = [];
+      for (const { record, lastAuditEntryId } of items) {
+        this.#records.set(record.id, record);
+        const branchedAudit = auditor.createBranchFrom<RecordType>(record.id, lastAuditEntryId || ulid());
+        this.#auditRecords.set(record.id, branchedAudit);
+        this.#pendingIds.delete(record.id); // Branched audit has no pending changes
+        allRecords.push(record);
+        allAudits.push(branchedAudit);
+      }
+      void this.#persist(allRecords, allAudits);
+      this.#invokeOnChange({ type: 'upsert', records: allRecords, auditAction: 'branched' });
+    });
   }
 
   /**
@@ -251,34 +279,36 @@ export class DbCollection<RecordType extends Record = Record> {
   @bind
   public applyServerDeleteSync(recordIds: string[]): void {
     if (recordIds.length === 0) return;
-    const fullyRemoved: string[] = [];
-    const preservedPending: string[] = [];
-    const fullyRemovedAuditIds: string[] = [];
-    for (const id of recordIds) {
-      const audit = this.#auditRecords.get(id);
-      const hadLive = this.#records.delete(id);
-      const pending = audit != null ? auditor.hasPendingChanges(audit) : false;
-      if (audit != null && pending) {
-        // Keep the audit so CD can still push the pending entries to the server.
-        if (hadLive || audit != null) preservedPending.push(id);
-        continue;
+    this.#runAfterReady(() => {
+      const fullyRemoved: string[] = [];
+      const preservedPending: string[] = [];
+      const fullyRemovedAuditIds: string[] = [];
+      for (const id of recordIds) {
+        const audit = this.#auditRecords.get(id);
+        const hadLive = this.#records.delete(id);
+        const pending = audit != null ? auditor.hasPendingChanges(audit) : false;
+        if (audit != null && pending) {
+          // Keep the audit so CD can still push the pending entries to the server.
+          if (hadLive || audit != null) preservedPending.push(id);
+          continue;
+        }
+        if (hadLive || audit != null) fullyRemoved.push(id);
+        if (audit != null) {
+          this.#auditRecords.delete(id);
+          this.#pendingIds.delete(id);
+          fullyRemovedAuditIds.push(id);
+        }
       }
-      if (hadLive || audit != null) fullyRemoved.push(id);
-      if (audit != null) {
-        this.#auditRecords.delete(id);
-        this.#pendingIds.delete(id);
-        fullyRemovedAuditIds.push(id);
+      const liveIdsToDelete = [...fullyRemoved, ...preservedPending];
+      if (liveIdsToDelete.length > 0) void this.#deleteLiveRowsOnly(liveIdsToDelete);
+      if (fullyRemovedAuditIds.length > 0) void this.#deleteAuditRowsOnly(fullyRemovedAuditIds);
+      if (fullyRemoved.length > 0) {
+        this.#invokeOnChange({ type: 'remove', ids: fullyRemoved, auditAction: 'remove' });
       }
-    }
-    const liveIdsToDelete = [...fullyRemoved, ...preservedPending];
-    if (liveIdsToDelete.length > 0) void this.#deleteLiveRowsOnly(liveIdsToDelete);
-    if (fullyRemovedAuditIds.length > 0) void this.#deleteAuditRowsOnly(fullyRemovedAuditIds);
-    if (fullyRemoved.length > 0) {
-      this.#invokeOnChange({ type: 'remove', ids: fullyRemoved, auditAction: 'remove' });
-    }
-    if (preservedPending.length > 0) {
-      this.#invokeOnChange({ type: 'remove', ids: preservedPending, auditAction: 'markAsDeleted' });
-    }
+      if (preservedPending.length > 0) {
+        this.#invokeOnChange({ type: 'remove', ids: preservedPending, auditAction: 'markAsDeleted' });
+      }
+    });
   }
 
   /**
@@ -287,12 +317,14 @@ export class DbCollection<RecordType extends Record = Record> {
    */
   @bind
   public collapseAuditSync(recordId: string, anchorUlid: string): void {
-    const existing = this.#auditRecords.get(recordId);
-    if (existing == null) return;
-    const collapsed = auditor.collapseToAnchor(existing, anchorUlid);
-    this.#auditRecords.set(recordId, collapsed);
-    this.#setPendingId(recordId, collapsed);
-    void this.#persistAudits([collapsed]);
+    this.#runAfterReady(() => {
+      const existing = this.#auditRecords.get(recordId);
+      if (existing == null) return;
+      const collapsed = auditor.collapseToAnchor(existing, anchorUlid);
+      this.#auditRecords.set(recordId, collapsed);
+      this.#setPendingId(recordId, collapsed);
+      void this.#persistAudits([collapsed]);
+    });
   }
 
   // ─── Upsert ───────────────────────────────────────────────────────────────

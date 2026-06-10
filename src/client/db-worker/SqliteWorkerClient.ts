@@ -192,6 +192,11 @@ export class SqliteWorkerClient {
   }
 
   async #send<T = unknown>(request: WorkerRequestWithCorrelationId): Promise<T> {
+    // In shared mode the port is created lazily by open() → #ensureSharedPort(). Ensure it here
+    // too so a send that races ahead of open() can't dereference a null #port — mirroring the
+    // dedicated branch, which already self-heals via #ensureWorker(). #ensureSharedPort is
+    // idempotent (returns the cached connect handshake).
+    if (this.#mode === 'shared') await this.#ensureSharedPort();
     return new Promise<T>((resolve, reject) => {
       this.#pending.set(request.correlationId, {
         resolve: v => resolve(v as T),
