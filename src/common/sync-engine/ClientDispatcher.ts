@@ -1,3 +1,4 @@
+import { AuthenticationError } from '@anupheaus/common';
 import type { Logger, Record as MXDBRecord } from '@anupheaus/common';
 import { hashRecord } from '../auditor/hash';
 import {
@@ -19,6 +20,9 @@ interface ClientDispatcherProps {
   onUpdate(updates: MXDBUpdateRequest): void;
   timerInterval?: number;
   onStart(): MXDBRecordStates;
+  /** Called when the server rejects a dispatch with an {@link AuthenticationError}.
+   *  Typically triggers a sign-out so the user is prompted to re-authenticate. */
+  onUnauthorized?(): void;
 }
 
 export class ClientDispatcher {
@@ -151,6 +155,15 @@ export class ClientDispatcher {
 
       } catch (err) {
         if (this.#epoch !== startEpoch) return;
+        // AuthenticationError means the socket has no valid session. Retrying every 250ms
+        // hammers the server indefinitely with no hope of success. Stop the dispatcher
+        // and trigger sign-out so the user can re-authenticate.
+        if (err instanceof AuthenticationError) {
+          this.#logger.warn('[CD] onStart dispatch failed: Unauthorized — signing out', { error: err });
+          this.stop();
+          this.#props.onUnauthorized?.();
+          return;
+        }
         this.#logger.warn('[CD] onStart dispatch failed, retrying', { error: err });
         // Fall through to retry delay
       } finally {
@@ -251,6 +264,12 @@ export class ClientDispatcher {
       const msg = (err as any)?.message ?? String(err);
       const stack = (err as any)?.stack;
       const name = (err as any)?.name;
+      if (err instanceof AuthenticationError) {
+        this.#logger.warn('[CD] timer dispatch failed: Unauthorized — signing out', { error: msg });
+        this.stop();
+        this.#props.onUnauthorized?.();
+        return;
+      }
       this.#logger.warn(`[CD] timer dispatch failed: ${name ?? 'Error'}: ${msg}`, { error: msg, stack });
     } finally {
       // Only mutate shared state if this tick still owns the current epoch.

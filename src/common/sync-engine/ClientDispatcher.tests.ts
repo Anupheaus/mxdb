@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import '@anupheaus/common'; // ensure Object.clone and other extensions are installed
+import { AuthenticationError } from '@anupheaus/common';
 import type { Logger } from '@anupheaus/common';
 import { auditor } from '../auditor';
 
@@ -770,6 +771,88 @@ describe('ClientDispatcher', () => {
       expect(onStart).toHaveBeenCalledTimes(2);
       // The retry re-called onStart() to get fresh state
       expect(dispatched).toHaveLength(2);
+
+      cd.stop();
+    });
+
+    it('stops retrying onStart dispatch on Unauthorized and allows restart via start()', async () => {
+      const cr = makeCR();
+      const record = makeRecord('r1', 'Alice');
+      const audit = auditor.createAuditFrom(record);
+
+      const onStart = vi.fn().mockReturnValue([{
+        collectionName: 'items',
+        records: [{ record, audit: audit.entries }],
+      }]);
+
+      const onDispatch = vi.fn().mockRejectedValue(new AuthenticationError('Unauthorized'));
+
+      const cd = new ClientDispatcher(mockLogger, {
+        clientReceiver: cr,
+        onPayloadRequest: vi.fn().mockReturnValue([]),
+        onDispatching: vi.fn(),
+        onDispatch,
+        onUpdate: vi.fn(),
+        onStart,
+        timerInterval: 50,
+      });
+
+      cd.start();
+      await vi.advanceTimersByTimeAsync(0);
+      // Unauthorized fired — dispatcher should have stopped itself
+      expect(onDispatch).toHaveBeenCalledOnce();
+
+      // Advance well past the retry interval to confirm no retry occurs
+      await vi.advanceTimersByTimeAsync(500);
+      expect(onDispatch).toHaveBeenCalledOnce();
+
+      // After stop() (called internally), start() can be called again (simulating reconnect)
+      // First call to onStart() returns records, onDispatch now resolves
+      onDispatch.mockResolvedValueOnce([{ collectionName: 'items', successfulRecordIds: ['r1'] }]);
+      cd.start();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(onDispatch).toHaveBeenCalledTimes(2);
+
+      cd.stop();
+    });
+
+    it('stops retrying timer dispatch on Unauthorized', async () => {
+      const cr = makeCR();
+      const record = makeRecord('r1', 'Alice');
+      const audit = auditor.createAuditFrom(record);
+
+      const onPayloadRequest = vi.fn().mockReturnValue([{
+        collectionName: 'items',
+        records: [{ record, audit: audit.entries }],
+      }]);
+
+      // onStart succeeds (empty), then timer dispatch throws Unauthorized
+      const onDispatch = vi.fn()
+        .mockResolvedValueOnce([]) // onStart — no records, starts timer via enqueue below
+        .mockRejectedValue(new AuthenticationError('Unauthorized'));
+
+      const cd = new ClientDispatcher(mockLogger, {
+        clientReceiver: cr,
+        onPayloadRequest,
+        onDispatching: vi.fn(),
+        onDispatch,
+        onUpdate: vi.fn(),
+        onStart: vi.fn().mockReturnValue([]),
+        timerInterval: 50,
+      });
+
+      cd.start();
+      await vi.advanceTimersByTimeAsync(0); // onStart dispatch succeeds (empty)
+      expect(onDispatch).toHaveBeenCalledOnce();
+
+      // Enqueue a record to trigger a timer dispatch
+      cd.enqueue({ collectionName: 'items', recordId: 'r1' });
+      await vi.advanceTimersByTimeAsync(50);
+      expect(onDispatch).toHaveBeenCalledTimes(2); // timer dispatch fires once — Unauthorized
+
+      // Advance past retry interval: should NOT retry
+      await vi.advanceTimersByTimeAsync(500);
+      expect(onDispatch).toHaveBeenCalledTimes(2);
 
       cd.stop();
     });

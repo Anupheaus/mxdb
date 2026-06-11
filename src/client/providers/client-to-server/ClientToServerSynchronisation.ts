@@ -26,6 +26,9 @@ export interface ClientToServerSynchronisationProps {
   collections: MXDBCollection[];
   logger: Logger;
   timerInterval?: number;
+  /** Called when the server rejects a dispatch with an AuthenticationError.
+   *  Typically triggers a sign-out so the user is prompted to re-authenticate. */
+  onUnauthorized?(): void;
 }
 
 export class ClientToServerSynchronisation {
@@ -53,6 +56,7 @@ export class ClientToServerSynchronisation {
       onDispatch: request => props.sendBatch(request),
       onUpdate: updates => this.#applyCdUpdate(updates),
       timerInterval: props.timerInterval,
+      onUnauthorized: props.onUnauthorized,
     });
   }
 

@@ -44,7 +44,7 @@ export const MXDBSyncInner = createComponent('MXDBSyncInner', ({
   children,
 }: Props) => {
   const logger = useLogger('MXDBSyncInner');
-  const { user } = useAuthentication<MXDBUser, MXDBAccount>();
+  const { user, signOut } = useAuthentication<MXDBUser, MXDBAccount>();
   const [encryptionKey, setEncryptionKey] = useState<Uint8Array | undefined>();
   const [dbName, setDbName] = useState<string | undefined>();
   const channelRef = useRef<BroadcastChannel | null>(null);
@@ -171,7 +171,7 @@ export const MXDBSyncInner = createComponent('MXDBSyncInner', ({
   return (
     <MxdbReadyContext.Provider value={mxdbReadyContext}>
       <DbsProvider name={dbName} encryptionKey={encryptionKey} collections={collections} logger={logger}>
-        <ClientToServerSyncProvider collections={collections} onError={onError}>
+        <ClientToServerSyncProvider collections={collections} onError={onError} onUnauthorized={signOut}>
           <RemoteAssistanceContext.Provider value={remoteAssistance}>
             <ClientToServerProvider />
             <ServerToClientProvider />

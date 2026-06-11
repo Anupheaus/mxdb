@@ -22,6 +22,9 @@ import { ACTION_TIMEOUT_MS, withTimeout } from '../../utils/actionTimeout';
 interface Props {
   collections: MXDBCollection[];
   onError?(error: MXDBError): void;
+  /** Called when the server rejects a dispatch with an AuthenticationError.
+   *  Typically triggers a sign-out so the user is prompted to re-authenticate. */
+  onUnauthorized?(): void;
   children?: ReactNode;
 }
 
@@ -37,6 +40,7 @@ interface Props {
 export const ClientToServerSyncProvider = createComponent('ClientToServerSyncProvider', ({
   collections,
   onError,
+  onUnauthorized,
   children,
 }: Props) => {
   const { db } = useDb();
@@ -83,6 +87,7 @@ export const ClientToServerSyncProvider = createComponent('ClientToServerSyncPro
       getDb: () => db,
       collections,
       logger: logger.createSubLogger('c2s'),
+      onUnauthorized,
     });
     return { cr, c2s };
   }, []);
