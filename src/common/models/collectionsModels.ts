@@ -3,7 +3,8 @@ import type { DateTime } from 'luxon';
 import type { UseSeedCollection } from '../../server/seeding';
 
 export type MongoDocOf<RecordType extends Record> = {
-  [K in keyof RecordType as K extends 'id' ? '_id' : K]: RecordType[K] extends DateTime<any> ? string : RecordType[K];
+  // Luxon `DateTime` fields are persisted as native BSON `Date`s (see `db-transforms.ts`).
+  [K in keyof RecordType as K extends 'id' ? '_id' : K]: RecordType[K] extends DateTime<any> ? Date : RecordType[K];
 };
 
 export type ServerQueryHints = { [key: string]: unknown };

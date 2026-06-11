@@ -20,7 +20,7 @@ MongoDB persistence layer: connection, collection CRUD with audit, change stream
 
 ### Models and utilities
 - `server-db-models.ts` — `ServerDbChangeEvent` and related shapes
-- `db-transforms.ts` — MongoDB serialization/deserialization (`serialize`/`deserialize`): maps `id` ↔ `_id` and delegates type conversion (DateTime, errors) to `to.serialise`/`to.deserialise` from `@anupheaus/common`
+- `db-transforms.ts` — MongoDB serialization/deserialization (`serialize`/`deserialize`): maps `id` ↔ `_id` and converts Luxon `DateTime` ↔ native BSON `Date` (via `Object.clone` with a value transformer). Dates are stored as BSON `Date`s — **not** ISO strings — so `$lt`/`$gt` range queries match (the query path converts `DateTime` filter bounds to `Date`). On read, stored `Date`s (and any legacy ISO-string dates) are revived into `DateTime`s
 - `clientS2CStore.ts` — per-client store used by the S2C dispatch path
 
 ## Architecture
@@ -37,7 +37,7 @@ Change stream lifecycle:
 
 ## Ambiguities and gotchas
 
-- **`MongoDocOf<T>`** maps `id` → `_id` and Luxon `DateTime` → ISO string. All documents stored in MongoDB use this shape. `db-transforms.ts` handles the conversion — never write raw records directly to the MongoDB driver.
+- **`MongoDocOf<T>`** maps `id` → `_id` and Luxon `DateTime` → native BSON `Date`. All documents stored in MongoDB use this shape. `db-transforms.ts` handles the conversion — never write raw records directly to the MongoDB driver. **Dates must be stored as BSON `Date`s, not ISO strings**, otherwise `$lt`/`$gt` range queries silently match nothing (the query path compares against `Date` bounds).
 - **Retry backoff in `sync()`** handles transient close errors (`isTransientMongoCloseError`); all other errors are returned as `SyncWriteResult.error` and reported back to the client without retrying.
 - **`changeStreamDebounceMs` trades latency for throughput** — lower values dispatch faster but increase per-event load. Default 20ms.
 - **`AsyncLocalStorage` context must be active** for `useDb()` to work. If you see "no ServerDb in context" in tests, ensure the call is wrapped in `provideDb`.
