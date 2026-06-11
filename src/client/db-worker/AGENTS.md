@@ -50,6 +50,7 @@ All three tables for a collection are created in a single DDL transaction on `op
 - **`setOnExternalChange`** — only fires in browser environments with a real `SharedWorker`. In Node/InlineRunner mode the callback is never called.
 - **REGEXP support** — both the inline runner and the SharedWorker register a custom SQLite `regexp(pattern, value)` function at open time. Without it, `$regex` filters would throw at runtime.
 - **`#send` self-heals the shared port** — in `shared` mode `#send` awaits `#ensureSharedPort()` before posting, so a call that races ahead of `open()` can't dereference a null `#port` (mirrors the `dedicated` branch's lazy `#ensureWorker()`). Callers should still gate real writes on DB readiness (see `DbCollection.#runAfterReady`); this is the last-line guard, not the primary one.
+- **`open()` is idempotent per database name** — both workers track `openDbName`. A repeat `open` of the **same** database (another tab through the SharedWorker, or the same tab re-opening) does **not** close+reopen the instance; it just re-runs the (idempotent) DDL and replies. This is critical: closing+reopening briefly sets `db` to `null`, so any query in flight from another tab would throw `Database not open`. A genuine switch to a **different** database name still closes the old instance first. The name is account/user-scoped (`accountId ?? userId`), so same-name ⇒ same encryption key.
 
 ## Related
 

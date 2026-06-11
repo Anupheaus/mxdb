@@ -28,6 +28,9 @@ let sqlite3: Sqlite3 | null = null;
 // Per-database encryption state
 let cryptoKey: CryptoKey | null = null;
 let encryptedFileName = '';
+// Name of the database currently open — makes `open` idempotent so a repeat open of the same
+// database doesn't close+reopen it (which would briefly null `db` → "Database not open").
+let openDbName = '';
 
 // Exclusive Web Lock held for the lifetime of this open database.
 // Prevents a second dedicated-worker tab from opening the same OPFS file.
@@ -70,12 +73,24 @@ async function handleOpen(
       });
     }
 
+    // Already open with the same database — don't close+reopen (that briefly nulls `db`, so any
+    // query in flight throws "Database not open"). Idempotently ensure the tables exist and reply.
+    if (db && openDbName === dbName) {
+      (db as any).transaction((tx: any) => {
+        for (const sql of statements) tx.exec(sql);
+      });
+      reply(correlationId, null);
+      return;
+    }
+
+    // A different database was open (e.g. user switched) — close it before opening the new one.
     if (db) {
       if (cryptoKey) await flushEncrypted(sqlite3!, db, cryptoKey, encryptedFileName);
       db.close();
       db = null;
       cryptoKey = null;
       encryptedFileName = '';
+      openDbName = '';
     }
 
     if (encryptionKey != null && encryptionKey.byteLength > 0) {
@@ -100,6 +115,7 @@ async function handleOpen(
     // Flush after DDL setup so the schema is persisted immediately
     if (cryptoKey && sqlite3) await flushEncrypted(sqlite3!, db!, cryptoKey, encryptedFileName);
 
+    openDbName = dbName;
     reply(correlationId, null);
   } catch (err) {
     replyError(correlationId, err);
@@ -177,6 +193,7 @@ async function handleClose(correlationId: string) {
     db = null;
     cryptoKey = null;
     encryptedFileName = '';
+    openDbName = '';
     releaseDbLock(lockRef);
     reply(correlationId, null);
   } catch (err) {

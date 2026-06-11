@@ -43,6 +43,10 @@ const ports = new Map<string, PortEntry>();
 // Per-database encryption state
 let cryptoKey: CryptoKey | null = null;
 let encryptedFileName = '';
+// Name of the database currently open. Used to make `open` idempotent: a second context
+// opening the SAME database must not close+reopen the shared instance (which would briefly
+// null `db` and make in-flight queries from other tabs throw "Database not open").
+let openDbName = '';
 
 // Exclusive Web Lock. Acquired once by the SharedWorker singleton on
 // first open; skipped on subsequent opens because lockRef.release is already set.
@@ -95,12 +99,26 @@ async function handleOpen(
       });
     }
 
+    // Already open with the same database (another tab/context opened it through this shared
+    // worker). Do NOT close and reopen — that briefly sets `db` to null, so any query already
+    // in flight from another tab throws "Database not open". Just idempotently ensure the
+    // requested tables exist (CREATE TABLE IF NOT EXISTS) and reply success.
+    if (db && openDbName === dbName) {
+      (db as any).transaction((tx: any) => {
+        for (const sql of statements) tx.exec(sql);
+      });
+      replyOn(port, correlationId, null);
+      return;
+    }
+
+    // A different database was open (e.g. user switched) — close it before opening the new one.
     if (db) {
       if (cryptoKey) await flushEncrypted(sqlite3!, db, cryptoKey, encryptedFileName);
       db.close();
       db = null;
       cryptoKey = null;
       encryptedFileName = '';
+      openDbName = '';
     }
 
     if (encryptionKey != null && encryptionKey.byteLength > 0) {
@@ -124,6 +142,7 @@ async function handleOpen(
 
     if (cryptoKey && sqlite3) await flushEncrypted(sqlite3, db!, cryptoKey, encryptedFileName);
 
+    openDbName = dbName;
     replyOn(port, correlationId, null);
   } catch (err) {
     replyErrorOn(port, correlationId, err);
@@ -222,6 +241,7 @@ async function handleClose(port: MessagePort, correlationId: string) {
     db = null;
     cryptoKey = null;
     encryptedFileName = '';
+    openDbName = '';
     releaseDbLock(lockRef);
     replyOn(port, correlationId, null);
   } catch (err) {
