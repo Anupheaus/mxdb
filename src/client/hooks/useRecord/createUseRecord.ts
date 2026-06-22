@@ -1,14 +1,17 @@
 import type { AnyObject, DataFilters, Record as CommonRecord } from '@anupheaus/common';
-import { is } from '@anupheaus/common';
+import { InternalError, is } from '@anupheaus/common';
 import type { MXDBCollection, MXDBError, QueryProps } from '../../../common';
 import type { AddDebugTo, AddDisableTo, ExtensionsType, RecordTypeOfCollection, RemoveDasherized } from '../../../common/models';
 import { useCollection } from '../useCollection/useCollection';
 import { useRecord as useMXDBRecord } from '../../useRecord';
-import { useBound, useDebounce, useOnUnmount, useUpdatableState } from '@anupheaus/react-ui';
-import { useLayoutEffect, useRef, type Dispatch, type SetStateAction } from 'react';
+import { useBound, useOnUnmount, useUpdatableState } from '@anupheaus/react-ui';
+import { useLayoutEffect, useMemo, useRef, type Dispatch, type SetStateAction } from 'react';
 import { useStableHelpers } from '../useStableHelpers';
 
-type AutoSave<T extends CommonRecord> = (record: T) => void;
+type AutoSaveConfig = { debounceMS?: number };
+type AutoSave<T extends CommonRecord> = ((record: T) => void) & {
+  withConfig(config?: AutoSaveConfig): (record: T) => void;
+};
 
 type CommonUseRecord<Name extends string, T extends CommonRecord> =
   & { [key in Name as `isLoading${Capitalize<RemoveDasherized<Name>>}`]: boolean; }
@@ -130,10 +133,23 @@ export function createUseRecord<
       return true;
     });
 
-    // Auto-save: debounces server upserts, flushes on unmount and beforeunload
+    // Auto-save: debounces server upserts, flushes on unmount and beforeunload.
+    // Guards against persisting the hydrated placeholder while an existing record
+    // is still loading (which would overwrite the real record with empty data).
+    const DEFAULT_AUTO_SAVE_DEBOUNCE_MS = 30000;
     const lastAutoSaveRecordRef = useRef<T>();
-    const debouncedUpsert = useDebounce(upsertRecord, 30000);
+    const autoSaveTimerRef = useRef<ReturnType<typeof setTimeout>>();
+
+    // Latches true once loading has settled (loaded existing OR confirmed new).
+    const hasLoadedRef = useRef(false);
+    if (!isLoadingRecord) hasLoadedRef.current = true;
+
     const flushSave = useBound(async () => {
+      if (autoSaveTimerRef.current != null) {
+        clearTimeout(autoSaveTimerRef.current);
+        autoSaveTimerRef.current = undefined;
+      }
+      if (!hasLoadedRef.current) return;
       if (lastAutoSaveRecordRef.current == null) return;
       const recordToSave = lastAutoSaveRecordRef.current;
       lastAutoSaveRecordRef.current = undefined;
@@ -144,18 +160,42 @@ export function createUseRecord<
       window.addEventListener('beforeunload', flushSave);
       return () => window.removeEventListener('beforeunload', flushSave);
     }, []);
-    const autoSave = useBound((updatedRecord: T) => {
+
+    const scheduleAutoSave = useBound((updatedRecord: T, debounceMS: number) => {
+      if (!hasLoadedRef.current) return;
       if (is.deepEqual(updatedRecord, lastAutoSaveRecordRef.current)) return;
       lastAutoSaveRecordRef.current = updatedRecord;
       setRecord(updatedRecord);
-      debouncedUpsert(updatedRecord);
+      if (autoSaveTimerRef.current != null) clearTimeout(autoSaveTimerRef.current);
+      autoSaveTimerRef.current = setTimeout(() => { void flushSave(); }, debounceMS);
+    });
+
+    const autoSave = useMemo(() => {
+      const fn = ((updatedRecord: T) => scheduleAutoSave(updatedRecord, DEFAULT_AUTO_SAVE_DEBOUNCE_MS)) as AutoSave<T>;
+      fn.withConfig = ({ debounceMS = DEFAULT_AUTO_SAVE_DEBOUNCE_MS }: AutoSaveConfig = {}) =>
+        (updatedRecord: T) => scheduleAutoSave(updatedRecord, debounceMS);
+      return fn;
+    }, [scheduleAutoSave]);
+
+    // Guard explicit upserts against the wipe: while this record is still loading, `record`
+    // is only the hydrated placeholder, so upserting THIS id would overwrite the real
+    // (not-yet-loaded) record with empty data. Surface that loudly rather than silently
+    // corrupting. Upserting a different record through this hook is allowed.
+    const loadingId = typeof recordOrId === 'string'
+      ? recordOrId
+      : recordOrId != null ? (recordOrId as CommonRecord).id : undefined;
+    const upsert = useBound(async (recordToUpsert: T): Promise<void> => {
+      if (!hasLoadedRef.current && loadingId != null && recordToUpsert?.id === loadingId) {
+        throw new InternalError(`Cannot upsert "${collection.name}" record "${loadingId}" while it is still loading; this would overwrite it with unloaded data.`);
+      }
+      await upsertRecord(recordToUpsert);
     });
 
     const baseResult = {
       [camelName]: record,
       [`isLoading${pascalName}`]: isLoadingRecord,
       [`set${pascalName}`]: setRecord,
-      [`upsert${pascalName}`]: upsertRecord,
+      [`upsert${pascalName}`]: upsert,
       [`remove${pascalName}`]: remove,
       [`isNew${pascalName}`]: isNewRef.current,
       [`autoSave${pascalName}`]: autoSave,
