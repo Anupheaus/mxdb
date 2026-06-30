@@ -173,7 +173,8 @@ export class ServerDbCollection<RecordType extends Record = Record> {
       });
       if (records.length === 0) return;
     }
-    const result = await collection.bulkWrite(records.map(record => ({ replaceOne: { replacement: dbUtils.serialize(record), filter: { _id: record.id as any }, upsert: true } })));
+    const docs = await Promise.all(records.map(record => dbUtils.serializeWithMeta(record)));
+    const result = await collection.bulkWrite(records.map((record, index) => ({ replaceOne: { replacement: docs[index]!, filter: { _id: record.id as any }, upsert: true } })));
     if (!result.isOk()) throw new InternalError('Bulk write failed - result is not as expected');
     const upsertedCount = result.matchedCount + result.upsertedCount;
     if (upsertedCount !== records.length) throw new InternalError(`Upsert failed - expected ${records.length}, got ${upsertedCount}`);
@@ -640,8 +641,9 @@ export class ServerDbCollection<RecordType extends Record = Record> {
     const collection = await this.#getCollection();
     const getColMs = Math.round(performance.now() - getColT0);
     const bwT0 = performance.now();
+    const docs = await Promise.all(records.map(record => dbUtils.serializeWithMeta(record)));
     await collection.bulkWrite(
-      records.map(record => ({ replaceOne: { replacement: dbUtils.serialize(record), filter: { _id: record.id as any }, upsert: true } })),
+      records.map((record, index) => ({ replaceOne: { replacement: docs[index]!, filter: { _id: record.id as any }, upsert: true } })),
       session ? { session } : undefined,
     );
     const bwMs = Math.round(performance.now() - bwT0);

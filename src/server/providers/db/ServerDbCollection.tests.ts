@@ -4,6 +4,7 @@ import { MongoMemoryReplSet } from 'mongodb-memory-server';
 import type { Logger, Record } from '@anupheaus/common';
 import { defineCollection } from '../../../common/defineCollection';
 import { ServerDbCollection } from './ServerDbCollection';
+import { hashRecord } from '../../../common/auditor/hash';
 
 // ────────────────────────────────────────────────────────────────────────────
 // Test record type
@@ -193,6 +194,26 @@ describe('ServerDbCollection', () => {
       // Upserting the same record should leave the collection unchanged
       await col.upsert({ ...item });
       expect(await col.count()).toBe(1);
+    });
+  });
+
+  // ── _meta (stored record hash, for cheap C2S comparison) ──────────────────
+
+  describe('_meta', () => {
+    it('stores _meta.hash equal to hashRecord of the read-back record', async () => {
+      const col = await makeCol();
+      await col.upsert(makeItem({ id: 'meta-1', name: 'Meta' }));
+      const raw = await client.db('testdb').collection(testCollection.name).findOne({ _id: 'meta-1' as any });
+      const readBack = await col.get('meta-1');
+      expect(raw?._meta?.hash).toBe(await hashRecord(readBack!));
+    });
+
+    it('stores _meta.hash when written via sync', async () => {
+      const col = await makeCol();
+      await col.sync({ updated: [makeItem({ id: 'sync-meta-1', name: 'SyncMeta' })], updatedAudits: [], removedIds: [] });
+      const raw = await client.db('testdb').collection(testCollection.name).findOne({ _id: 'sync-meta-1' as any });
+      const readBack = await col.get('sync-meta-1');
+      expect(raw?._meta?.hash).toBe(await hashRecord(readBack!));
     });
   });
 
