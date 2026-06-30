@@ -70,6 +70,66 @@ describe('ServerReceiver', () => {
     expect(onDispatch).toHaveBeenCalled();
   });
 
+  it('skips the full retrieve for a branched-only record whose stored hash matches (meta fast-path)', async () => {
+    const { sd } = makeSD();
+    const pushSpy = vi.spyOn(sd, 'push');
+
+    // Branched-only record (no entries to merge) that the client already holds at mock-hash-r1.
+    const request: ClientDispatcherRequest = [{
+      collectionName: 'items',
+      records: [{ id: 'r1', hash: 'mock-hash-r1', entries: [{ type: AuditEntryType.Branched, id: 'branch-1' } as any] }],
+    }];
+
+    const onRetrieveMeta = vi.fn().mockResolvedValue([{
+      collectionName: 'items',
+      records: [{ id: 'r1', hash: 'mock-hash-r1', lastAuditEntryId: 'branch-1' }],
+    }]);
+    const onRetrieve = vi.fn().mockResolvedValue([]);
+    const onUpdate = vi.fn().mockResolvedValue([]);
+    const sr = new ServerReceiver(mockLogger, { onRetrieve, onRetrieveMeta, onUpdate, serverDispatcher: sd });
+
+    const result = await sr.process(request);
+
+    // The whole point: the stored hash matched, so we never fetched/deserialized the full record...
+    expect(onRetrieve).not.toHaveBeenCalled();
+    // ...nothing to merge or push...
+    expect(onUpdate).not.toHaveBeenCalled();
+    expect(pushSpy).not.toHaveBeenCalled();
+    // ...and the record is still acknowledged as consistent.
+    const successIds = result.find(r => r.collectionName === 'items')?.successfulRecordIds ?? [];
+    expect(successIds).toContain('r1');
+  });
+
+  it('still retrieves and pushes a disparity when the stored hash differs from the client hash', async () => {
+    const { sd } = makeSD();
+    const pushSpy = vi.spyOn(sd, 'push');
+
+    const record = makeRecord('r1', 'Alice');
+    const serverAudit = auditor.createAuditFrom(record);
+    // Client holds a STALE hash (≠ the server's current mock-hash-r1).
+    const request: ClientDispatcherRequest = [{
+      collectionName: 'items',
+      records: [{ id: 'r1', hash: 'stale-hash', entries: [{ type: AuditEntryType.Branched, id: 'branch-1' } as any] }],
+    }];
+
+    const onRetrieveMeta = vi.fn().mockResolvedValue([{
+      collectionName: 'items',
+      records: [{ id: 'r1', hash: 'mock-hash-r1', lastAuditEntryId: serverAudit.entries[0]!.id }],
+    }]);
+    const onRetrieve = vi.fn().mockResolvedValue([{ collectionName: 'items', records: [{ record, audit: serverAudit.entries }] }]);
+    const onUpdate = vi.fn().mockResolvedValue([]);
+    const sr = new ServerReceiver(mockLogger, { onRetrieve, onRetrieveMeta, onUpdate, serverDispatcher: sd });
+
+    const result = await sr.process(request);
+
+    // Meta said "different", so we DID fetch the full record and DID push the server's version back.
+    expect(onRetrieveMeta).toHaveBeenCalled();
+    expect(onRetrieve).toHaveBeenCalled();
+    expect(pushSpy).toHaveBeenCalledOnce();
+    const successIds = result.find(r => r.collectionName === 'items')?.successfulRecordIds ?? [];
+    expect(successIds).toContain('r1');
+  });
+
   it('resumes SD even if onUpdate throws', async () => {
     const { sd } = makeSD();
     const resumeSpy = vi.spyOn(sd, 'resume');

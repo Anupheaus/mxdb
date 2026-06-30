@@ -215,6 +215,16 @@ describe('ServerDbCollection', () => {
       const readBack = await col.get('sync-meta-1');
       expect(raw?._meta?.hash).toBe(await hashRecord(readBack!));
     });
+
+    it('getMeta returns the stored hash per id without the full record', async () => {
+      const col = await makeCol();
+      await col.upsert([makeItem({ id: 'gm-1', name: 'A' }), makeItem({ id: 'gm-2', name: 'B' })]);
+      const metas = await col.getMeta(['gm-1', 'gm-2', 'gm-missing']);
+      const byId = new Map(metas.map(m => [m.id, m]));
+      expect(byId.get('gm-1')?.hash).toBe(await hashRecord((await col.get('gm-1'))!));
+      expect(byId.has('gm-missing')).toBe(false);
+      expect((byId.get('gm-1') as { name?: string }).name).toBeUndefined(); // projection only — no record fields
+    });
   });
 
   // ── remove ───────────────────────────────────────────────────────────────

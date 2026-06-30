@@ -11,6 +11,7 @@ import {
   type MXDBSyncEngineResponse,
   type MXDBActiveRecordState,
   type MXDBDeletedRecordState,
+  type MXDBRecordMetas,
 } from '../../common/sync-engine';
 import { auditor, AuditEntryType } from '../../common';
 import type { AnyAuditOf, AuditOf } from '../../common';
@@ -106,6 +107,22 @@ export async function handleClientToServerSync(request: ClientDispatcherRequest)
 
   const sr = new ServerReceiver(logger.createSubLogger('sr'), {
     serverDispatcher: s2c.dispatcher,
+
+    // Meta fast-path: project stored `_meta.hash` only — no full record fetch/deserialise. The
+    // ServerReceiver uses this to confirm branched-only records whose hash already matches the client,
+    // skipping the expensive retrieve for the (dominant) "nothing changed" reconnect case.
+    onRetrieveMeta: async (metaRequest: MXDBRecordStatesRequest): Promise<MXDBRecordMetas> => {
+      const out: MXDBRecordMetas = [];
+      await Promise.all(metaRequest.map(async item => {
+        if (item.recordIds.length === 0) return;
+        let collection: ReturnType<typeof db.use>;
+        try { collection = db.use(item.collectionName); }
+        catch { return; } // unknown collection — caller falls back to full retrieve
+        const metas = await collection.getMeta(item.recordIds);
+        if (metas.length > 0) out.push({ collectionName: item.collectionName, records: metas });
+      }));
+      return out;
+    },
 
     onRetrieve: async (retrieveRequest: MXDBRecordStatesRequest): Promise<MXDBRecordStates> => {
       const retrieveT0 = performance.now();

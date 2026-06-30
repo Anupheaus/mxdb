@@ -10,6 +10,11 @@ export interface MXDBDeletedRecordState { recordId: string; audit: AuditEntry[];
 export interface MXDBRecordStatesByCollection<T extends MXDBRecord = MXDBRecord> { collectionName: string; records: (MXDBActiveRecordState<T> | MXDBDeletedRecordState)[]; }
 export type MXDBRecordStates<T extends MXDBRecord = MXDBRecord> = MXDBRecordStatesByCollection<T>[];
 
+// Lightweight per-record metadata projected from the stored `_meta` (no full record). Used by the
+// ServerReceiver meta fast-path to confirm a client is up to date by hash without a full retrieve.
+export interface MXDBRecordMeta { id: string; hash: string; lastAuditEntryId?: string; }
+export type MXDBRecordMetas = { collectionName: string; records: MXDBRecordMeta[] }[];
+
 // Cursors (lightweight, no full audit)
 export interface MXDBActiveRecordCursor<T extends MXDBRecord = MXDBRecord> { record: T; lastAuditEntryId: string; }
 export interface MXDBDeletedRecordCursor { recordId: string; lastAuditEntryId: string; }

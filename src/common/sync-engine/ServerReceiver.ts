@@ -7,6 +7,7 @@ import {
   type ClientDispatcherRequest,
   type MXDBRecordStatesRequest,
   type MXDBRecordStates,
+  type MXDBRecordMetas,
   type MXDBActiveRecordState,
   type MXDBDeletedRecordState,
   type MXDBActiveRecordCursor,
@@ -20,6 +21,9 @@ import { isActiveRecordState } from './utils';
 
 interface ServerReceiverProps {
   onRetrieve(request: MXDBRecordStatesRequest): Promise<MXDBRecordStates>;
+  /** Optional cheap projection of stored `_meta` (hash only) for the meta fast-path. When absent the
+   *  receiver always takes the full-retrieve path (current behaviour). */
+  onRetrieveMeta?(request: MXDBRecordStatesRequest): Promise<MXDBRecordMetas>;
   onUpdate(records: MXDBRecordStates): Promise<MXDBSyncEngineResponse>;
   serverDispatcher: ServerDispatcher;
 }
@@ -81,14 +85,45 @@ export class ServerReceiver {
     const mirrorMs = Math.round(performance.now() - processT0);
 
     try {
-      // Step 3: Retrieve current server state for every record in the request.
-      const retrieveRequest: MXDBRecordStatesRequest = request.map(item => ({
-        collectionName: item.collectionName,
-        recordIds: item.records.map(r => r.id),
-      }));
+      // Meta fast-path: a branched-only record (nothing to merge) that the client already holds at the
+      // server's current hash is consistent — confirm it from the stored `_meta.hash` instead of
+      // fetching and re-hashing the whole record. Falls back to the full path when no meta callback is
+      // wired or the stored hash is absent/different.
+      const isBranchedOnly = (rec: { entries: AuditEntry[] }) => rec.entries.every(e => e.type === AuditEntryType.Branched);
+      const metaMatched = new Map<string, Set<string>>(); // collectionName -> ids confirmed consistent via meta
+      if (this.#props.onRetrieveMeta != null) {
+        const metaRequest: MXDBRecordStatesRequest = [];
+        for (const item of request) {
+          const recordIds = item.records.filter(r => r.hash != null && isBranchedOnly(r)).map(r => r.id);
+          if (recordIds.length > 0) metaRequest.push({ collectionName: item.collectionName, recordIds });
+        }
+        if (metaRequest.length > 0) {
+          const metas = await this.#props.onRetrieveMeta(metaRequest);
+          const hashByColId = new Map(metas.map(m => [m.collectionName, new Map(m.records.map(r => [r.id, r.hash]))]));
+          for (const item of request) {
+            const colHashes = hashByColId.get(item.collectionName);
+            if (colHashes == null) continue;
+            for (const rec of item.records) {
+              if (rec.hash != null && isBranchedOnly(rec) && colHashes.get(rec.id) === rec.hash) {
+                let set = metaMatched.get(item.collectionName);
+                if (set == null) { set = new Set(); metaMatched.set(item.collectionName, set); }
+                set.add(rec.id);
+              }
+            }
+          }
+        }
+      }
+
+      // Step 3: Retrieve current server state — for every record EXCEPT those already confirmed via meta.
+      const retrieveRequest: MXDBRecordStatesRequest = request
+        .map(item => ({
+          collectionName: item.collectionName,
+          recordIds: item.records.map(r => r.id).filter(id => metaMatched.get(item.collectionName)?.has(id) !== true),
+        }))
+        .filter(item => item.recordIds.length > 0);
 
       const retrieveT0 = performance.now();
-      const serverStates = await this.#props.onRetrieve(retrieveRequest);
+      const serverStates = retrieveRequest.length > 0 ? await this.#props.onRetrieve(retrieveRequest) : [];
       const retrieveMs = Math.round(performance.now() - retrieveT0);
 
       const serverStateMap = new Map<string, Map<string, MXDBActiveRecordState | MXDBDeletedRecordState>>();
@@ -124,9 +159,18 @@ export class ServerReceiver {
       for (const item of request) {
         const colName = item.collectionName;
         const colServerMap = serverStateMap.get(colName) ?? new Map();
+        const metaMatchedCol = metaMatched.get(colName);
 
         for (const rec of item.records) {
           const recordId = rec.id;
+
+          // Confirmed consistent via the stored hash — never retrieved, nothing to merge or push.
+          if (metaMatchedCol?.has(recordId)) {
+            if (!branchOnlySuccessIds.has(colName)) branchOnlySuccessIds.set(colName, []);
+            branchOnlySuccessIds.get(colName)!.push(recordId);
+            continue;
+          }
+
           const strippedEntries = rec.entries.filter(e => e.type !== AuditEntryType.Branched);
 
           if (strippedEntries.length === 0) {

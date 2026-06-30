@@ -93,6 +93,26 @@ export class ServerDbCollection<RecordType extends Record = Record> {
     return isArray ? docs : docs[0];
   }
 
+  /**
+   * Cheap projection of the stored `_meta` for the given ids — the content hash (and audit anchor) WITHOUT
+   * deserialising the whole record. Used by the C2S sync meta fast-path to confirm a client is already
+   * up to date by comparing hashes. Docs with no stored `_meta.hash` (e.g. written before this existed)
+   * are omitted, so the caller falls back to a full retrieve for them.
+   */
+  @bind
+  public async getMeta(ids: string[]): Promise<{ id: string; hash: string; lastAuditEntryId?: string }[]> {
+    if (ids.length === 0) return [];
+    const collection = await this.#getCollection();
+    const docs = await collection.find({ _id: { $in: ids as any[] } }, { projection: { _meta: 1 } }).toArray();
+    const result: { id: string; hash: string; lastAuditEntryId?: string }[] = [];
+    for (const doc of docs) {
+      const meta = (doc as { _meta?: { hash?: string; lastAuditEntryId?: string } })._meta;
+      if (meta?.hash == null) continue;
+      result.push({ id: String(doc._id), hash: meta.hash, lastAuditEntryId: meta.lastAuditEntryId });
+    }
+    return result;
+  }
+
   @bind
   public async find(filters: DataFilters<RecordType>): Promise<RecordType | undefined> {
     const collection = await this.#getCollection();
