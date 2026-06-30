@@ -21,6 +21,8 @@ import { hashRecord } from '../../../common/auditor/hash';
  */
 export interface MXDBStoredMeta {
   hash: string;
+  /** Max audit-entry id at write time — lets the C2S mismatch path build a cursor without fetching the audit. */
+  lastAuditEntryId?: string;
 }
 
 function serialize<RecordType extends Record>({ id, ...doc }: RecordType): MongoDocOf<RecordType> {
@@ -45,10 +47,12 @@ function deserialize<RecordType extends Record>(record: MongoDocOf<RecordType> |
  * (`deserialize(serialize(record))`) so the stored `_meta.hash` is guaranteed identical to what a
  * later `hashRecord(deserialize(storedDoc))` would produce — the invariant the C2S comparison relies on.
  */
-async function serializeWithMeta<RecordType extends Record>(record: RecordType): Promise<MongoDocOf<RecordType>> {
+async function serializeWithMeta<RecordType extends Record>(record: RecordType, lastAuditEntryId?: string): Promise<MongoDocOf<RecordType>> {
   const doc = serialize(record);
   const hash = await hashRecord(deserialize(doc) as Record);
-  return { ...doc, _meta: { hash } } as unknown as MongoDocOf<RecordType>;
+  const meta: MXDBStoredMeta = { hash };
+  if (lastAuditEntryId != null) meta.lastAuditEntryId = lastAuditEntryId;
+  return { ...doc, _meta: meta } as unknown as MongoDocOf<RecordType>;
 }
 
 export const dbUtils = {

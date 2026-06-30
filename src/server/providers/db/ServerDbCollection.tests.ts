@@ -5,6 +5,7 @@ import type { Logger, Record } from '@anupheaus/common';
 import { defineCollection } from '../../../common/defineCollection';
 import { ServerDbCollection } from './ServerDbCollection';
 import { hashRecord } from '../../../common/auditor/hash';
+import { auditor } from '../../../common/auditor';
 
 // ────────────────────────────────────────────────────────────────────────────
 // Test record type
@@ -214,6 +215,15 @@ describe('ServerDbCollection', () => {
       const raw = await client.db('testdb').collection(testCollection.name).findOne({ _id: 'sync-meta-1' as any });
       const readBack = await col.get('sync-meta-1');
       expect(raw?._meta?.hash).toBe(await hashRecord(readBack!));
+    });
+
+    it('stores _meta.lastAuditEntryId from the audit on sync', async () => {
+      const col = await makeCol();
+      const item = makeItem({ id: 'la-1', name: 'LA' });
+      const audit = auditor.createAuditFrom(item);
+      await col.sync({ updated: [item], updatedAudits: [audit], removedIds: [] });
+      const raw = await client.db('testdb').collection(testCollection.name).findOne({ _id: 'la-1' as any });
+      expect(raw?._meta?.lastAuditEntryId).toBe(auditor.getLastEntryId(audit));
     });
 
     it('getMeta returns the stored hash per id without the full record', async () => {

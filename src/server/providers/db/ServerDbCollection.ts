@@ -279,7 +279,7 @@ export class ServerDbCollection<RecordType extends Record = Record> {
           await session.withTransaction(async () => {
             txnAttempts += 1;
             const writeRecT0 = performance.now();
-            await this.#writeRecords([record], session);
+            await this.#writeRecords([record], session, new Map([[record.id, audit ? auditor.getLastEntryId(audit) : undefined]]));
             lastWriteRecordsMs = Math.round(performance.now() - writeRecT0);
             if (audit) {
               const writeAudT0 = performance.now();
@@ -655,13 +655,13 @@ export class ServerDbCollection<RecordType extends Record = Record> {
     return '__mxdb_system__';
   }
 
-  async #writeRecords(records: RecordType[], session?: ClientSession) {
+  async #writeRecords(records: RecordType[], session?: ClientSession, lastAuditEntryIds?: Map<string, string | undefined>) {
     if (records.length === 0) return;
     const getColT0 = performance.now();
     const collection = await this.#getCollection();
     const getColMs = Math.round(performance.now() - getColT0);
     const bwT0 = performance.now();
-    const docs = await Promise.all(records.map(record => dbUtils.serializeWithMeta(record)));
+    const docs = await Promise.all(records.map(record => dbUtils.serializeWithMeta(record, lastAuditEntryIds?.get(record.id))));
     await collection.bulkWrite(
       records.map((record, index) => ({ replaceOne: { replacement: docs[index]!, filter: { _id: record.id as any }, upsert: true } })),
       session ? { session } : undefined,
