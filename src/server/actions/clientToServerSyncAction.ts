@@ -48,6 +48,45 @@ export function withRecordLocks<T>(keys: string[], fn: () => Promise<T>): Promis
 }
 
 /**
+ * Build the server's current `MXDBRecordState`s for a collection from the batch-fetched audits and live
+ * records — the data `onRetrieve` hands the {@link ServerReceiver} to decide merges and disparities.
+ */
+export function buildServerRecordStates(
+  audits: (AnyAuditOf<MXDBRecord> | undefined)[],
+  liveRecords: MXDBRecord[],
+): (MXDBActiveRecordState | MXDBDeletedRecordState)[] {
+  const liveById = new Map<string, MXDBRecord>(liveRecords.map(r => [r.id, r] as [string, MXDBRecord]));
+  const records: (MXDBActiveRecordState | MXDBDeletedRecordState)[] = [];
+  const handledIds = new Set<string>();
+  for (const serverAudit of audits) {
+    if (serverAudit == null) continue;
+    const recordId = serverAudit.id;
+    handledIds.add(recordId);
+    const entries = auditor.entriesOf(serverAudit);
+    if (auditor.isDeleted(serverAudit)) {
+      records.push({ recordId, audit: entries });
+    } else {
+      const liveRecord = liveById.get(recordId);
+      if (liveRecord == null) {
+        // Audit exists but no live record — treat as deleted (split-brain guard).
+        records.push({ recordId, audit: entries });
+      } else {
+        records.push({ record: liveRecord, audit: entries });
+      }
+    }
+  }
+  // Live records with NO server audit (disableAudit collections have no audit at all). Report them as
+  // live with an empty audit — WITHOUT this, an audit-driven build returns no state for a record that
+  // genuinely exists, and the ServerReceiver then treats the client's synced-back copy as a deleted
+  // "ghost" and pushes a delete, permanently removing every disableAudit record from the client.
+  for (const [recordId, liveRecord] of liveById) {
+    if (handledIds.has(recordId)) continue;
+    records.push({ record: liveRecord, audit: [] });
+  }
+  return records;
+}
+
+/**
  * Client-to-Server sync handler.
  *
  * Thin wrapper around {@link ServerReceiver}. The SR handles merge, replay,
@@ -92,24 +131,7 @@ export async function handleClientToServerSync(request: ClientDispatcherRequest)
           collection.getAudit(item.recordIds),
           collection.get(item.recordIds),
         ]);
-        const liveById = new Map<string, MXDBRecord>(liveRecords.map((r: MXDBRecord) => [r.id, r] as [string, MXDBRecord]));
-        const records: (MXDBActiveRecordState | MXDBDeletedRecordState)[] = [];
-        for (const serverAudit of audits) {
-          if (serverAudit == null) continue;
-          const recordId = (serverAudit as AnyAuditOf<MXDBRecord>).id;
-          const entries = auditor.entriesOf(serverAudit as AnyAuditOf<MXDBRecord>);
-          if (auditor.isDeleted(serverAudit as AnyAuditOf<MXDBRecord>)) {
-            records.push({ recordId, audit: entries });
-          } else {
-            const liveRecord = liveById.get(recordId);
-            if (liveRecord == null) {
-              // Audit exists but no live record — treat as deleted (split-brain guard).
-              records.push({ recordId, audit: entries });
-            } else {
-              records.push({ record: liveRecord, audit: entries });
-            }
-          }
-        }
+        const records = buildServerRecordStates(audits as (AnyAuditOf<MXDBRecord> | undefined)[], liveRecords);
         const perColMs = Math.round(performance.now() - perColT0);
         if (perColMs >= 500) {
           logger.warn('[C2S] slow retrieve', { collection: item.collectionName, ms: perColMs, requested: item.recordIds.length });

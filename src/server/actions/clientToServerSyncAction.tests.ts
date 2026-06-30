@@ -29,7 +29,35 @@ vi.mock('../../common/sync-engine', async (importOriginal) => {
   };
 });
 
-import { withRecordLocks, handleClientToServerSync } from './clientToServerSyncAction';
+import { withRecordLocks, handleClientToServerSync, buildServerRecordStates } from './clientToServerSyncAction';
+
+describe('buildServerRecordStates', () => {
+  it('reports a live record that has NO server audit as active with an empty audit (disableAudit)', () => {
+    // Regression: disableAudit collections have no audit, so an audit-driven build returned no state at
+    // all for a live record. The SR then treated the client's synced-back copy as a deleted "ghost" and
+    // pushed a delete, permanently removing the record from that client (delete-is-final).
+    const result = buildServerRecordStates([], [{ id: 'r1', name: 'Home' } as any]);
+    expect(result).toEqual([{ record: { id: 'r1', name: 'Home' }, audit: [] }]);
+  });
+
+  it('attaches the live record to an existing active audit', () => {
+    const audit = { id: 'a1', entries: [{ type: AuditEntryType.Created, id: 'e1', record: { id: 'a1' } }] } as any;
+    const result = buildServerRecordStates([audit], [{ id: 'a1', name: 'x' } as any]);
+    expect(result).toEqual([{ record: { id: 'a1', name: 'x' }, audit: audit.entries }]);
+  });
+
+  it('reports a deleted audit as a deleted state', () => {
+    const audit = { id: 'd1', entries: [{ type: AuditEntryType.Created, id: 'e1', record: { id: 'd1' } }, { type: AuditEntryType.Deleted, id: 'e2' }] } as any;
+    const result = buildServerRecordStates([audit], []);
+    expect(result).toEqual([{ recordId: 'd1', audit: audit.entries }]);
+  });
+
+  it('skips null audit entries and does not duplicate an audited live record', () => {
+    const audit = { id: 'a1', entries: [{ type: AuditEntryType.Created, id: 'e1', record: { id: 'a1' } }] } as any;
+    const result = buildServerRecordStates([undefined as any, audit], [{ id: 'a1', name: 'x' } as any]);
+    expect(result).toEqual([{ record: { id: 'a1', name: 'x' }, audit: audit.entries }]);
+  });
+});
 
 const mockWarn = vi.fn();
 const mockError = vi.fn();

@@ -130,11 +130,10 @@ export class ServerDispatcher {
       }
 
       if (filterItem.deletedRecordIds && filterItem.deletedRecordIds.length > 0) {
-        if (!this.#deletedRecordIds.has(colName)) {
-          this.#deletedRecordIds.set(colName, new Set());
-        }
-        const deletedSet = this.#deletedRecordIds.get(colName)!;
-        for (const id of filterItem.deletedRecordIds) deletedSet.add(id);
+        // Source = the client's own claimed deletions (SR mirror). A client claiming a deletion for a
+        // record that is actually LIVE on the server creates a "phantom tombstone" that then blocks that
+        // record from ever reaching the client (delete-is-final) until the SD is rebuilt (reconnect/restart).
+        for (const id of filterItem.deletedRecordIds) this.#tombstone(colName, id, 'client-claimed-deletion(mirror)');
       }
     }
   }
@@ -231,6 +230,8 @@ export class ServerDispatcher {
       const deletedSet = this.#deletedRecordIds.get(colName);
       const freshRecords: (MXDBActiveRecordCursor | MXDBDeletedRecordCursor)[] = [];
       const colFlags = new Map<string, boolean>();
+      // Diagnostic tallies — why cursors are withheld from this client (logged below when > 0).
+      let skippedTombstoned = 0, skippedChangeStreamUnknown = 0, skippedUpToDate = 0, skippedStale = 0;
 
       for (const { cursor, addToFilter } of colMap.values()) {
         const id = getCursorId(cursor);
@@ -239,6 +240,7 @@ export class ServerDispatcher {
 
         // Delete-is-final: anything targeting a confirmed-deleted id is skipped.
         if (inDeletedSet) {
+          skippedTombstoned++;
           continue;
         }
 
@@ -259,10 +261,8 @@ export class ServerDispatcher {
               // active cursors queued for a record, then the delete fanned out via
               // change-stream and was dropped here — the queued active cursors then
               // dispatched and re-created the record on that client.)
-              if (!this.#deletedRecordIds.has(colName)) {
-                this.#deletedRecordIds.set(colName, new Set());
-              }
-              this.#deletedRecordIds.get(colName)!.add(id);
+              this.#tombstone(colName, id, 'change-stream-delete(unknown-to-filter)');
+              skippedChangeStreamUnknown++;
               continue;
             }
             // Authoritative delete for unknown record — send anyway (e.g. query result
@@ -285,6 +285,7 @@ export class ServerDispatcher {
           // Active cursor
           if (filterRec == null) {
             if (!addToFilter) {
+              skippedChangeStreamUnknown++;
               continue;
             }
             // Authoritative push of a new record — send.
@@ -294,15 +295,36 @@ export class ServerDispatcher {
           } else {
             const cursorHash = (cursor as unknown as { hash?: string }).hash;
             if (filterRec.hash === cursorHash && filterRec.lastAuditEntryId === cursor.lastAuditEntryId) {
+              skippedUpToDate++;
               continue;
             }
             if (cursor.lastAuditEntryId < filterRec.lastAuditEntryId) {
+              skippedStale++;
               continue;
             }
             freshRecords.push(cursor);
           }
           colFlags.set(id, addToFilter);
         }
+      }
+
+      const withheld = skippedTombstoned + skippedChangeStreamUnknown + skippedUpToDate + skippedStale;
+      if (withheld > 0) {
+        // Keep-worthy diagnostic: the SD decided NOT to send some cursors to this client — the most
+        // common reason a client is "missing" records that exist on the server.
+        //  - skippedTombstoned: delete-is-final blocked them (id is in #deletedRecordIds).
+        //  - skippedChangeStreamUnknown: a change-stream push can't bootstrap a record the client
+        //    has never acknowledged (it needs an authoritative subscription/getAll push).
+        //  - skippedUpToDate / skippedStale: normal — client already current, or cursor is older.
+        this.#logger.debug('[SD] withheld cursors from client', {
+          clientId: this.#props.clientId ?? 'unknown',
+          collectionName: colName,
+          incoming: colMap.size,
+          sent: freshRecords.length,
+          skippedTombstoned, skippedChangeStreamUnknown, skippedUpToDate, skippedStale,
+          tombstoneSetSize: deletedSet?.size ?? 0,
+          filterSize: filterRecordsMap?.size ?? 0,
+        });
       }
 
       if (freshRecords.length > 0) {
@@ -349,10 +371,7 @@ export class ServerDispatcher {
               // of whether the record was previously in the filter or how the delete was
               // originated (authoritative or change-stream).
               filterRecordsMap?.delete(id);
-              if (!this.#deletedRecordIds.has(colName)) {
-                this.#deletedRecordIds.set(colName, new Set());
-              }
-              this.#deletedRecordIds.get(colName)!.add(id);
+              this.#tombstone(colName, id, 'successful-delete');
             } else {
               // Unsuccessfully deleted: mark as pending deletion (remove hash, keep ULID).
               if (filterRecordsMap == null) {
@@ -507,6 +526,22 @@ export class ServerDispatcher {
         this.#startRetryTimer();
       }
     }
+  }
+
+  /**
+   * Record an id as deleted (delete-is-final) for a collection, creating the set lazily, and log the
+   * first time each id is tombstoned together with WHY. Every path that blocks a record from reaching
+   * the client routes through here, so a "client is missing a record that exists on the server"
+   * investigation can grep one line to see when, and from which source, the id was tombstoned.
+   */
+  #tombstone(collectionName: string, recordId: string, source: string): void {
+    let set = this.#deletedRecordIds.get(collectionName);
+    if (set == null) { set = new Set(); this.#deletedRecordIds.set(collectionName, set); }
+    if (set.has(recordId)) return;
+    set.add(recordId);
+    this.#logger.debug('[SD] tombstoned record (delete-is-final)', {
+      clientId: this.#props.clientId ?? 'unknown', collectionName, recordId, source,
+    });
   }
 
   /** Increment and return the consecutive-ignore count for a record (creating maps lazily). */

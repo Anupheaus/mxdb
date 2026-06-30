@@ -302,6 +302,12 @@ export class ServerToClientSynchronisation {
       cursors = [...consistentCursors, ...retryCursors.filter((c): c is MXDBActiveRecordCursor & { hash: string } => c != null)];
     }
 
+    // Keep-worthy diagnostic: what this authoritative/change-stream push actually delivers. A
+    // `recordsIn > cursorsBuilt` gap means records were dropped while building cursors (tombstoned
+    // or pair-inconsistent); `cursorsBuilt: 0` means nothing is pushed at all for these records.
+    this.#logger.debug('[s2c] buildAndPush built cursors', {
+      collectionName, addToFilter, disableAudit, recordsIn: records.length, cursorsBuilt: cursors.length,
+    });
     if (cursors.length === 0) return;
     this.#sd.push([{ collectionName, records: cursors }], addToFilter);
   }
