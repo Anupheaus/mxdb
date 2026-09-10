@@ -3,15 +3,33 @@
 ## Before making changes
 
 <EXTREMELY_IMPORTANT>
-You MUST read `C:\code\personal\agents\agents.md` before doing anything else in this repo. This is non-negotiable and cannot be skipped under any circumstances.
+You MUST read [`../agents/agents.md`](../agents/agents.md) before doing anything else in this repo. This is non-negotiable and cannot be skipped under any circumstances.
 </EXTREMELY_IMPORTANT>
 - **Search `@anupheaus/common` before writing utility functions**: The common library (`c:/code/personal/common/src/`) provides many utilities — serialisation (`to.serialise`, `to.deserialise`), deep equality (`is.deepEqual`, handles Luxon DateTime, Date, functions), object cloning (`Object.clone`), type guards, and more. Before implementing anything locally, search the common library first. Using existing common utilities avoids duplicated logic and benefits from already-correct edge-case handling (e.g. `is.deepEqual` uses `DateTime.equals()` for Luxon, not naive JSON comparison).
+
+## Required reading before any coding
+
+<EXTREMELY_IMPORTANT>
+**Before writing or changing ANY code in this repo, you MUST read the documents below.** This is non-negotiable.
+</EXTREMELY_IMPORTANT>
+
+**Shared standards (all repos)** — the global guide [`../agents/agents.md`](../agents/agents.md) is the required first read; it mandates the two cross-repo documents that live in the `agents` repo:
+
+- [../agents/coding-standards.md](../agents/coding-standards.md) — coding standards for all our code
+- [../agents/patterns.md](../agents/patterns.md) — shared UI/model patterns
+
+**MXDB-specific:**
+
+- [docs/patterns.md](docs/patterns.md) — recurring "how we do X" recipes for building on MXDB
+
+**Keep these docs up to date — it is part of every task.** As the library changes, keep the patterns doc accurate, and whenever a new pattern, convention or coding standard emerges while working with the user, add it to the right place: **universal, cross-repo** ones to the shared docs in the `agents` repo ([../agents/patterns.md](../agents/patterns.md), [../agents/coding-standards.md](../agents/coding-standards.md)); **MXDB-specific** ones under [`docs/patterns.md`](docs/patterns.md) here.
 
 ## Documentation
 
 All of this ships in the published package under **`docs/`** (see **`package.json` → `files`**). Start from the index, then drill into guides vs reference vs plans.
 
 - **Index (table of contents):** [docs/README.md](docs/README.md)
+- **Patterns:** [docs/patterns.md](docs/patterns.md) — recurring "how we do X" recipes for building on MXDB (**required reading before any coding**)
 - **Guides**
   - [docs/guides/client-guide.md](docs/guides/client-guide.md) — React app: `MXDBSync`, `useCollection`, auth, sync UX
   - [docs/guides/server-guide.md](docs/guides/server-guide.md) — `startServer`, MongoDB, extensions, auth
