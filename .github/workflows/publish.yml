@@ -1,0 +1,49 @@
+name: Publish Package
+
+# Publishes @anupheaus/mxdb to GitHub Packages on every push to master.
+# Idempotent: if the version in package.json is already published it is skipped,
+# so a release is cut by bumping the version field and pushing.
+on:
+  workflow_dispatch:
+  push:
+    branches: [master]
+
+env:
+  PNPM_VERSION: '10'
+  NODE_VERSION: '22'
+
+jobs:
+  publish:
+    name: Publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      # pnpm-setup strips the @anupheaus/* file: overrides (patch-package-json) in
+      # the ephemeral working tree only and installs common/react-ui/nexus from the
+      # registry — nothing is committed back, so master keeps its local-dev overrides.
+      - name: Setup pnpm, node, and install
+        uses: Anupheaus/ci-templates/.github/actions/pnpm-setup@v1
+        with:
+          pnpm-version: ${{ env.PNPM_VERSION }}
+          node-version: ${{ env.NODE_VERSION }}
+          node-auth-token: ${{ secrets.GITHUB_TOKEN }}
+          patch-package-json: 'true'
+          install-args: '--no-frozen-lockfile'
+
+      - name: Build
+        run: pnpm build
+
+      - name: Publish (skip if version already exists)
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          NAME=$(node -p "require('./package.json').name")
+          VERSION=$(node -p "require('./package.json').version")
+          if npm view "$NAME@$VERSION" version --registry=https://npm.pkg.github.com/ >/dev/null 2>&1; then
+            echo "$NAME@$VERSION already published — skipping"
+          else
+            echo "Publishing $NAME@$VERSION"
+            pnpm publish --no-git-checks
+          fi

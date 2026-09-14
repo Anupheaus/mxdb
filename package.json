@@ -1,6 +1,6 @@
 {
   "name": "@anupheaus/mxdb",
-  "version": "0.0.1",
+  "version": "0.1.0",
   "type": "module",
   "main": "./dist/server.js",
   "exports": {
@@ -76,9 +76,9 @@
   ],
   "typings": "./dist/server.d.ts",
   "dependencies": {
-    "@anupheaus/common": "^0.1.29",
-    "@anupheaus/nexus": "^0.0.6",
-    "@anupheaus/react-ui": "^0.0.66",
+    "@anupheaus/common": "^0.2.0",
+    "@anupheaus/nexus": "^1.0.2",
+    "@anupheaus/react-ui": "^0.0.81",
     "@faker-js/faker": "^8.4.1",
     "@sqlite.org/sqlite-wasm": "3.51.2-build8",
     "dotenv": "^16.4.5",
