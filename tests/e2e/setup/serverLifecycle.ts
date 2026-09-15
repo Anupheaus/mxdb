@@ -84,7 +84,7 @@ export async function startMongo(): Promise<{ getUri: () => string; stop: () => 
     } else {
       lifecycleLog('startMongo.dbPath.reuse', { dbPath: persistentDbPath, pinnedPort: persistentMongoPort });
     }
-    memoryServer = await MongoMemoryReplSet.create({
+    const replSetOpts = {
       replSet: {
         count: 1,
         storageEngine: 'wiredTiger',
@@ -105,7 +105,35 @@ export async function startMongo(): Promise<{ getUri: () => string; stop: () => 
         // ample headroom without masking genuine "mongod never started" failures.
         launchTimeout: 60_000,
       }],
-    });
+    };
+    // After a hard-kill restart, mongod starts listening before wiredTiger journal
+    // recovery completes. The library calls replSetReconfig as soon as the port is
+    // open, but MongoDB rejects it with code 109 (ConfigurationInProgress) while
+    // the node is still replaying the journal. The library does not retry, so we
+    // do: create the instance ourselves, call start(), catch code 109, stop the
+    // partial instance (preserving dbPath), wait for recovery to progress, retry.
+    const MAX_START_ATTEMPTS = 5;
+    let lastStartError: unknown;
+    for (let attempt = 0; attempt < MAX_START_ATTEMPTS; attempt++) {
+      const instance = new MongoMemoryReplSet(replSetOpts);
+      try {
+        await instance.start();
+        memoryServer = instance;
+        break;
+      } catch (err: unknown) {
+        lastStartError = err;
+        const code = (err as any)?.code ?? (err as any)?.errorResponse?.code;
+        if (code === 109 && attempt < MAX_START_ATTEMPTS - 1) {
+          lifecycleLog('startMongo.replSetConfigInProgress.retry', { attempt, code });
+          try { await instance.stop({ doCleanup: false }); } catch { /* ignore */ }
+          await new Promise<void>(r => setTimeout(r, (attempt + 1) * 3_000));
+          continue;
+        }
+        try { await instance.stop({ doCleanup: false }); } catch { /* ignore */ }
+        throw err;
+      }
+    }
+    if (memoryServer == null) throw lastStartError;
     // Capture the port on first boot so subsequent hard-kill restarts can pin it.
     if (persistentMongoPort == null) {
       const port = (memoryServer.servers[0] as any)?._instanceInfo?.port
