@@ -361,4 +361,72 @@ describe('createUseRecord (client) — autoSave', () => {
 
     expect(upsert).toHaveBeenCalledWith({ id: 'id-1', name: 'edited' });
   });
+
+  // Reproduces the LeadWindow "reload wipes contact" bug: the hook id transitions from a
+  // settled placeholder to a real record that is still loading. The wipe-guard must re-arm.
+  function renderWithId(initialId: string) {
+    const container = document.createElement('div');
+    document.body.appendChild(container);
+    const result = { current: undefined as any };
+    let root: Root;
+    let id = initialId;
+    const useOrder = makeHook();
+    function Probe() { result.current = useOrder(id, true); return null; }
+    act(() => { root = createRoot(container); root.render(<Probe />); });
+    return {
+      result,
+      rerenderWithId(nextId: string) { id = nextId; act(() => { root.render(<Probe />); }); },
+      unmount() { act(() => { root.unmount(); }); container.remove(); },
+    };
+  }
+
+  it('does NOT upsert when the id changes to a still-loading record (re-arms wipe guard)', async () => {
+    const upsert = vi.fn();
+    // Phase 1: placeholder id settles as a new record (not loading, no stored record).
+    mockedUseMXDBRecord.mockReturnValue({ record: undefined, isLoading: false, upsert, remove: vi.fn() } as any);
+    const h = renderWithId('placeholder-id');
+
+    // Phase 2: id flips to the real record, which is still loading from the store.
+    mockedUseMXDBRecord.mockReturnValue({ record: undefined, isLoading: true, upsert, remove: vi.fn() } as any);
+    h.rerenderWithId('real-id');
+
+    // A child field / flush schedules an autosave of the empty placeholder for the real id.
+    act(() => { h.result.current.autoSaveOrder({ id: 'real-id', name: '' }); });
+    await act(async () => { vi.advanceTimersByTime(60000); });
+
+    expect(upsert).not.toHaveBeenCalled();
+    h.unmount();
+  });
+
+  it('explicit upsert throws when the id changes to a still-loading record', async () => {
+    const upsert = vi.fn();
+    mockedUseMXDBRecord.mockReturnValue({ record: undefined, isLoading: false, upsert, remove: vi.fn() } as any);
+    const h = renderWithId('placeholder-id');
+
+    mockedUseMXDBRecord.mockReturnValue({ record: undefined, isLoading: true, upsert, remove: vi.fn() } as any);
+    h.rerenderWithId('real-id');
+
+    await expect(h.result.current.upsertOrder({ id: 'real-id', name: '' })).rejects.toThrow();
+    expect(upsert).not.toHaveBeenCalled();
+    h.unmount();
+  });
+
+  it('autosaves normally once the newly-targeted record has settled', async () => {
+    const upsert = vi.fn();
+    mockedUseMXDBRecord.mockReturnValue({ record: undefined, isLoading: false, upsert, remove: vi.fn() } as any);
+    const h = renderWithId('placeholder-id');
+
+    mockedUseMXDBRecord.mockReturnValue({ record: undefined, isLoading: true, upsert, remove: vi.fn() } as any);
+    h.rerenderWithId('real-id');
+
+    // real-id finishes loading
+    mockedUseMXDBRecord.mockReturnValue({ record: { id: 'real-id', name: 'real' }, isLoading: false, upsert, remove: vi.fn() } as any);
+    h.rerenderWithId('real-id');
+
+    act(() => { h.result.current.autoSaveOrder({ id: 'real-id', name: 'edited' }); });
+    await act(async () => { vi.advanceTimersByTime(30000); });
+
+    expect(upsert).toHaveBeenCalledWith({ id: 'real-id', name: 'edited' });
+    h.unmount();
+  });
 });

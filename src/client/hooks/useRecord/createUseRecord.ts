@@ -140,9 +140,19 @@ export function createUseRecord<
     const lastAutoSaveRecordRef = useRef<T>();
     const autoSaveTimerRef = useRef<ReturnType<typeof setTimeout>>();
 
-    // Latches true once loading has settled (loaded existing OR confirmed new).
+    // Latches true once loading has settled (loaded existing OR confirmed new) for the
+    // CURRENT target id. Re-arms when the target id changes to a different record that is
+    // still loading, so the wipe-guards below protect the newly-targeted record too (e.g. a
+    // lead window whose contactId flips from a placeholder to the real id on reload —
+    // without this the hydrated placeholder would be persisted over the real contact).
     const hasLoadedRef = useRef(false);
-    if (!isLoadingRecord) hasLoadedRef.current = true;
+    const loadedForIdRef = useRef<string | undefined>(undefined);
+    const targetId = typeof recordOrId === 'string' ? recordOrId : (recordOrId as CommonRecord | undefined)?.id;
+    if (targetId !== loadedForIdRef.current && isLoadingRecord) hasLoadedRef.current = false;
+    if (!isLoadingRecord) {
+      hasLoadedRef.current = true;
+      loadedForIdRef.current = targetId;
+    }
 
     const flushSave = useBound(async () => {
       if (autoSaveTimerRef.current != null) {
