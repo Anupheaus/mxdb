@@ -92,7 +92,7 @@ describe('createUseRecord (client)', () => {
 
   it('returns named upsert, remove, set, and autoSave functions', () => {
     const useOrder = createUseRecord('order', collection, {
-      hydrateRecord: (r) => r ?? { id: '', name: '' },
+      hydrateRecord: r => r ?? { id: '', name: '' },
     });
     const { result, unmount: u } = renderHook(() => useOrder(undefined));
     unmount = u;
@@ -107,7 +107,7 @@ describe('createUseRecord (client)', () => {
   it('attaches extensions as static methods', () => {
     const staticHelper = vi.fn().mockReturnValue('hello');
     const useOrder = createUseRecord('order', collection, {
-      hydrateRecord: (r) => r ?? { id: '', name: '' },
+      hydrateRecord: r => r ?? { id: '', name: '' },
       extensions: { getDefault: staticHelper },
     });
     expect(typeof (useOrder as any).getDefault).toBe('function');
@@ -117,7 +117,7 @@ describe('createUseRecord (client)', () => {
 
   it('merges helpers into the result', () => {
     const useOrder = createUseRecord('order', collection, {
-      hydrateRecord: (r) => r ?? { id: '', name: '' },
+      hydrateRecord: r => r ?? { id: '', name: '' },
       helpers: () => ({ isSpecial: true }),
     });
     const { result, unmount: u } = renderHook(() => useOrder(undefined));

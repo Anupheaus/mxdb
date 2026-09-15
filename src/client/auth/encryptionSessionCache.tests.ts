@@ -178,7 +178,7 @@ describe('encryptionSessionCache', () => {
       ['<script>alert(1)</script>', 'xss-app'],
       ['"; DROP TABLE users; --', 'sql-injection-app'],
       ['../../etc/passwd', 'path-traversal-app'],
-    ])('handles special character appName %s without throwing', (specialApp) => {
+    ])('handles special character appName %s without throwing', specialApp => {
       expect(() => saveEncryptionToSession(specialApp, USER, new Uint8Array([1]), 'db')).not.toThrow();
       expect(() => loadEncryptionFromSession(specialApp, USER)).not.toThrow();
     });

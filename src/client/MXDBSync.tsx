@@ -53,12 +53,13 @@ export const MXDBSync = createComponent('MXDBSync', ({
     }
   }
 
-  useEffect(() => { setupBrowserTools(name); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { setupBrowserTools(name); }, []); // mount-only: name is a stable prop
 
   const conflictResolutionContext = useMemo(() => ({ onConflictResolution }), [onConflictResolution]);
 
   const onPrfRef = useRef<
     ((userId: string, prfOutput: ArrayBuffer, accountId?: string) => void | Promise<void>) | undefined
+  // eslint-disable-next-line indent -- false positive: closing > of multiline TS generic
   >(undefined);
 
   const handlePrf = useBound(

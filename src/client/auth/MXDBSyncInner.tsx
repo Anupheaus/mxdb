@@ -79,7 +79,7 @@ export const MXDBSyncInner = createComponent('MXDBSyncInner', ({
     } catch {
       localStorage.removeItem(`mxdb:dev-auth:${appName}`);
     }
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  }, []); // mount-only: appName is a stable prop
 
   // BroadcastChannel: cross-tab sign-out
   useEffect(() => {
@@ -158,7 +158,7 @@ export const MXDBSyncInner = createComponent('MXDBSyncInner', ({
         // No cached key → wait for the WebAuthn PRF ceremony via DeviceAuthGate/signIn
       }
     }
-  }, [user]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [user]); // intentional: other referenced values are stable refs or setters
 
   if (encryptionKey == null || dbName == null) {
     return (

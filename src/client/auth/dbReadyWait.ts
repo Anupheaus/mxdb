@@ -20,6 +20,7 @@ export function createDbReadyWaitHandle(timeoutMs: number): DbReadyWaitHandle {
     waitForDbReady() {
       if (isDbReady) return Promise.resolve(true);
       return new Promise<boolean>(resolve => {
+        // eslint-disable-next-line prefer-const -- mutual ref: notify captures timer, timer's callback references notify
         let timer: ReturnType<typeof setTimeout>;
         const notify = () => {
           clearTimeout(timer);

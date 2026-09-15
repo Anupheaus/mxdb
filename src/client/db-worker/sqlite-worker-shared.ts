@@ -4,7 +4,7 @@
  * and the Web Lock helpers. Neither worker entry point is referenced here.
  */
 
-import sqlite3InitModule from '@sqlite.org/sqlite-wasm';
+import type sqlite3InitModule from '@sqlite.org/sqlite-wasm';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -158,14 +158,20 @@ export function registerRegexp(_s3: Sqlite3, database: OO1Db) {
  */
 export function acquireDbLock(dbName: string, lockRef: LockRef): Promise<boolean> {
   if (lockRef.release != null || typeof navigator === 'undefined' || navigator.locks == null) {
+    // [LOCK-DIAG] fast-true path — either this context already holds the lock, or the Locks API is unavailable.
+    console.warn('[LOCK-DIAG] acquireDbLock fast-true', { t: Date.now(), dbName, alreadyHeldByThisContext: lockRef.release != null }); // [LOCK-DIAG]
     return Promise.resolve(true);
   }
   return new Promise(resolve => {
     navigator.locks.request(`mxdb-db-${dbName}`, { ifAvailable: true }, lock => {
-      if (lock == null) { resolve(false); return Promise.resolve(); }
+      if (lock == null) {
+        console.warn('[LOCK-DIAG] acquireDbLock UNAVAILABLE — held by another context (ifAvailable=false)', { t: Date.now(), dbName }); // [LOCK-DIAG]
+        resolve(false); return Promise.resolve();
+      }
       let release!: () => void;
       const held = new Promise<void>(r => { release = r; });
       lockRef.release = release;
+      console.warn('[LOCK-DIAG] acquireDbLock ACQUIRED via navigator.locks', { t: Date.now(), dbName }); // [LOCK-DIAG]
       resolve(true);
       return held;
     });
@@ -173,6 +179,7 @@ export function acquireDbLock(dbName: string, lockRef: LockRef): Promise<boolean
 }
 
 export function releaseDbLock(lockRef: LockRef): void {
+  console.warn('[LOCK-DIAG] releaseDbLock', { t: Date.now(), wasHeld: lockRef.release != null }); // [LOCK-DIAG]
   lockRef.release?.();
   lockRef.release = null;
 }
