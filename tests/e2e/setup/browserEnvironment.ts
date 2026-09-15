@@ -38,6 +38,7 @@ export function installBrowserEnvironment(): void {
 
   (globalThis as unknown as { window: unknown }).window = dom.window;
   (globalThis as unknown as { document: Document }).document = dom.window.document;
+  (globalThis as unknown as { navigator: Navigator }).navigator = dom.window.navigator as unknown as Navigator;
 
   // Patch only the missing static; keep URL as a constructor (same approach as legacy stress globals).
   const urlGlobal = (dom.window as unknown as { URL?: typeof URL }).URL ?? URL;
