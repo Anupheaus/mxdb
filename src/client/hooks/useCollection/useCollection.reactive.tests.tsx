@@ -14,7 +14,7 @@
 // @vitest-environment jsdom
 
 import '@anupheaus/common';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, useLayoutEffect, useState } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import type { Record } from '@anupheaus/common';
@@ -141,6 +141,19 @@ async function flushMicrotasks(): Promise<void> {
   });
 }
 
+/** Comfortably past the ~50ms onChange debounce in useSubscriptionWrapper, yet well under the 5s action timeout —
+ *  so a change-driven re-query fires but the withTimeout guard never trips. */
+const PAST_CHANGE_DEBOUNCE_MS = 200;
+
+/** Advance past the onChange debounce (and flush the microtasks its re-query schedules) so change-driven updates land. */
+async function flushChange(): Promise<void> {
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(PAST_CHANGE_DEBOUNCE_MS);
+    await Promise.resolve();
+    await Promise.resolve();
+  });
+}
+
 function AllHooksProbe({ collection, targetId }: { collection: MockLocalCollection; targetId: string }) {
   const useSubscription = createUseSubscription();
   const logger = useLogger(collection.name);
@@ -207,15 +220,48 @@ function DistinctCallbackProbe({ collection }: { collection: MockLocalCollection
   return <span data-testid="cb-distinct-len">{len}</span>;
 }
 
+function SingleQueryProbe({ collection }: { collection: MockLocalCollection }) {
+  const useSubscription = createUseSubscription();
+  const logger = useLogger(collection.name);
+  const query = createQuery(asDbCollection(collection), useSubscription, logger);
+  const useQuery = createUseQuery(query, logger);
+  const { records } = useQuery({});
+  return <span data-testid="single-len">{records.length}</span>;
+}
+
+/** Two independent useQuery subscribers on the same collection — used to prove each debounces its own onChange
+ *  callback separately, so a shared burst still re-runs both. */
+function TwoQueryProbe({ collection }: { collection: MockLocalCollection }) {
+  const useSubscription = createUseSubscription();
+  const logger = useLogger(collection.name);
+  const db = asDbCollection(collection);
+  const useQueryA = createUseQuery(createQuery(db, useSubscription, logger), logger);
+  const useQueryB = createUseQuery(createQuery(db, useSubscription, logger), logger);
+  const a = useQueryA({});
+  const b = useQueryB({});
+  return (
+    <div>
+      <span data-testid="two-a">{a.records.length}</span>
+      <span data-testid="two-b">{b.records.length}</span>
+    </div>
+  );
+}
+
 describe('useCollection hooks react to local collection changes (sync simulation)', () => {
   let root: Root | undefined;
   let container: HTMLDivElement;
 
   (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
+  beforeEach(() => {
+    // Fake timers let us drive the onChange debounce deterministically instead of waiting real time.
+    vi.useFakeTimers();
+  });
+
   afterEach(() => {
     act(() => root?.unmount());
     root = undefined;
+    vi.useRealTimers();
   });
 
   it('useGetAll, useQuery, useDistinct, and useGet update after upsert and remove', async () => {
@@ -245,7 +291,7 @@ describe('useCollection hooks react to local collection changes (sync simulation
     await act(async () => {
       collection.applyServerUpsert({ id: 'c', name: 'Gamma', city: 'London' });
     });
-    await flushMicrotasks();
+    await flushChange();
 
     expect(container.querySelector('[data-testid="ga-count"]')?.textContent).toBe('3');
     expect(container.querySelector('[data-testid="uq-len"]')?.textContent).toBe('3');
@@ -255,13 +301,13 @@ describe('useCollection hooks react to local collection changes (sync simulation
     await act(async () => {
       collection.applyServerUpsert({ id: 'a', name: 'Alpha-up', city: 'London' });
     });
-    await flushMicrotasks();
+    await flushChange();
     expect(container.querySelector('[data-testid="ug-name"]')?.textContent).toBe('Alpha-up');
 
     await act(async () => {
       collection.applyServerRemove('b');
     });
-    await flushMicrotasks();
+    await flushChange();
     expect(container.querySelector('[data-testid="ga-count"]')?.textContent).toBe('2');
     expect(container.querySelector('[data-testid="uq-len"]')?.textContent).toBe('2');
   });
@@ -292,10 +338,111 @@ describe('useCollection hooks react to local collection changes (sync simulation
     await act(async () => {
       collection.applyServerUpsert({ id: '2', name: 'Two', city: 'Y' });
     });
-    await flushMicrotasks();
+    await flushChange();
 
     expect(container.querySelector('[data-testid="cb-getAll-len"]')?.textContent).toBe('2');
     expect(container.querySelector('[data-testid="cb-query-len"]')?.textContent).toBe('2');
     expect(container.querySelector('[data-testid="cb-distinct-len"]')?.textContent).toBe('2');
+  });
+
+  it('debounces onChange — a burst of changes re-queries once, only after the debounce window, with the final state', async () => {
+    const collection = new MockLocalCollection();
+    collection.seed([{ id: 'a', name: 'A', city: 'X' }]);
+    const querySpy = vi.spyOn(collection, 'query');
+
+    container = document.createElement('div');
+    root = createRoot(container);
+    act(() =>
+      root!.render(
+        <LoggerProvider logger={undefined} loggerName="debounce-single">
+          <SingleQueryProbe collection={collection} />
+        </LoggerProvider>,
+      ),
+    );
+    await flushMicrotasks();
+    expect(container.querySelector('[data-testid="single-len"]')?.textContent).toBe('1');
+
+    // Only count re-queries triggered by the burst below, not the initial-load queries.
+    querySpy.mockClear();
+
+    // Four changes in one tick — each resets the debounce timer.
+    await act(async () => {
+      collection.applyServerUpsert({ id: 'b', name: 'B', city: 'X' });
+      collection.applyServerUpsert({ id: 'c', name: 'C', city: 'X' });
+      collection.applyServerUpsert({ id: 'd', name: 'D', city: 'X' });
+      collection.applyServerUpsert({ id: 'e', name: 'E', city: 'X' });
+    });
+
+    // Debounced: nothing re-queries until the window elapses.
+    expect(querySpy).not.toHaveBeenCalled();
+    expect(container.querySelector('[data-testid="single-len"]')?.textContent).toBe('1');
+
+    await flushChange();
+
+    // The whole burst collapsed into a single re-query, and the final state reflects every change.
+    expect(querySpy).toHaveBeenCalledTimes(1);
+    expect(container.querySelector('[data-testid="single-len"]')?.textContent).toBe('5');
+  });
+
+  it('debounces each subscriber independently — a shared burst still re-runs every subscriber once', async () => {
+    const collection = new MockLocalCollection();
+    collection.seed([{ id: 'a', name: 'A', city: 'X' }]);
+    const querySpy = vi.spyOn(collection, 'query');
+
+    container = document.createElement('div');
+    root = createRoot(container);
+    act(() =>
+      root!.render(
+        <LoggerProvider logger={undefined} loggerName="debounce-two">
+          <TwoQueryProbe collection={collection} />
+        </LoggerProvider>,
+      ),
+    );
+    await flushMicrotasks();
+    expect(container.querySelector('[data-testid="two-a"]')?.textContent).toBe('1');
+    expect(container.querySelector('[data-testid="two-b"]')?.textContent).toBe('1');
+
+    querySpy.mockClear();
+
+    await act(async () => {
+      collection.applyServerUpsert({ id: 'b', name: 'B', city: 'X' });
+      collection.applyServerUpsert({ id: 'c', name: 'C', city: 'X' });
+    });
+    await flushChange();
+
+    // Two subscribers, each coalescing the burst to one re-query of its own → both re-run, two queries total.
+    expect(querySpy).toHaveBeenCalledTimes(2);
+    expect(container.querySelector('[data-testid="two-a"]')?.textContent).toBe('3');
+    expect(container.querySelector('[data-testid="two-b"]')?.textContent).toBe('3');
+  });
+
+  it('cancels a pending re-query when the subscriber unmounts before the debounce fires', async () => {
+    const collection = new MockLocalCollection();
+    collection.seed([{ id: 'a', name: 'A', city: 'X' }]);
+    const querySpy = vi.spyOn(collection, 'query');
+
+    container = document.createElement('div');
+    root = createRoot(container);
+    act(() =>
+      root!.render(
+        <LoggerProvider logger={undefined} loggerName="debounce-unmount">
+          <SingleQueryProbe collection={collection} />
+        </LoggerProvider>,
+      ),
+    );
+    await flushMicrotasks();
+    querySpy.mockClear();
+
+    // A change schedules a debounced re-query...
+    await act(async () => {
+      collection.applyServerUpsert({ id: 'b', name: 'B', city: 'X' });
+    });
+    // ...but the subscriber unmounts before the window elapses — cleanup must cancel it.
+    act(() => root!.unmount());
+    root = undefined;
+
+    await flushChange();
+
+    expect(querySpy).not.toHaveBeenCalled();
   });
 });

@@ -14,6 +14,7 @@ import { decodeTime, ulid } from 'ulidx';
 import type { SqliteWorkerClient } from '../../db-worker/SqliteWorkerClient';
 import { filtersToSql } from '../../db-worker/filtersToSql';
 import { sortsToSql } from '../../db-worker/sortsToSql';
+import { distinctRecordsInMemory, queryRecordsInMemory } from '../../db-worker/queryRecordsInMemory';
 
 export interface UpsertConfig {
   auditAction?: 'branched' | 'default';
@@ -450,17 +451,20 @@ export class DbCollection<RecordType extends Record = Record> {
   // ─── Query (SQL-backed) ───────────────────────────────────────────────────
 
   @bind
-  public async query({ filters, pagination, sorts }: DataRequest<RecordType>): Promise<QueryResults<RecordType>> {
+  public async query(request: DataRequest<RecordType>): Promise<QueryResults<RecordType>> {
     await this.#loadingPromise;
 
+    // Fast path: evaluate the query against the in-memory live-record cache, avoiding a worker round-trip (and the
+    // read queuing behind writes/encrypted flushes). Falls back to SQL for filters we can't match in-memory with parity.
+    const inMemory = queryRecordsInMemory<RecordType>(Array.from(this.#records.values()), request);
+    if (inMemory != null) return inMemory;
+    return this.#queryViaWorker(request);
+  }
+
+  async #queryViaWorker({ filters, pagination, sorts }: DataRequest<RecordType>): Promise<QueryResults<RecordType>> {
     const { where, params } = filtersToSql<RecordType>(filters);
     const orderBy = sortsToSql<RecordType>(sorts);
     const liveTable = q(`${this.#name}${LIVE_TABLE_SUFFIX}`);
-
-    // Count total (no pagination)
-    const countSql = `SELECT COUNT(*) as cnt FROM ${liveTable}${where ? ` WHERE ${where}` : ''}`;
-    const countRows = await this.#worker.query<{ cnt: number; }>(countSql, params);
-    const total = countRows[0]?.cnt ?? 0;
 
     // Fetch page
     let dataSql = `SELECT data FROM ${liveTable}${where ? ` WHERE ${where}` : ''}`;
@@ -474,13 +478,29 @@ export class DbCollection<RecordType extends Record = Record> {
     const rows = await this.#worker.query<{ data: string; }>(dataSql, dataParams);
     const records = rows.map(row => to.deserialise<RecordType>(row.data));
 
+    // Without pagination the fetched rows ARE the whole result, so their count is the total — no separate
+    // COUNT(*) round-trip needed. Only when paginating is the page a subset, so COUNT the matching rows then.
+    let total = records.length;
+    if (pagination) {
+      const countSql = `SELECT COUNT(*) as cnt FROM ${liveTable}${where ? ` WHERE ${where}` : ''}`;
+      const countRows = await this.#worker.query<{ cnt: number; }>(countSql, params);
+      total = countRows[0]?.cnt ?? 0;
+    }
+
     return { records, total };
   }
 
   @bind
-  public async distinct<Key extends keyof RecordType>({ field, filters, sorts }: DistinctProps<RecordType, Key>): Promise<DistinctResults<RecordType, Key>> {
+  public async distinct<Key extends keyof RecordType>(props: DistinctProps<RecordType, Key>): Promise<DistinctResults<RecordType, Key>> {
     await this.#loadingPromise;
 
+    // Fast path: derive distinct values from the in-memory cache; fall back to SQL for anything not matchable in-memory.
+    const inMemory = distinctRecordsInMemory<RecordType, Key>(Array.from(this.#records.values()), props);
+    if (inMemory != null) return inMemory;
+    return this.#distinctViaWorker(props);
+  }
+
+  async #distinctViaWorker<Key extends keyof RecordType>({ field, filters, sorts }: DistinctProps<RecordType, Key>): Promise<DistinctResults<RecordType, Key>> {
     const { where, params } = filtersToSql<RecordType>(filters);
     const orderBy = sortsToSql<RecordType>(sorts);
     const liveTable = q(`${this.#name}${LIVE_TABLE_SUFFIX}`);

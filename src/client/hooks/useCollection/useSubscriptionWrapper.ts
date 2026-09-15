@@ -1,4 +1,4 @@
-import { is, type AnyObject, type Logger, type PromiseMaybe, type Record } from '@anupheaus/common';
+import { debounce, is, type AnyObject, type Logger, type PromiseMaybe, type Record } from '@anupheaus/common';
 import type { DbCollection } from '../../providers';
 import { useAction, useNexus } from '@anupheaus/nexus/client';
 import type { UseSubscription } from './createUseSubscription';
@@ -9,6 +9,12 @@ import type { AddDisableTo } from '../../../common/models';
 import { ACTION_TIMEOUT_MS, withTimeout } from '../../utils/actionTimeout';
 
 const RequestCancelled = Symbol('RequestCancelled');
+
+/** Collection mutations arrive in bursts (initial sync/hydration writes many records); coalesce a burst into a
+ *  single query re-execution rather than re-running the query per change. Each subscription debounces its OWN
+ *  onChange callback (its own `debounce` instance), so distinct subscribers still each re-run — only repeated
+ *  changes for the same subscriber within this window are collapsed. */
+const COLLECTION_CHANGE_DEBOUNCE_MS = 50;
 
 interface Props<RecordType extends Record, Request extends AnyObject, Response extends AnyObject, RemoteRequest extends AnyObject, RemoteResponse> {
   collection: DbCollection<RecordType>;
@@ -47,8 +53,17 @@ export function useSubscriptionWrapper<RecordType extends Record, Request extend
   const executeValidateAndUpdateRef = useRef(() => Promise.resolve());
   const remoteQueryCalledRef = useRef(false);
 
-  // listen to changes from the client collection and invoke again when it changes
-  useLayoutEffect(() => collection.onChange(() => executeValidateAndUpdateRef.current()), []);
+  // Re-run the query when the client collection changes, debounced (via @anupheaus/common's `debounce`) so a burst
+  // of changes collapses into one re-execution instead of one per change. Cleanup cancels any pending re-run and
+  // unsubscribes, so nothing re-executes after unmount.
+  useLayoutEffect(() => {
+    const onCollectionChange = debounce(() => executeValidateAndUpdateRef.current(), COLLECTION_CHANGE_DEBOUNCE_MS);
+    const unsubscribe = collection.onChange(onCollectionChange);
+    return () => {
+      onCollectionChange.cancel();
+      unsubscribe();
+    };
+  }, []);
 
   async function invoke(props: AddDisableTo<Request>, onResponse: (result: Response) => void, onSameResponse: () => void): Promise<void>;
   async function invoke(props: AddDisableTo<Request>, onResponse: (result: Response) => void): Promise<void>;

@@ -24,7 +24,9 @@ export function createQuery<RecordType extends Record>(collection: DbCollection<
     onDefaultResponse: () => ({ records: [], total: 0 }),
     async onExecute(request) {
       let { records, total } = await collection.query(request);
-      total = serverTotalRef.current ?? records.length;
+      // Prefer the server's total when known; otherwise use the local total from collection.query — which is
+      // records.length for a full result and the COUNT(*) for a paginated one, so offline pagination stays correct.
+      total = serverTotalRef.current ?? total;
       return { records, total };
     },
     onRequestTransform: request => ({ ...request as QueryProps<Record>, collectionName: collection.name }),
