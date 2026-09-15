@@ -85,7 +85,7 @@ jobs:
           workspace-repos: 'Anupheaus/common Anupheaus/react-ui Anupheaus/nexus'
           install-args: '--no-frozen-lockfile'
       - name: Security audit
-        run: pnpm audit --audit-level=high
+        run: pnpm audit --audit-level=high --prod
 
   Validate-Secrets:
     name: Secret detection
@@ -106,7 +106,7 @@ jobs:
       - name: Secret detection (TruffleHog)
         uses: trufflesecurity/trufflehog@main
         with:
-          base: ${{ github.event.repository.default_branch }}
+          base: ${{ github.event.before || github.event.pull_request.base.sha }}
           head: HEAD
           extra_args: --only-verified
 
