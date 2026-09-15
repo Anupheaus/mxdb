@@ -29,9 +29,9 @@ jobs:
           workspace-repos: 'Anupheaus/common Anupheaus/react-ui Anupheaus/nexus'
           install-args: '--no-frozen-lockfile'
 
-  # ── VALIDATE ───────────────────────────────────────────────────────────────
-  Validate:
-    name: Validate (type-check, lint, audit)
+  # ── VALIDATE (parallel) ────────────────────────────────────────────────────
+  Validate-TypeCheck:
+    name: Type check
     needs: Prepare
     runs-on: ubuntu-latest
     permissions:
@@ -46,16 +46,63 @@ jobs:
           node-auth-token: ${{ secrets.GITHUB_TOKEN }}
           workspace-repos: 'Anupheaus/common Anupheaus/react-ui Anupheaus/nexus'
           install-args: '--no-frozen-lockfile'
-
       - name: Type check
         run: pnpm exec tsc --noEmit --project tsconfig.ci.json
 
+  Validate-Lint:
+    name: Lint
+    needs: Prepare
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - name: Setup pnpm, node, and install
+        uses: Anupheaus/ci-templates/.github/actions/pnpm-setup@v1
+        with:
+          pnpm-version: ${{ env.PNPM_VERSION }}
+          node-version: ${{ env.NODE_VERSION }}
+          node-auth-token: ${{ secrets.GITHUB_TOKEN }}
+          workspace-repos: 'Anupheaus/common Anupheaus/react-ui Anupheaus/nexus'
+          install-args: '--no-frozen-lockfile'
       - name: Lint
         run: pnpm run lint
 
+  Validate-Audit:
+    name: Security audit
+    needs: Prepare
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - name: Setup pnpm, node, and install
+        uses: Anupheaus/ci-templates/.github/actions/pnpm-setup@v1
+        with:
+          pnpm-version: ${{ env.PNPM_VERSION }}
+          node-version: ${{ env.NODE_VERSION }}
+          node-auth-token: ${{ secrets.GITHUB_TOKEN }}
+          workspace-repos: 'Anupheaus/common Anupheaus/react-ui Anupheaus/nexus'
+          install-args: '--no-frozen-lockfile'
       - name: Security audit
         run: pnpm audit --audit-level=high
 
+  Validate-Secrets:
+    name: Secret detection
+    needs: Prepare
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - name: Setup pnpm, node, and install
+        uses: Anupheaus/ci-templates/.github/actions/pnpm-setup@v1
+        with:
+          pnpm-version: ${{ env.PNPM_VERSION }}
+          node-version: ${{ env.NODE_VERSION }}
+          node-auth-token: ${{ secrets.GITHUB_TOKEN }}
+          workspace-repos: 'Anupheaus/common Anupheaus/react-ui Anupheaus/nexus'
+          install-args: '--no-frozen-lockfile'
       - name: Secret detection (TruffleHog)
         uses: trufflesecurity/trufflehog@main
         with:
@@ -63,6 +110,22 @@ jobs:
           head: HEAD
           extra_args: --only-verified
 
+  Validate-Trivy:
+    name: Filesystem security scan
+    needs: Prepare
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - name: Setup pnpm, node, and install
+        uses: Anupheaus/ci-templates/.github/actions/pnpm-setup@v1
+        with:
+          pnpm-version: ${{ env.PNPM_VERSION }}
+          node-version: ${{ env.NODE_VERSION }}
+          node-auth-token: ${{ secrets.GITHUB_TOKEN }}
+          workspace-repos: 'Anupheaus/common Anupheaus/react-ui Anupheaus/nexus'
+          install-args: '--no-frozen-lockfile'
       - name: Filesystem security scan (Trivy)
         uses: aquasecurity/trivy-action@master
         with:
@@ -256,7 +319,7 @@ jobs:
   # ── PUBLISH — master only, after all tests ───────────────────────────────────
   Publish:
     name: Build and Publish
-    needs: [Validate, Test, Test-CRUD, Test-Performance, Test-Stress]
+    needs: [Validate-TypeCheck, Validate-Lint, Validate-Audit, Validate-Secrets, Validate-Trivy, Test, Test-CRUD, Test-Performance, Test-Stress]
     if: github.ref == 'refs/heads/master'
     runs-on: ubuntu-latest
     permissions:
