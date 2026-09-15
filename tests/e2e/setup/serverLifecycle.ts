@@ -84,28 +84,6 @@ export async function startMongo(): Promise<{ getUri: () => string; stop: () => 
     } else {
       lifecycleLog('startMongo.dbPath.reuse', { dbPath: persistentDbPath, pinnedPort: persistentMongoPort });
     }
-    const replSetOpts = {
-      replSet: {
-        count: 1,
-        storageEngine: 'wiredTiger',
-        // Cap the mongod's transaction lifetime to 4s (vs the 60s default).
-        // After a hard-kill restart, any doc locks held by in-flight txns at the
-        // moment the old mongod died will be released within 4s when the new
-        // mongod sees the journal rollback. Without this cap, the next server
-        // child would stall for up to 60s on every affected document.
-        args: ['--setParameter', 'transactionLifetimeLimitSeconds=4'],
-      },
-      instanceOpts: [{
-        dbPath: persistentDbPath,
-        storageEngine: 'wiredTiger',
-        // Pin the port on restart (null on first boot — library picks one, we capture).
-        ...(persistentMongoPort != null ? { port: persistentMongoPort } : {}),
-        // After a hard-kill restart the wiredTiger journal replay can take longer
-        // than the default 10 s, especially under stress-test load. 60 s gives
-        // ample headroom without masking genuine "mongod never started" failures.
-        launchTimeout: 60_000,
-      }],
-    };
     // After a hard-kill restart, mongod starts listening before wiredTiger journal
     // recovery completes. The library calls replSetReconfig as soon as the port is
     // open, but MongoDB rejects it with code 109 (ConfigurationInProgress) while
@@ -115,7 +93,30 @@ export async function startMongo(): Promise<{ getUri: () => string; stop: () => 
     const MAX_START_ATTEMPTS = 5;
     let lastStartError: unknown;
     for (let attempt = 0; attempt < MAX_START_ATTEMPTS; attempt++) {
-      const instance = new MongoMemoryReplSet(replSetOpts);
+      // Inline opts so TypeScript infers storageEngine as the literal 'wiredTiger'
+      // (not widened to string), satisfying the StorageEngine union type.
+      const instance = new MongoMemoryReplSet({
+        replSet: {
+          count: 1,
+          storageEngine: 'wiredTiger',
+          // Cap the mongod's transaction lifetime to 4s (vs the 60s default).
+          // After a hard-kill restart, any doc locks held by in-flight txns at the
+          // moment the old mongod died will be released within 4s when the new
+          // mongod sees the journal rollback. Without this cap, the next server
+          // child would stall for up to 60s on every affected document.
+          args: ['--setParameter', 'transactionLifetimeLimitSeconds=4'],
+        },
+        instanceOpts: [{
+          dbPath: persistentDbPath,
+          storageEngine: 'wiredTiger',
+          // Pin the port on restart (null on first boot — library picks one, we capture).
+          ...(persistentMongoPort != null ? { port: persistentMongoPort } : {}),
+          // After a hard-kill restart the wiredTiger journal replay can take longer
+          // than the default 10 s, especially under stress-test load. 60 s gives
+          // ample headroom without masking genuine "mongod never started" failures.
+          launchTimeout: 60_000,
+        }],
+      });
       try {
         await instance.start();
         memoryServer = instance;
