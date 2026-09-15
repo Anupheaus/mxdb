@@ -309,7 +309,7 @@ describe('e2e performance tests', () => {
     // The reactive subscription debounces its re-query by 50ms after SQLite writes arrive,
     // so wait for the snapshot to reflect all records rather than checking immediately.
     await waitUntilAsync(
-      () => {
+      async () => {
         const snapIds = new Set(b.getGetAllSubscriptionSnapshot().map(r => r.id));
         return records.every(r => snapIds.has(r.id));
       },
@@ -339,7 +339,7 @@ describe('e2e performance tests', () => {
     // The reactive subscription debounces its re-query by 50ms after SQLite writes arrive,
     // so wait for the snapshot to reflect all records rather than checking immediately.
     await waitUntilAsync(
-      () => {
+      async () => {
         const snapIds = new Set(b.getGetAllSubscriptionSnapshot().map(r => r.id));
         return [...ids].every(id => snapIds.has(id));
       },
