@@ -18,7 +18,7 @@ vi.mock('@anupheaus/nexus/server', () => ({
   useLogger: () => mockUseLogger(),
 }));
 
-vi.mock('../../common/sync-engine', async (importOriginal) => {
+vi.mock('../../common/sync-engine', async importOriginal => {
   const actual = await importOriginal() as object;
   return {
     ...actual,

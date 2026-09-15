@@ -50,7 +50,7 @@ describe('createUseRecord (server)', () => {
 
   it('isNewOrder is true when record not found', async () => {
     const useOrder = createUseRecord('order', collection, {
-      hydrateRecord: (r) => r ?? { id: '', name: 'New' },
+      hydrateRecord: r => r ?? { id: '', name: 'New' },
     });
     const result = await useOrder('missing-id');
     expect(result.isNewOrder).toBe(true);
@@ -59,7 +59,7 @@ describe('createUseRecord (server)', () => {
   it('isNewOrder is false when record exists', async () => {
     mockGet.mockResolvedValue({ id: '1', name: 'Existing' });
     const useOrder = createUseRecord('order', collection, {
-      hydrateRecord: (r) => r!,
+      hydrateRecord: r => r!,
     });
     const result = await useOrder('1');
     expect(result.isNewOrder).toBe(false);
@@ -77,7 +77,7 @@ describe('createUseRecord (server)', () => {
     const existing = { id: '1', name: 'Existing' };
     mockGet.mockResolvedValue(existing);
     const useOrder = createUseRecord('order', collection, {
-      hydrateRecord: (r) => r!,
+      hydrateRecord: r => r!,
     });
     const result = await useOrder('1');
     await result.removeOrder();
@@ -97,7 +97,7 @@ describe('createUseRecord (server)', () => {
   it('merges helper results into the returned object', async () => {
     const useOrder = createUseRecord('order', collection, {
       hydrateRecord: (r) => r ?? { id: '', name: 'New' },
-      helpers: (ctx) => ({ isSpecial: ctx.order?.name === 'Special' }),
+      helpers: ctx => ({ isSpecial: ctx.order?.name === 'Special' }),
     });
     mockGet.mockResolvedValue({ id: '1', name: 'Special' });
     const result = await useOrder('1');
@@ -115,7 +115,7 @@ describe('createUseRecord (server)', () => {
   it('attaches extensions as static methods', () => {
     const staticFn = vi.fn().mockReturnValue('hello');
     const useOrder = createUseRecord('order', collection, {
-      hydrateRecord: (r) => r ?? { id: '', name: '' },
+      hydrateRecord: r => r ?? { id: '', name: '' },
       extensions: { getDefault: staticFn },
     });
     expect(typeof (useOrder as any).getDefault).toBe('function');
@@ -128,7 +128,7 @@ describe('createUseRecord (server)', () => {
   it('static get with a single id delegates to col.get', async () => {
     mockGet.mockResolvedValue({ id: '1', name: 'A' });
     const useOrder = createUseRecord('order', collection, {
-      hydrateRecord: (r) => r ?? { id: '', name: '' },
+      hydrateRecord: r => r ?? { id: '', name: '' },
     });
     const result = await useOrder.get('1');
     expect(mockGet).toHaveBeenCalledWith('1');
@@ -138,7 +138,7 @@ describe('createUseRecord (server)', () => {
   it('static get returns undefined when record not found', async () => {
     mockGet.mockResolvedValue(undefined);
     const useOrder = createUseRecord('order', collection, {
-      hydrateRecord: (r) => r ?? { id: '', name: '' },
+      hydrateRecord: r => r ?? { id: '', name: '' },
     });
     const result = await useOrder.get('missing');
     expect(result).toBeUndefined();
@@ -147,7 +147,7 @@ describe('createUseRecord (server)', () => {
   it('static get with an array of ids returns array of records', async () => {
     mockGet.mockResolvedValue([{ id: '1' }, { id: '2' }]);
     const useOrder = createUseRecord('order', collection, {
-      hydrateRecord: (r) => r ?? { id: '', name: '' },
+      hydrateRecord: r => r ?? { id: '', name: '' },
     });
     const result = await useOrder.get(['1', '2']);
     expect(mockGet).toHaveBeenCalledWith(['1', '2']);
@@ -159,7 +159,7 @@ describe('createUseRecord (server)', () => {
   it('static getAll delegates to col.getAll', async () => {
     mockGetAll.mockResolvedValue([{ id: '1' }, { id: '2' }]);
     const useOrder = createUseRecord('order', collection, {
-      hydrateRecord: (r) => r ?? { id: '', name: '' },
+      hydrateRecord: r => r ?? { id: '', name: '' },
     });
     const result = await useOrder.getAll();
     expect(mockGetAll).toHaveBeenCalled();
@@ -169,7 +169,7 @@ describe('createUseRecord (server)', () => {
   it('static getAll returns empty array when collection is empty', async () => {
     mockGetAll.mockResolvedValue([]);
     const useOrder = createUseRecord('order', collection, {
-      hydrateRecord: (r) => r ?? { id: '', name: '' },
+      hydrateRecord: r => r ?? { id: '', name: '' },
     });
     const result = await useOrder.getAll();
     expect(result).toEqual([]);
@@ -180,7 +180,7 @@ describe('createUseRecord (server)', () => {
   it('static find delegates to col.find with the given filters', async () => {
     mockFind.mockResolvedValue({ id: '1', status: 'active' });
     const useOrder = createUseRecord('order', collection, {
-      hydrateRecord: (r) => r ?? { id: '', name: '' },
+      hydrateRecord: r => r ?? { id: '', name: '' },
     });
     const result = await useOrder.find({ status: 'active' } as any);
     expect(mockFind).toHaveBeenCalledWith({ status: 'active' });
@@ -190,7 +190,7 @@ describe('createUseRecord (server)', () => {
   it('static find returns undefined when no match', async () => {
     mockFind.mockResolvedValue(undefined);
     const useOrder = createUseRecord('order', collection, {
-      hydrateRecord: (r) => r ?? { id: '', name: '' },
+      hydrateRecord: r => r ?? { id: '', name: '' },
     });
     const result = await useOrder.find({ status: 'gone' } as any);
     expect(result).toBeUndefined();
@@ -201,7 +201,7 @@ describe('createUseRecord (server)', () => {
   it('static query returns array of records', async () => {
     mockQuery.mockResolvedValue({ data: [{ id: '1' }, { id: '2' }], total: 2 });
     const useOrder = createUseRecord('order', collection, {
-      hydrateRecord: (r) => r ?? { id: '', name: '' },
+      hydrateRecord: r => r ?? { id: '', name: '' },
     });
     const result = await useOrder.query();
     expect(mockQuery).toHaveBeenCalledWith({});
@@ -211,7 +211,7 @@ describe('createUseRecord (server)', () => {
   it('static query passes QueryProps to col.query', async () => {
     mockQuery.mockResolvedValue({ data: [], total: 0 });
     const useOrder = createUseRecord('order', collection, {
-      hydrateRecord: (r) => r ?? { id: '', name: '' },
+      hydrateRecord: r => r ?? { id: '', name: '' },
     });
     await useOrder.query({ filters: { status: 'active' } as any });
     expect(mockQuery).toHaveBeenCalledWith({ filters: { status: 'active' } });
@@ -220,7 +220,7 @@ describe('createUseRecord (server)', () => {
   it('static query returns empty array when no records match', async () => {
     mockQuery.mockResolvedValue({ data: [], total: 0 });
     const useOrder = createUseRecord('order', collection, {
-      hydrateRecord: (r) => r ?? { id: '', name: '' },
+      hydrateRecord: r => r ?? { id: '', name: '' },
     });
     const result = await useOrder.query({ filters: { status: 'gone' } as any });
     expect(result).toEqual([]);
@@ -231,7 +231,7 @@ describe('createUseRecord (server)', () => {
   it('static distinct delegates to col.distinct with field', async () => {
     mockDistinct.mockResolvedValue([{ id: '1', status: 'pending' }, { id: '2', status: 'active' }, { id: '3', status: 'closed' }]);
     const useOrder = createUseRecord('order', collection, {
-      hydrateRecord: (r) => r ?? { id: '', name: '' },
+      hydrateRecord: r => r ?? { id: '', name: '' },
     });
     const result = await useOrder.distinct('status' as any);
     expect(mockDistinct).toHaveBeenCalledWith({ field: 'status' });
@@ -241,7 +241,7 @@ describe('createUseRecord (server)', () => {
   it('static distinct passes filters props to col.distinct', async () => {
     mockDistinct.mockResolvedValue([{ id: '1', status: 'active' }]);
     const useOrder = createUseRecord('order', collection, {
-      hydrateRecord: (r) => r ?? { id: '', name: '' },
+      hydrateRecord: r => r ?? { id: '', name: '' },
     });
     await useOrder.distinct('status' as any, { filters: { active: true } as any });
     expect(mockDistinct).toHaveBeenCalledWith({ field: 'status', filters: { active: true } });

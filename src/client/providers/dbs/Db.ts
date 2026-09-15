@@ -49,7 +49,7 @@ export class Db {
         message: `Collection "${collectionName}" is not registered in the "${this.#name}" database. `
           + `${availableCollections.length} registered collection(s): ${availableCollections.join(', ') || '(none)'}. `
           + `Add "${collectionName}" to this client's collections list (e.g. mobileCollections / webCollections), `
-          + `or ensure the provider that uses it is only mounted on clients that register it.`,
+          + 'or ensure the provider that uses it is only mounted on clients that register it.',
         meta: { database: this.#name, requestedCollection: collectionName, availableCollections },
       });
     }
@@ -144,7 +144,7 @@ export class Db {
    */
   async #migrateAuditTableIfNeeded(auditTable: string): Promise<void> {
     const rows = await this.#worker.query<{ sql: string }>(
-      `SELECT sql FROM sqlite_master WHERE type='table' AND name=?`,
+      'SELECT sql FROM sqlite_master WHERE type=\'table\' AND name=?',
       [auditTable],
     );
     if (rows.length === 0) return; // table does not exist yet — nothing to migrate

@@ -465,10 +465,10 @@ export class ServerDispatcher {
           const isDelete = isDeletedCursor(cursor);
           this.#logger.error(
             `[SD] Client neither applied nor declined an S2C record ${MAX_CONSECUTIVE_IGNORES} times in a row `
-            + `(while answering the dispatches it was sent in), so the server has DROPPED the pending update for `
-            + `this record to avoid an unbounded re-send loop. Execution has NOT stopped and the server continues to `
-            + `run normally — but this should never happen and is important to investigate: the client is likely stuck `
-            + `and will not receive this record's current state until it next changes.`,
+            + '(while answering the dispatches it was sent in), so the server has DROPPED the pending update for '
+            + 'this record to avoid an unbounded re-send loop. Execution has NOT stopped and the server continues to '
+            + 'run normally — but this should never happen and is important to investigate: the client is likely stuck '
+            + 'and will not receive this record\'s current state until it next changes.',
             {
               clientId: this.#props.clientId ?? 'unknown',
               collectionName: colName,

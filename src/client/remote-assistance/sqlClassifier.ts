@@ -2,6 +2,7 @@ type SqlClass = { isMutating: boolean; firstKeyword: string };
 
 function stripLeadingCommentsAndWhitespace(sql: string): string {
   let s = sql;
+  // eslint-disable-next-line no-constant-condition
   while (true) {
     const trimmed = s.trimStart();
     if (trimmed.startsWith('--')) {

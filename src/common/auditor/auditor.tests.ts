@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import type { Record as MXDBRecord } from '@anupheaus/common';
+import type { Record as MXDBRecord, Logger } from '@anupheaus/common';
 import { decodeTime } from 'ulidx';
 import {
   auditor,
@@ -170,7 +170,7 @@ describe('auditor core API', () => {
         ],
       } as AuditOf<TestRecord>;
       const warns: string[] = [];
-      const logger = { warn: (m: string) => { warns.push(m); } } as import('@anupheaus/common').Logger;
+      const logger = { warn: (m: string) => { warns.push(m); } } as Logger;
       expect(auditor.isAudit(syncPending, true, logger)).toBe(false);
       expect(warns).toHaveLength(1);
       expect(warns[0]).toMatch(/isAudit rejected .* fullAudit=true/);

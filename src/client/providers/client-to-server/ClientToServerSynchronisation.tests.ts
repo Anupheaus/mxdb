@@ -6,7 +6,7 @@ const mockCdStart = vi.fn();
 const mockCdStop = vi.fn();
 const mockCdEnqueue = vi.fn();
 
-vi.mock('../../../common/sync-engine', async (importOriginal) => {
+vi.mock('../../../common/sync-engine', async importOriginal => {
   const actual = await importOriginal() as object;
   return {
     ...actual,

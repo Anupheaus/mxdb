@@ -26,8 +26,7 @@ function fromDoc<TRecord extends NexusAuthRecord>(doc: AuthDoc<TRecord>): TRecor
   return { requestId: _id, ...rest } as unknown as TRecord;
 }
 
-export abstract class AuthCollection<TRecord extends NexusAuthRecord>
-  implements NexusAuthStore<TRecord> {
+export abstract class AuthCollection<TRecord extends NexusAuthRecord> implements NexusAuthStore<TRecord> {
 
   constructor(db: ServerDb) {
     this.#coll = this.#init(db);

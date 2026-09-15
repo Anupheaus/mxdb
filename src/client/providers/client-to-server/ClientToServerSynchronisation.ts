@@ -3,7 +3,7 @@ import type { MXDBCollection } from '../../../common';
 import { auditor } from '../../../common';
 import {
   ClientDispatcher,
-  ClientReceiver,
+  type ClientReceiver,
   type ClientDispatcherRequest,
   type MXDBRecordStates,
   type MXDBRecordStatesRequest,

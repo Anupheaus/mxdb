@@ -104,6 +104,7 @@ export class ClientDispatcher {
     const startEpoch = this.#epoch;
     const interval = this.#props.timerInterval ?? 250;
 
+    // eslint-disable-next-line no-constant-condition
     while (true) {
       if (this.#epoch !== startEpoch) return;
 

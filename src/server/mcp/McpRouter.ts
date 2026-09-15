@@ -115,12 +115,12 @@ export async function dispatchMcpJsonRpc(
     }
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Internal error';
-    const code =
-      message === 'MXDB_REMOTE_SQL_TIMEOUT' ? -32000 :
-      message === 'tool_not_found' ? -32601 :
-      message.startsWith('invalid_') ? -32602 :
-      message === 'socket_not_found' ? -32000 :
-      -32000;
+    const codeMap: Record<string, number> = {
+      MXDB_REMOTE_SQL_TIMEOUT: -32000,
+      tool_not_found: -32601,
+      socket_not_found: -32000,
+    };
+    const code = codeMap[message] ?? (message.startsWith('invalid_') ? -32602 : -32000);
 
     return {
       jsonrpc: '2.0',

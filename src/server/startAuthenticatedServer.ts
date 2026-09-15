@@ -122,27 +122,27 @@ export async function startAuthenticatedServer({
   const socketAuth =
     auth.mode === 'webauthn'
       ? configureAuthentication({
-          mode: 'webauthn',
-          store: authColl as WebAuthnAuthCollection,
-          onGetInviteDetails: async (userId, accountId) => {
-            if (auth.onGetInviteDetails == null)
-              throw new Error('onGetInviteDetails is required for WebAuthn servers');
-            return auth.onGetInviteDetails(userId, accountId);
-          },
-          onGetUser: buildOnGetUser(auth),
-        })
+        mode: 'webauthn',
+        store: authColl as WebAuthnAuthCollection,
+        onGetInviteDetails: async (userId, accountId) => {
+          if (auth.onGetInviteDetails == null)
+            throw new Error('onGetInviteDetails is required for WebAuthn servers');
+          return auth.onGetInviteDetails(userId, accountId);
+        },
+        onGetUser: buildOnGetUser(auth),
+      })
       : configureAuthentication({
-          mode: 'google-oauth',
-          store: authColl as unknown as GoogleOAuthAuthCollection,
-          clientId: auth.clientId,
-          clientSecret: auth.clientSecret,
-          redirectUri: auth.redirectUri,
-          baseScopes: auth.baseScopes,
-          capacitorCallbackUrl: auth.capacitorCallbackUrl,
-          syncUserToClient: auth.syncUserToClient ?? false,
-          onGetUser: buildOnGetUser(auth),
-          onCreateUser: auth.onCreateUser,
-        });
+        mode: 'google-oauth',
+        store: authColl as unknown as GoogleOAuthAuthCollection,
+        clientId: auth.clientId,
+        clientSecret: auth.clientSecret,
+        redirectUri: auth.redirectUri,
+        baseScopes: auth.baseScopes,
+        capacitorCallbackUrl: auth.capacitorCallbackUrl,
+        syncUserToClient: auth.syncUserToClient ?? false,
+        onGetUser: buildOnGetUser(auth),
+        onCreateUser: auth.onCreateUser,
+      });
 
   logger?.info('[startAuthenticatedServer] calling startSocketServer');
   const { app, startListening, stopListening } = await startSocketServer({

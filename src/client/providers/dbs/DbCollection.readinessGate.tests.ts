@@ -40,10 +40,8 @@ async function drainMicrotasks(): Promise<void> {
  * Build a collection whose `ready` promise is gated on a manual release, so a server-sync
  * write can be applied while the DB is still "opening".
  */
-function createGatedCollection(): {
-  collection: DbCollection<TestRecord>;
-  openDb: () => void;
-} {
+type GatedCollectionResult = { collection: DbCollection<TestRecord>; openDb: () => void };
+function createGatedCollection(): GatedCollectionResult {
   const worker = new SqliteWorkerClient();
   const ddl = buildTableDDL(collectionConfig.name, [], true);
   let release!: () => void;

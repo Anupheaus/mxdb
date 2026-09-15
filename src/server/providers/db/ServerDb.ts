@@ -157,7 +157,7 @@ export class ServerDb {
         this.#logger.info(`[ServerDb] connect.mongoClient.connected (attempt ${attempt}, ${connectMs}ms)`);
         const db = this.#client.db(this.#mongoDbName);
         this.#resetConnectBackoff();
-        this.#logger.info(`[ServerDb] connect.db.handle ready — starting changeStream watcher`);
+        this.#logger.info('[ServerDb] connect.db.handle ready — starting changeStream watcher');
         this.#startWatching(db);
         this.#logger.info(`[ServerDb] connect.done (total ${Date.now() - startedAt}ms)`);
         return db;
