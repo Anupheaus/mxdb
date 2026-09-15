@@ -57,10 +57,8 @@ export const MXDBSync = createComponent('MXDBSync', ({
 
   const conflictResolutionContext = useMemo(() => ({ onConflictResolution }), [onConflictResolution]);
 
-  const onPrfRef = useRef<
-    ((userId: string, prfOutput: ArrayBuffer, accountId?: string) => void | Promise<void>) | undefined
-  // eslint-disable-next-line indent -- false positive: closing > of multiline TS generic
-  >(undefined);
+  type OnPrfCallback = ((userId: string, prfOutput: ArrayBuffer, accountId?: string) => void | Promise<void>) | undefined;
+  const onPrfRef = useRef<OnPrfCallback>(undefined);
 
   const handlePrf = useBound(
     (userId: string, prfOutput: ArrayBuffer, accountId?: string) =>
