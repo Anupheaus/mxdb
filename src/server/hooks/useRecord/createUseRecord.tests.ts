@@ -96,7 +96,7 @@ describe('createUseRecord (server)', () => {
 
   it('merges helper results into the returned object', async () => {
     const useOrder = createUseRecord('order', collection, {
-      hydrateRecord: (r) => r ?? { id: '', name: 'New' },
+      hydrateRecord: r => r ?? { id: '', name: 'New' },
       helpers: ctx => ({ isSpecial: ctx.order?.name === 'Special' }),
     });
     mockGet.mockResolvedValue({ id: '1', name: 'Special' });
