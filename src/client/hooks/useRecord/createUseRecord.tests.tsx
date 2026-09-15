@@ -130,7 +130,7 @@ describe('createUseRecord (client)', () => {
   it('get static hook returns named record, isLoading, and error', () => {
     mockUseGet.mockReturnValue({ record: { id: '1', name: 'A' }, isLoading: false, error: undefined });
     const useOrder = createUseRecord('order', collection, {
-      hydrateRecord: (r) => r ?? { id: '', name: '' },
+      hydrateRecord: r => r ?? { id: '', name: '' },
     });
     const { result, unmount: u } = renderHook(() => useOrder.get('1'));
     unmount = u;
@@ -141,7 +141,7 @@ describe('createUseRecord (client)', () => {
 
   it('get static hook delegates to useCollection.useGet with the given id', () => {
     const useOrder = createUseRecord('order', collection, {
-      hydrateRecord: (r) => r ?? { id: '', name: '' },
+      hydrateRecord: r => r ?? { id: '', name: '' },
     });
     renderHook(() => useOrder.get('abc'));
     expect(mockUseGet).toHaveBeenCalledWith('abc');
@@ -150,7 +150,7 @@ describe('createUseRecord (client)', () => {
   it('get static hook returns undefined when record not found', () => {
     mockUseGet.mockReturnValue({ record: undefined, isLoading: false, error: undefined });
     const useOrder = createUseRecord('order', collection, {
-      hydrateRecord: (r) => r ?? { id: '', name: '' },
+      hydrateRecord: r => r ?? { id: '', name: '' },
     });
     const { result, unmount: u } = renderHook(() => useOrder.get('missing'));
     unmount = u;
@@ -162,7 +162,7 @@ describe('createUseRecord (client)', () => {
   it('getAll static hook returns named records, isLoading, and error', () => {
     mockUseGetAll.mockReturnValue({ records: [{ id: '1' }], isLoading: false, error: undefined });
     const useOrder = createUseRecord('order', collection, {
-      hydrateRecord: (r) => r ?? { id: '', name: '' },
+      hydrateRecord: r => r ?? { id: '', name: '' },
     });
     const { result, unmount: u } = renderHook(() => useOrder.getAll());
     unmount = u;
@@ -172,7 +172,7 @@ describe('createUseRecord (client)', () => {
 
   it('getAll static hook calls useCollection.useGetAll', () => {
     const useOrder = createUseRecord('order', collection, {
-      hydrateRecord: (r) => r ?? { id: '', name: '' },
+      hydrateRecord: r => r ?? { id: '', name: '' },
     });
     renderHook(() => useOrder.getAll());
     expect(mockUseGetAll).toHaveBeenCalled();
@@ -183,7 +183,7 @@ describe('createUseRecord (client)', () => {
   it('find static hook returns first matching record', () => {
     mockUseQuery.mockReturnValue({ records: [{ id: '1', status: 'active' }], isLoading: false, total: 1 });
     const useOrder = createUseRecord('order', collection, {
-      hydrateRecord: (r) => r ?? { id: '', name: '' },
+      hydrateRecord: r => r ?? { id: '', name: '' },
     });
     const { result, unmount: u } = renderHook(() => useOrder.find({ status: 'active' } as any));
     unmount = u;
@@ -192,7 +192,7 @@ describe('createUseRecord (client)', () => {
 
   it('find static hook passes filters to useQuery', () => {
     const useOrder = createUseRecord('order', collection, {
-      hydrateRecord: (r) => r ?? { id: '', name: '' },
+      hydrateRecord: r => r ?? { id: '', name: '' },
     });
     renderHook(() => useOrder.find({ status: 'active' } as any));
     expect(mockUseQuery).toHaveBeenCalledWith({ filters: { status: 'active' } });
@@ -201,7 +201,7 @@ describe('createUseRecord (client)', () => {
   it('find static hook returns undefined when no records match', () => {
     mockUseQuery.mockReturnValue({ records: [], isLoading: false, total: 0 });
     const useOrder = createUseRecord('order', collection, {
-      hydrateRecord: (r) => r ?? { id: '', name: '' },
+      hydrateRecord: r => r ?? { id: '', name: '' },
     });
     const { result, unmount: u } = renderHook(() => useOrder.find({ status: 'gone' } as any));
     unmount = u;
@@ -213,7 +213,7 @@ describe('createUseRecord (client)', () => {
   it('query static hook returns named records, isLoading, and total', () => {
     mockUseQuery.mockReturnValue({ records: [{ id: '1' }], isLoading: false, total: 2 });
     const useOrder = createUseRecord('order', collection, {
-      hydrateRecord: (r) => r ?? { id: '', name: '' },
+      hydrateRecord: r => r ?? { id: '', name: '' },
     });
     const { result, unmount: u } = renderHook(() => useOrder.query());
     unmount = u;
@@ -224,7 +224,7 @@ describe('createUseRecord (client)', () => {
 
   it('query static hook passes QueryProps to useQuery', () => {
     const useOrder = createUseRecord('order', collection, {
-      hydrateRecord: (r) => r ?? { id: '', name: '' },
+      hydrateRecord: r => r ?? { id: '', name: '' },
     });
     renderHook(() => useOrder.query({ filters: { status: 'active' } as any }));
     expect(mockUseQuery).toHaveBeenCalledWith({ filters: { status: 'active' } });
@@ -235,7 +235,7 @@ describe('createUseRecord (client)', () => {
   it('distinct static hook returns values, isLoading, and error', () => {
     mockUseDistinct.mockReturnValue({ values: ['pending', 'active'], isLoading: false, error: undefined });
     const useOrder = createUseRecord('order', collection, {
-      hydrateRecord: (r) => r ?? { id: '', name: '' },
+      hydrateRecord: r => r ?? { id: '', name: '' },
     });
     const { result, unmount: u } = renderHook(() => useOrder.distinct('status' as any));
     unmount = u;
@@ -245,7 +245,7 @@ describe('createUseRecord (client)', () => {
 
   it('distinct static hook delegates to useCollection.useDistinct with the given field', () => {
     const useOrder = createUseRecord('order', collection, {
-      hydrateRecord: (r) => r ?? { id: '', name: '' },
+      hydrateRecord: r => r ?? { id: '', name: '' },
     });
     renderHook(() => useOrder.distinct('status' as any));
     expect(mockUseDistinct).toHaveBeenCalledWith('status');
@@ -269,7 +269,7 @@ describe('createUseRecord (client) — autoSave', () => {
 
   function makeHook() {
     return createUseRecord('order', collection, {
-      hydrateRecord: (r) => r ?? { id: 'id-1', name: '' },
+      hydrateRecord: r => r ?? { id: 'id-1', name: '' },
     });
   }
 
