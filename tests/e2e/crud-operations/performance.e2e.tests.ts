@@ -8,6 +8,7 @@ import {
   useServer,
   waitForAllClientsIdle,
   waitForClientRecord,
+  waitUntilAsync,
 } from '../setup';
 import { connectBoth, newRecordId } from './utils';
 
@@ -305,11 +306,16 @@ describe('e2e performance tests', () => {
       `sync of ${SMALL} records to B took ${elapsed}ms, threshold ${THRESHOLDS.syncPropagationTotal}ms`,
     ).toBeLessThan(THRESHOLDS.syncPropagationTotal);
 
-    const snap = b.getGetAllSubscriptionSnapshot();
-    const snapIds = new Set(snap.map(r => r.id));
-    for (const record of records) {
-      expect(snapIds.has(record.id), `B snapshot missing ${record.id}`).toBe(true);
-    }
+    // The reactive subscription debounces its re-query by 50ms after SQLite writes arrive,
+    // so wait for the snapshot to reflect all records rather than checking immediately.
+    await waitUntilAsync(
+      () => {
+        const snapIds = new Set(b.getGetAllSubscriptionSnapshot().map(r => r.id));
+        return records.every(r => snapIds.has(r.id));
+      },
+      `B get-all snapshot contains all ${SMALL} synced records`,
+      5_000,
+    );
   }, 120_000);
 
   // ── get-all subscription initial snapshot ────────────────────────────────────
@@ -330,11 +336,16 @@ describe('e2e performance tests', () => {
     await Promise.all(records.map(r => waitForClientRecord(b, r.id, `B has ${r.id}`)));
     const elapsed = Date.now() - start;
 
-    const snap = b.getGetAllSubscriptionSnapshot();
-    const snapIds = new Set(snap.map(r => r.id));
-    for (const id of ids) {
-      expect(snapIds.has(id), `B get-all snapshot missing ${id}`).toBe(true);
-    }
+    // The reactive subscription debounces its re-query by 50ms after SQLite writes arrive,
+    // so wait for the snapshot to reflect all records rather than checking immediately.
+    await waitUntilAsync(
+      () => {
+        const snapIds = new Set(b.getGetAllSubscriptionSnapshot().map(r => r.id));
+        return [...ids].every(id => snapIds.has(id));
+      },
+      `B get-all snapshot contains all ${MEDIUM} pre-existing records`,
+      5_000,
+    );
 
     expect(
       elapsed,
