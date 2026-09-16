@@ -143,9 +143,6 @@
   },
   "pnpm": {
     "overrides": {
-      "@anupheaus/common": "file:../common",
-      "@anupheaus/react-ui": "file:../react-ui",
-      "@anupheaus/nexus": "file:../nexus",
       "socket.io-parser": ">=4.2.7",
       "engine.io": ">=6.6.7",
       "ws": ">=8.21.0",

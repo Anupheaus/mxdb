@@ -15,6 +15,9 @@ jobs:
   # ── PREPARE ────────────────────────────────────────────────────────────────
   Prepare:
     name: Install Dependencies
+    concurrency:
+      group: prepare-${{ github.ref }}
+      cancel-in-progress: true
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -26,12 +29,14 @@ jobs:
           pnpm-version: ${{ env.PNPM_VERSION }}
           node-version: ${{ env.NODE_VERSION }}
           node-auth-token: ${{ secrets.GITHUB_TOKEN }}
-          workspace-repos: 'Anupheaus/common Anupheaus/react-ui Anupheaus/nexus'
           install-args: '--no-frozen-lockfile'
 
   # ── VALIDATE (parallel) ────────────────────────────────────────────────────
   Validate-TypeCheck:
     name: Type check
+    concurrency:
+      group: validate-typecheck-${{ github.ref }}
+      cancel-in-progress: true
     needs: Prepare
     runs-on: ubuntu-latest
     permissions:
@@ -44,13 +49,15 @@ jobs:
           pnpm-version: ${{ env.PNPM_VERSION }}
           node-version: ${{ env.NODE_VERSION }}
           node-auth-token: ${{ secrets.GITHUB_TOKEN }}
-          workspace-repos: 'Anupheaus/common Anupheaus/react-ui Anupheaus/nexus'
           install-args: '--no-frozen-lockfile'
       - name: Type check
         run: pnpm exec tsc --noEmit --project tsconfig.ci.json
 
   Validate-Lint:
     name: Lint
+    concurrency:
+      group: validate-lint-${{ github.ref }}
+      cancel-in-progress: true
     needs: Prepare
     runs-on: ubuntu-latest
     permissions:
@@ -63,13 +70,15 @@ jobs:
           pnpm-version: ${{ env.PNPM_VERSION }}
           node-version: ${{ env.NODE_VERSION }}
           node-auth-token: ${{ secrets.GITHUB_TOKEN }}
-          workspace-repos: 'Anupheaus/common Anupheaus/react-ui Anupheaus/nexus'
           install-args: '--no-frozen-lockfile'
       - name: Lint
         run: pnpm run lint
 
   Validate-Audit:
     name: Security audit
+    concurrency:
+      group: validate-audit-${{ github.ref }}
+      cancel-in-progress: true
     needs: Prepare
     runs-on: ubuntu-latest
     permissions:
@@ -82,13 +91,15 @@ jobs:
           pnpm-version: ${{ env.PNPM_VERSION }}
           node-version: ${{ env.NODE_VERSION }}
           node-auth-token: ${{ secrets.GITHUB_TOKEN }}
-          workspace-repos: 'Anupheaus/common Anupheaus/react-ui Anupheaus/nexus'
           install-args: '--no-frozen-lockfile'
       - name: Security audit
         run: pnpm audit --audit-level=high --prod
 
   Validate-Secrets:
     name: Secret detection
+    concurrency:
+      group: validate-secrets-${{ github.ref }}
+      cancel-in-progress: true
     needs: Prepare
     runs-on: ubuntu-latest
     permissions:
@@ -101,7 +112,6 @@ jobs:
           pnpm-version: ${{ env.PNPM_VERSION }}
           node-version: ${{ env.NODE_VERSION }}
           node-auth-token: ${{ secrets.GITHUB_TOKEN }}
-          workspace-repos: 'Anupheaus/common Anupheaus/react-ui Anupheaus/nexus'
           install-args: '--no-frozen-lockfile'
       - name: Secret detection (TruffleHog)
         uses: trufflesecurity/trufflehog@main
@@ -112,6 +122,9 @@ jobs:
 
   Validate-Trivy:
     name: Filesystem security scan
+    concurrency:
+      group: validate-trivy-${{ github.ref }}
+      cancel-in-progress: true
     needs: Prepare
     runs-on: ubuntu-latest
     permissions:
@@ -124,7 +137,6 @@ jobs:
           pnpm-version: ${{ env.PNPM_VERSION }}
           node-version: ${{ env.NODE_VERSION }}
           node-auth-token: ${{ secrets.GITHUB_TOKEN }}
-          workspace-repos: 'Anupheaus/common Anupheaus/react-ui Anupheaus/nexus'
           install-args: '--no-frozen-lockfile'
       - name: Filesystem security scan (Trivy)
         uses: aquasecurity/trivy-action@master
@@ -139,6 +151,9 @@ jobs:
   # ── TEST (Unit) ─────────────────────────────────────────────────────────────
   Test:
     name: Unit Tests
+    concurrency:
+      group: test-${{ github.ref }}
+      cancel-in-progress: true
     needs: Prepare
     runs-on: ubuntu-latest
     permissions:
@@ -151,7 +166,6 @@ jobs:
           pnpm-version: ${{ env.PNPM_VERSION }}
           node-version: ${{ env.NODE_VERSION }}
           node-auth-token: ${{ secrets.GITHUB_TOKEN }}
-          workspace-repos: 'Anupheaus/common Anupheaus/react-ui Anupheaus/nexus'
           install-args: '--no-frozen-lockfile'
 
       - name: Run unit tests with coverage
@@ -167,6 +181,9 @@ jobs:
   # ── TEST (CRUD E2E) ─────────────────────────────────────────────────────────
   Test-CRUD:
     name: CRUD E2E Tests
+    concurrency:
+      group: test-crud-${{ github.ref }}
+      cancel-in-progress: true
     needs: Prepare
     runs-on: ubuntu-latest
     permissions:
@@ -179,7 +196,6 @@ jobs:
           pnpm-version: ${{ env.PNPM_VERSION }}
           node-version: ${{ env.NODE_VERSION }}
           node-auth-token: ${{ secrets.GITHUB_TOKEN }}
-          workspace-repos: 'Anupheaus/common Anupheaus/react-ui Anupheaus/nexus'
           install-args: '--no-frozen-lockfile'
 
       - name: Generate TLS certificates for E2E server
@@ -217,6 +233,9 @@ jobs:
   # ── TEST (Performance E2E) — master only ────────────────────────────────────
   Test-Performance:
     name: Performance E2E Tests
+    concurrency:
+      group: test-performance-${{ github.ref }}
+      cancel-in-progress: true
     needs: Prepare
     if: github.ref == 'refs/heads/master'
     runs-on: ubuntu-latest
@@ -230,7 +249,6 @@ jobs:
           pnpm-version: ${{ env.PNPM_VERSION }}
           node-version: ${{ env.NODE_VERSION }}
           node-auth-token: ${{ secrets.GITHUB_TOKEN }}
-          workspace-repos: 'Anupheaus/common Anupheaus/react-ui Anupheaus/nexus'
           install-args: '--no-frozen-lockfile'
 
       - name: Generate TLS certificates for E2E server
@@ -268,6 +286,9 @@ jobs:
   # ── TEST (Stress) — master only ─────────────────────────────────────────────
   Test-Stress:
     name: Stress Tests
+    concurrency:
+      group: test-stress-${{ github.ref }}
+      cancel-in-progress: true
     needs: Prepare
     if: github.ref == 'refs/heads/master'
     runs-on: ubuntu-latest
@@ -281,7 +302,6 @@ jobs:
           pnpm-version: ${{ env.PNPM_VERSION }}
           node-version: ${{ env.NODE_VERSION }}
           node-auth-token: ${{ secrets.GITHUB_TOKEN }}
-          workspace-repos: 'Anupheaus/common Anupheaus/react-ui Anupheaus/nexus'
           install-args: '--no-frozen-lockfile'
 
       - name: Generate TLS certificates for E2E server
@@ -319,37 +339,42 @@ jobs:
   # ── PUBLISH — master only, after all tests ───────────────────────────────────
   Publish:
     name: Build and Publish
+    concurrency:
+      group: publish-${{ github.ref }}
+      cancel-in-progress: false
     needs: [Validate-TypeCheck, Validate-Lint, Validate-Audit, Validate-Secrets, Validate-Trivy, Test, Test-CRUD, Test-Performance, Test-Stress]
     if: github.ref == 'refs/heads/master'
     runs-on: ubuntu-latest
     permissions:
-      contents: read
+      contents: write
       packages: write
     steps:
-      # pnpm-setup strips the @anupheaus/* file: overrides (patch-package-json) in
-      # the ephemeral working tree only and installs common/react-ui/nexus from the
-      # registry — nothing is committed back, so master keeps its local-dev overrides.
+      # @anupheaus/* resolve from the registry here — the local-dev symlinks in
+      # .pnpmfile.cjs are inert in CI because the sibling repos are not checked out.
+      # fetch-depth 0 is required so the version-bump step can push back to master.
       - name: Setup pnpm, node, and install
         uses: Anupheaus/ci-templates/.github/actions/pnpm-setup@v1
         with:
           pnpm-version: ${{ env.PNPM_VERSION }}
           node-version: ${{ env.NODE_VERSION }}
           node-auth-token: ${{ secrets.GITHUB_TOKEN }}
-          patch-package-json: 'true'
+          fetch-depth: '0'
           install-args: '--no-frozen-lockfile'
 
       - name: Build
         run: pnpm build
 
-      - name: Publish (skip if version already exists)
+      - name: Bump version
+        uses: phips28/gh-action-bump-version@master
+        with:
+          commit-message: 'CI: bumps version to {{version}} [skip ci]'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Pack
+        run: pnpm pack
+
+      - name: Publish
+        run: pnpm publish $(ls *.tgz) --no-git-checks
         env:
           NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          NAME=$(node -p "require('./package.json').name")
-          VERSION=$(node -p "require('./package.json').version")
-          if npm view "$NAME@$VERSION" version --registry=https://npm.pkg.github.com/ >/dev/null 2>&1; then
-            echo "$NAME@$VERSION already published — skipping"
-          else
-            echo "Publishing $NAME@$VERSION"
-            pnpm publish --no-git-checks
-          fi
