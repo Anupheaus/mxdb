@@ -1,3 +1,4 @@
+import type { IncomingMessage } from 'http';
 import type { ConnectionDbTarget, ConnectionHandshake } from '../../internalModels';
 import type { ServerDb } from './ServerDb';
 
@@ -38,6 +39,19 @@ export function createConnectionDbPool(makeServerDb: (target: ConnectionDbTarget
       await Promise.all(dbs.map(db => db.close()));
     },
   };
+}
+
+/**
+ * Build the `ConnectionHandshake` mxdb's routing decision needs from a REST `IncomingMessage` — the
+ * REST counterpart of the socket.io handshake used by `onResolveConnection`. There is no `auth` for
+ * REST requests; the resolver reads the host from `headers.host` and falls back to `query.account`,
+ * which covers both the invite-link host and an explicit `?account=` query param.
+ */
+export function reqToConnectionHandshake(req: IncomingMessage): ConnectionHandshake {
+  const url = req.url ?? '';
+  const qIndex = url.indexOf('?');
+  const query = qIndex >= 0 ? Object.fromEntries(new URLSearchParams(url.slice(qIndex + 1))) : {};
+  return { headers: req.headers as Record<string, unknown>, query };
 }
 
 /**

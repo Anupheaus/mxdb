@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
-import { createConnectionDbPool, resolveAndScopeConnection } from './connectionDbRouter';
+import type { IncomingMessage } from 'http';
+import { createConnectionDbPool, reqToConnectionHandshake, resolveAndScopeConnection } from './connectionDbRouter';
 import type { ConnectionDbTarget, ConnectionHandshake } from '../../internalModels';
 import type { ServerDb } from './ServerDb';
 
@@ -84,5 +85,52 @@ describe('resolveAndScopeConnection', () => {
     await resolveAndScopeConnection(handshake, { resolveConnectionDb, getOrCreateServerDb, setDb });
 
     expect(resolveConnectionDb).toHaveBeenCalledWith(handshake);
+  });
+});
+
+describe('reqToConnectionHandshake', () => {
+  const fakeReq = (url: string, headers: Record<string, unknown> = {}): IncomingMessage =>
+    ({ url, headers } as unknown as IncomingMessage);
+
+  it('carries the request headers through untouched', () => {
+    const headers = { host: 'tenant-a.vision.example.com', cookie: 'a=b' };
+    const result = reqToConnectionHandshake(fakeReq('/api/action', headers));
+
+    expect(result.headers).toBe(headers);
+  });
+
+  it('parses query params from the request URL', () => {
+    const result = reqToConnectionHandshake(fakeReq('/api/action?account=tenant-a&foo=bar'));
+
+    expect(result.query).toEqual({ account: 'tenant-a', foo: 'bar' });
+  });
+
+  it('returns an empty query object when the URL has no query string', () => {
+    const result = reqToConnectionHandshake(fakeReq('/api/action'));
+
+    expect(result.query).toEqual({});
+  });
+
+  it('returns an empty query object when req.url is undefined', () => {
+    const result = reqToConnectionHandshake({ headers: {} } as unknown as IncomingMessage);
+
+    expect(result.query).toEqual({});
+  });
+
+  it('composes with resolveAndScopeConnection using the built handshake', async () => {
+    const pooledDb = {} as unknown as ServerDb;
+    const setDb = vi.fn();
+    const getOrCreateServerDb = vi.fn(() => pooledDb);
+    const resolveConnectionDb = vi.fn(async (_h: ConnectionHandshake) => target('tenant-a'));
+    const req = fakeReq('/api/action?account=tenant-a', { host: 'tenant-a.vision.example.com' });
+
+    await resolveAndScopeConnection(reqToConnectionHandshake(req), { resolveConnectionDb, getOrCreateServerDb, setDb });
+
+    expect(resolveConnectionDb).toHaveBeenCalledWith({
+      headers: { host: 'tenant-a.vision.example.com' },
+      query: { account: 'tenant-a' },
+    });
+    expect(getOrCreateServerDb).toHaveBeenCalledWith(target('tenant-a'));
+    expect(setDb).toHaveBeenCalledWith(pooledDb);
   });
 });

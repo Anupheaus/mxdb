@@ -1,6 +1,6 @@
 import type { ServerDb, ConnectionDbPool } from './providers';
 import { setDb, setServerToClientSync, useDb } from './providers';
-import { resolveAndScopeConnection } from './providers/db/connectionDbRouter';
+import { reqToConnectionHandshake, resolveAndScopeConnection } from './providers/db/connectionDbRouter';
 import { registerClientS2C, unregisterClientS2C } from './providers/db/clientS2CStore';
 import { seedCollections } from './seeding';
 import { internalActions } from './actions';
@@ -18,6 +18,7 @@ import { GoogleOAuthAuthCollection } from './auth/GoogleOAuthAuthCollection';
 import { registerDevAuthRoute } from './auth/registerDevAuthRoute';
 import { mxdbServerToClientSyncAction } from '../common/internalActions';
 import type { Socket } from 'socket.io';
+import type { IncomingMessage } from 'http';
 import type { ConnectionHandshake, Koa, ServerAuthConfig, ServerConfig } from './internalModels';
 import type { AuthCollection } from './auth/AuthCollection';
 import type { NexusAuthRecord } from '@anupheaus/nexus/common';
@@ -125,10 +126,20 @@ export async function startAuthenticatedServer({
   >();
   const authColl = createAuthCollection(auth, db);
 
-  // Absent `resolveConnectionDb` → `onResolveConnection: undefined`, a no-op in nexus — the
-  // single-DB deployment behaviour is unchanged.
+  // Absent `resolveConnectionDb` → `onResolveConnection`/`onResolveRestConnection: undefined`, a
+  // no-op in nexus — the single-DB deployment behaviour is unchanged.
   const onResolveConnection = resolveConnectionDb == null ? undefined : async (socket: Socket) =>
     resolveAndScopeConnection(socket.handshake as unknown as ConnectionHandshake, {
+      resolveConnectionDb,
+      getOrCreateServerDb: target => dbPool.getOrCreate(target),
+      setDb,
+    });
+
+  // REST counterpart of `onResolveConnection`, run by nexus in the REST auth path before the store
+  // query (and before the isPublic gate, so it also fires for public webauthn invite/register/reauth
+  // REST actions) — this is what routes device webauthn REST calls to the tenant DB.
+  const onResolveRestConnection = resolveConnectionDb == null ? undefined : async (req: IncomingMessage) =>
+    resolveAndScopeConnection(reqToConnectionHandshake(req), {
       resolveConnectionDb,
       getOrCreateServerDb: target => dbPool.getOrCreate(target),
       setDb,
@@ -146,6 +157,7 @@ export async function startAuthenticatedServer({
         },
         onGetUser: buildOnGetUser(auth),
         onResolveConnection,
+        onResolveRestConnection,
       })
       : configureAuthentication({
         mode: 'google-oauth',
@@ -159,6 +171,7 @@ export async function startAuthenticatedServer({
         onGetUser: buildOnGetUser(auth),
         onCreateUser: auth.onCreateUser,
         onResolveConnection,
+        onResolveRestConnection,
       });
 
   logger?.info('[startAuthenticatedServer] calling startSocketServer');
