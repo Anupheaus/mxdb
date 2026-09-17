@@ -1,4 +1,5 @@
 import type { CreateInviteOptions } from '@anupheaus/nexus/server';
+import type { WebAuthnAuthRecord } from '@anupheaus/nexus/common';
 import type { MXDBDeviceInfo } from '../../common/models';
 
 export interface AuthDevicesApi {
@@ -8,6 +9,9 @@ export interface AuthDevicesApi {
   deleteDevice(requestId: string): Promise<void>;
   /** Deletes pending invites older than `ttlMs`. Returns the number removed. */
   expireStalePendingInvites(ttlMs: number): Promise<number>;
+  findById(requestId: string): Promise<WebAuthnAuthRecord | undefined>;
+  create(record: WebAuthnAuthRecord): Promise<void>;
+  update(requestId: string, patch: Partial<WebAuthnAuthRecord>): Promise<void>;
 }
 
 let authDevicesApi: AuthDevicesApi | undefined;

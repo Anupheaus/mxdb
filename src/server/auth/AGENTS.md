@@ -21,14 +21,14 @@ This auth layer is intentionally isolated from the sync collection system: `Auth
 ### Device management
 - `deviceManagement.ts` — `getDevices`, `enableDevice`, `disableDevice`, `deleteDevice`, `expireStalePendingInvites`. Registered on **`useAuthDevices()`** at startup; also exposed on the **`ServerInstance`** from `startServer`.
 - `authDevicesContext.ts` — module-level `AuthDevicesApi` store; `setAuthDevices` (called from `startServer`), `useAuthDevices()` for handlers.
-- `useAuthDevices.ts` — re-exports `authDevicesContext` (`listForUser`, `createInvite`, `setEnabled`, `deleteDevice`, `expireStalePendingInvites`).
+- `useAuthDevices.ts` — re-exports `authDevicesContext` (`listForUser`, `createInvite`, `setEnabled`, `deleteDevice`, `expireStalePendingInvites`, `findById`, `create`, `update`).
 - `parseSessionTokenFromHandshake.ts` — reads `nexus_session` / `socketapi_session` cookies, then handshake `sessionToken` (used by `startAuthenticatedServer`).
 
 ### Dev tooling
 - `registerDevAuthRoute.ts` — registers a `POST /{name}/dev/signin` Koa route that issues a dev auth token without WebAuthn. **Excluded in `NODE_ENV=production`** — this is the server-side counterpart to `setupBrowserTools`'s `setDevAuth`.
 
 ### Device management context
-- `authDevicesContext.ts` — `AuthDevicesApi` interface (`listForUser`, `createInvite`, `setEnabled`, `deleteDevice`, `expireStalePendingInvites`) plus a module-level singleton pattern: `setAuthDevices(api)` registers the implementation at startup; `useAuthDevices()` returns it and throws if called before registration
+- `authDevicesContext.ts` — `AuthDevicesApi` interface (`listForUser`, `createInvite`, `setEnabled`, `deleteDevice`, `expireStalePendingInvites`, `findById`, `create`, `update`) plus a module-level singleton pattern: `setAuthDevices(api)` registers the implementation at startup; `useAuthDevices()` returns it and throws if called before registration
 - `useAuthDevices.ts` — barrel re-export of `AuthDevicesApi`, `setAuthDevices`, and `useAuthDevices`
 
 ### Session token parsing

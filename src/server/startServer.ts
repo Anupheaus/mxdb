@@ -4,6 +4,7 @@ import { startAuthenticatedServer } from './startAuthenticatedServer';
 import { getDevices, enableDevice, disableDevice, deleteDevice, expireStalePendingInvites } from './auth/deviceManagement';
 import { setAuthDevices } from './auth/useAuthDevices';
 import { useAuthentication } from '@anupheaus/nexus/server';
+import type { WebAuthnAuthRecord } from '@anupheaus/nexus/common';
 import type { ServerConfig, ServerInstance } from './internalModels';
 
 /**
@@ -47,6 +48,9 @@ export async function startServer(config: ServerConfig): Promise<ServerInstance>
         },
         deleteDevice: remove,
         expireStalePendingInvites: async ttlMs => expireStalePendingInvites(authColl, ttlMs),
+        findById: async requestId => authColl.findById(requestId) as Promise<WebAuthnAuthRecord | undefined>,
+        create: async record => authColl.create(record),
+        update: async (requestId, patch) => authColl.update(requestId, patch),
       });
 
       const instance: ServerInstance = {

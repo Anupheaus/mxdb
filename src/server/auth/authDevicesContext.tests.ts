@@ -18,6 +18,9 @@ describe('authDevicesContext', () => {
       setEnabled: async () => undefined,
       deleteDevice: async () => undefined,
       expireStalePendingInvites: async () => 0,
+      findById: async () => undefined,
+      create: async () => undefined,
+      update: async () => undefined,
     };
     setAuthDevices(api);
     expect(useAuthDevices()).toBe(api);
