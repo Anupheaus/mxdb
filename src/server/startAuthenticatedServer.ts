@@ -1,5 +1,5 @@
 import type { ServerDb, ConnectionDbPool } from './providers';
-import { setDb, setServerToClientSync } from './providers';
+import { setDb, setServerToClientSync, useDb } from './providers';
 import { resolveAndScopeConnection } from './providers/db/connectionDbRouter';
 import { registerClientS2C, unregisterClientS2C } from './providers/db/clientS2CStore';
 import { seedCollections } from './seeding';
@@ -212,7 +212,11 @@ export async function startAuthenticatedServer({
       const emitAdminSqlQuery = useAction(mxdbAdminClientSqlQueryAction);
       const s2c = new ServerToClientSynchronisation({
         emitS2C: async payload => emitS2C(payload),
-        getDb: () => db,
+        // Resolved fresh via useDb() (not the captured startup `db`) so a per-connection
+        // scoped tenant DB (Phase 2a's setDb, run in the same scope as onClientConnected)
+        // is what S2C reads/writes against. Falls back to the global default outside any
+        // connection scope (single-DB deployments — unchanged behaviour).
+        getDb: () => useDb(),
         collections,
         logger: s2cLogger,
         clientId: client.id,

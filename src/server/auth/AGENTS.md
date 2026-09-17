@@ -11,7 +11,7 @@ This auth layer is intentionally isolated from the sync collection system: `Auth
 ## Contents
 
 ### Auth strategy classes
-- `AuthCollection.ts` — abstract base class; implements `SocketAPIAuthStore<TRecord>`. Handles `mxdb_authentication` collection setup (TTL index on `expiresAt`, sparse index on `userId`), `requestId` ↔ `_id` mapping, and CRUD helpers (`findAllByUserId`, `create`, `update`, `delete`). Subclasses override `createIndexes()` to add strategy-specific indexes (call `super.createIndexes()` first).
+- `AuthCollection.ts` — abstract base class; implements `SocketAPIAuthStore<TRecord>`. Handles `mxdb_authentication` collection setup (TTL index on `expiresAt`, sparse index on `userId`), `requestId` ↔ `_id` mapping, and CRUD helpers (`findAllByUserId`, `create`, `update`, `delete`). Subclasses override `createIndexes()` to add strategy-specific indexes (call `super.createIndexes()` first). Every query resolves its `ServerDb` fresh via `useDb()` (not the db captured by the constructor) so per-connection routing (`connectionDbRouter.ts`'s `setDb`, run before the auth store is queried) redirects a long-lived `AuthCollection` instance at the current tenant DB; one initialized (collection-ensured + indexed) Mongo collection is cached per distinct `ServerDb` seen. The constructor argument is kept only as a fallback for callers outside any `provideDb`/`useDb` scope.
 - `WebAuthnAuthCollection.ts` — concrete subclass for WebAuthn/passkey auth. Adds sparse indexes on `registrationToken` and `keyHash`; implements `WebAuthnAuthStore` interface.
 - `GoogleOAuthAuthCollection.ts` — concrete subclass for Google OAuth. Implements `GoogleOAuthAuthStore` interface; currently no extra indexes beyond the base.
 
@@ -61,10 +61,11 @@ SocketAPIAuthStore (socket-api interface)
 - **`AuthCollection` is NOT a `ServerDbCollection`** — it bypasses the sync pipeline entirely. Do not pass auth records to `extendCollection` hooks or expect them to appear in change-stream events.
 - **Dev auth route is excluded in production** — `registerDevAuthRoute.ts` is only registered when `NODE_ENV !== 'production'`. The client's `setupBrowserTools` `setDevAuth` helper will silently fail in prod because the endpoint does not exist.
 - **Single `mxdb_authentication` MongoDB collection** — all auth strategy records share one collection (`mxdb_authentication`). Strategy subclasses distinguish records by their schema shape, not by collection name.
+- **`AuthCollection` queries the CURRENT `useDb()`, not the constructor db** — a single `AuthCollection` instance is constructed once at startup and reused for every connection; each query re-resolves `useDb()` so per-connection tenant routing (Phase 2a's `setDb`) works. Only falls back to the constructor-captured db when `useDb()` throws (no scope at all — e.g. ad-hoc tooling outside `provideDb`).
 
 ## Related
 
 - [../AGENTS.md](../AGENTS.md) — parent server directory
 - [../hooks/AGENTS.md](../hooks/AGENTS.md) — `useClient()` provides auth context (userId, token) inside handlers
-- [../providers/db/AGENTS.md](../providers/db/AGENTS.md) — `ServerDb` passed to `AuthCollection` constructor
+- [../providers/db/AGENTS.md](../providers/db/AGENTS.md) — `ServerDb`/`useDb()`; `AuthCollection`'s constructor argument is now only a fallback
 - [../../client/auth/deriveKey.ts](../../client/auth/deriveKey.ts) — client-side PRF key derivation (counterpart to WebAuthn server auth)

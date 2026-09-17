@@ -1,5 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { NexusAuthRecord } from '@anupheaus/nexus/common';
+import { createAsyncContext } from '@anupheaus/nexus/server';
+import { setDb } from '../providers';
 import type { ServerDb } from '../providers';
 import type { AuthCollection as AuthCollectionType } from './AuthCollection';
 
@@ -140,5 +142,97 @@ describe('AuthCollection (base class)', () => {
     });
     expect(results).toHaveLength(1);
     expect(results[0]).toEqual(expect.objectContaining({ requestId: 'invite-1' }));
+  });
+});
+
+/**
+ * Phase 2b: queries must resolve the ServerDb via `useDb()` at call time (per-connection
+ * routing, Phase 2a's `setDb`), not the db captured by the constructor. Each fake db here has
+ * its own independent Mongo mocks (unlike `makeFakeDb()` above, which shares module-level
+ * mocks) so a query hitting the wrong db is directly observable.
+ *
+ * `wrap()` below is obtained purely to enter a nested async-context scope — it shares nexus's
+ * module-level `chainStorage` with mxdb's real `setDb`/`useDb`, so this is the same mechanism
+ * nexus's own per-connection `wrap()` uses around `onClientConnected` in production (see
+ * `connectionDbRouter.ts`'s `resolveAndScopeConnection` and `startAuthenticatedServer.ts`).
+ */
+describe('AuthCollection — per-connection routing via useDb()', () => {
+  const { wrap } = createAsyncContext({});
+
+  function makeDistinctFakeDb(doc: unknown): { db: ServerDb; findOne: ReturnType<typeof vi.fn> } {
+    const findOne = vi.fn().mockResolvedValue(doc);
+    const collection = {
+      findOne,
+      insertOne: vi.fn(),
+      find: vi.fn(),
+      updateOne: vi.fn(),
+      deleteOne: vi.fn(),
+      createIndex: vi.fn(),
+    };
+    const db = {
+      getMongoDb: vi.fn().mockResolvedValue({
+        listCollections: vi.fn().mockReturnValue({ toArray: vi.fn().mockResolvedValue([{ name: 'mxdb_authentication' }]) }),
+        createCollection: vi.fn().mockResolvedValue(collection),
+        collection: vi.fn().mockReturnValue(collection),
+      }),
+    } as unknown as ServerDb;
+    return { db, findOne };
+  }
+
+  it('queries the ServerDb set inside the current connection scope, not the constructor-captured db', async () => {
+    const constructorDb = makeDistinctFakeDb({ _id: 'ctor', sessionToken: 'ctor-tok', userId: 'u', deviceId: 'd', isEnabled: true });
+    const tenantDb = makeDistinctFakeDb({ _id: 'tenant', sessionToken: 'tenant-tok', userId: 'u', deviceId: 'd', isEnabled: true });
+    const coll = new ConcreteCollection(constructorDb.db);
+
+    let result: NexusAuthRecord | undefined;
+    await wrap(() => ({}), async () => {
+      setDb(tenantDb.db); // mirrors Phase 2a's router calling setDb inside the connection scope
+      result = await coll.findById('anything');
+    })();
+
+    expect(result).toEqual(expect.objectContaining({ requestId: 'tenant' }));
+    expect(tenantDb.findOne).toHaveBeenCalledTimes(1);
+    expect(constructorDb.findOne).not.toHaveBeenCalled();
+  });
+
+  it('routes two different tenant scopes on the SAME long-lived AuthCollection instance to their own db', async () => {
+    const constructorDb = makeDistinctFakeDb({ _id: 'ctor', sessionToken: 'ctor-tok', userId: 'u', deviceId: 'd', isEnabled: true });
+    const tenantA = makeDistinctFakeDb({ _id: 'tenant-a', sessionToken: 'a-tok', userId: 'u', deviceId: 'd', isEnabled: true });
+    const tenantB = makeDistinctFakeDb({ _id: 'tenant-b', sessionToken: 'b-tok', userId: 'u', deviceId: 'd', isEnabled: true });
+    const coll = new ConcreteCollection(constructorDb.db);
+
+    let resultA: NexusAuthRecord | undefined;
+    let resultB: NexusAuthRecord | undefined;
+    await wrap(() => ({}), async () => {
+      setDb(tenantA.db);
+      resultA = await coll.findById('a');
+    })();
+    await wrap(() => ({}), async () => {
+      setDb(tenantB.db);
+      resultB = await coll.findById('b');
+    })();
+
+    expect(resultA).toEqual(expect.objectContaining({ requestId: 'tenant-a' }));
+    expect(resultB).toEqual(expect.objectContaining({ requestId: 'tenant-b' }));
+    expect(tenantA.findOne).toHaveBeenCalledTimes(1);
+    expect(tenantB.findOne).toHaveBeenCalledTimes(1);
+    expect(constructorDb.findOne).not.toHaveBeenCalled();
+  });
+
+  // Kept last in this file: sets the REAL global default (no active scope), which persists
+  // for the remainder of the module's lifetime — later tests in THIS file must not depend on
+  // no global being set.
+  it('falls back to the global default ServerDb (set by provideDb at startup) outside any connection scope', async () => {
+    const constructorDb = makeDistinctFakeDb({ _id: 'ctor', sessionToken: 'ctor-tok', userId: 'u', deviceId: 'd', isEnabled: true });
+    const globalDb = makeDistinctFakeDb({ _id: 'global', sessionToken: 'global-tok', userId: 'u', deviceId: 'd', isEnabled: true });
+    const coll = new ConcreteCollection(constructorDb.db);
+
+    setDb(globalDb.db); // called with no active scope → sets the global default, exactly like provideDb() at startup
+
+    const result = await coll.findById('anything');
+
+    expect(result).toEqual(expect.objectContaining({ requestId: 'global' }));
+    expect(globalDb.findOne).toHaveBeenCalledTimes(1);
+    expect(constructorDb.findOne).not.toHaveBeenCalled();
   });
 });

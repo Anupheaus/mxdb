@@ -39,7 +39,7 @@ See [hooks/AGENTS.md](hooks/AGENTS.md) for the full directory. Key exports:
 - `useClient()` — client id and user id for the current socket context
 
 ### S2C synchronisation
-- `ServerToClientSynchronisation.ts` — per-socket `ServerDispatcher` lifecycle; receives change-stream events and pushes S2C cursors to connected clients
+- `ServerToClientSynchronisation.ts` — per-socket `ServerDispatcher` lifecycle; receives change-stream events and pushes S2C cursors to connected clients. The real instance built in `startAuthenticatedServer.ts`'s `onClientConnected` is given `getDb: () => useDb()` (not the startup-captured `db`), so per-connection routing (Phase 2a's `setDb`) redirects S2C reads at the current tenant DB; absent a connection scope it resolves the global default, unchanged from before
 
 ### MCP endpoint (`mcp/`)
 JSON-RPC 2.0 server at `POST /mcp` exposing `mxdb_clients_list` and `mxdb_client_sqlite_query` tools. Auth: Bearer API key + IP allowlist (`MXDB_MCP_API_KEY`, `MXDB_MCP_IP_ALLOWLIST`). See [mcp/AGENTS.md](mcp/AGENTS.md).

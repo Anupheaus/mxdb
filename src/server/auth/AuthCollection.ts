@@ -11,6 +11,7 @@
 import type { Collection } from 'mongodb';
 import type { NexusAuthRecord, NexusAuthStore } from '@anupheaus/nexus/common';
 import type { ServerDb } from '../providers';
+import { useDb } from '../providers';
 
 const COLLECTION_NAME = 'mxdb_authentication';
 
@@ -28,15 +29,47 @@ function fromDoc<TRecord extends NexusAuthRecord>(doc: AuthDoc<TRecord>): TRecor
 
 export abstract class AuthCollection<TRecord extends NexusAuthRecord> implements NexusAuthStore<TRecord> {
 
+  /**
+   * `db` is kept only as a fallback for callers that construct an `AuthCollection` outside any
+   * `provideDb`/`useDb` scope (e.g. ad-hoc tooling). Queries never target it directly — see
+   * `#getServerDb()`.
+   */
   constructor(db: ServerDb) {
-    this.#coll = this.#init(db);
+    this.#fallbackDb = db;
   }
 
-  #coll: Promise<Collection<AuthDoc<TRecord>>>;
+  #fallbackDb: ServerDb;
+  /** One initialized (collection-ensured + indexed) Mongo collection per distinct `ServerDb` seen,
+   *  so per-connection routing (Phase 2a) can redirect the SAME `AuthCollection` instance at
+   *  different tenant databases without re-running collection setup on every query. */
+  #collByServerDb = new WeakMap<ServerDb, Promise<Collection<AuthDoc<TRecord>>>>();
 
-  /** Returns the underlying MongoDB collection. Subclasses use this for extra queries. */
+  /**
+   * Resolves the `ServerDb` this operation should query: the per-connection DB set by the
+   * router (Phase 2a's `setDb`) when called inside a connection scope, otherwise the global
+   * default `ServerDb` set by `provideDb` at startup — resolved fresh via `useDb()` on every
+   * call so a single long-lived `AuthCollection` instance always targets the CURRENT db.
+   * Falls back to the constructor-captured db if `useDb()` throws (no scope established at
+   * all — see constructor doc).
+   */
+  #getServerDb(): ServerDb {
+    try {
+      return useDb();
+    } catch {
+      return this.#fallbackDb;
+    }
+  }
+
+  /** Returns the underlying MongoDB collection for the CURRENT `ServerDb` (see `#getServerDb`).
+   *  Subclasses use this for extra queries. */
   protected async getColl(): Promise<Collection<AuthDoc<TRecord>>> {
-    return this.#coll;
+    const serverDb = this.#getServerDb();
+    let coll = this.#collByServerDb.get(serverDb);
+    if (coll == null) {
+      coll = this.#init(serverDb);
+      this.#collByServerDb.set(serverDb, coll);
+    }
+    return coll;
   }
 
   async #init(serverDb: ServerDb): Promise<Collection<AuthDoc<TRecord>>> {
