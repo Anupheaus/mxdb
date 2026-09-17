@@ -15,12 +15,16 @@ interface Props {
   logger: Logger;
   /** Idle window (ms) for change stream batching; passed to ServerDbCollectionEvents. Default 20. */
   changeStreamDebounceMs?: number;
+  /** When false, the change-stream watcher is not started — for write-only callers (e.g. the controller
+   *  writing into a tenant DB whose owning server already watches it). Default true. */
+  watch?: boolean;
 }
 
 export class ServerDb {
   constructor(props: Props) {
     this.#mongoDbName = props.mongoDbName;
     this.#changeStreamDebounceMs = props.changeStreamDebounceMs;
+    this.#watch = props.watch ?? true;
     this.#client = new MongoClient(props.mongoDbUrl);
     this.#logger = props.logger.createSubLogger('ServerDb');
     this.#dbEvents = new Map();
@@ -39,6 +43,7 @@ export class ServerDb {
   #dbEvents: Map<string, ServerDbCollectionEvents>;
   #changeCallbacks: Set<(event: ServerDbChangeEvent) => void>;
   #changeStreamDebounceMs: number | undefined;
+  #watch: boolean;
   /** Fibonacci backoff for connect retries (ms); capped at 60s. Reset after a successful connect. */
   #connectBackoffMsPrev = 500;
   #connectBackoffMsCurr = 500;
@@ -157,8 +162,12 @@ export class ServerDb {
         this.#logger.info(`[ServerDb] connect.mongoClient.connected (attempt ${attempt}, ${connectMs}ms)`);
         const db = this.#client.db(this.#mongoDbName);
         this.#resetConnectBackoff();
-        this.#logger.info('[ServerDb] connect.db.handle ready — starting changeStream watcher');
-        this.#startWatching(db);
+        if (this.#watch) {
+          this.#logger.info('[ServerDb] connect.db.handle ready — starting changeStream watcher');
+          this.#startWatching(db);
+        } else {
+          this.#logger.info('[ServerDb] connect.db.handle ready — watch disabled, skipping changeStream watcher');
+        }
         this.#logger.info(`[ServerDb] connect.done (total ${Date.now() - startedAt}ms)`);
         return db;
       } catch (error) {

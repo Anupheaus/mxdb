@@ -63,6 +63,6 @@ export async function startServer(config: ServerConfig): Promise<ServerInstance>
       }
 
       return instance;
-    }, changeStreamDebounceMs),
+    }, { changeStreamDebounceMs }),
   );
 }

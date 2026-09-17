@@ -4,14 +4,20 @@ import { ServerDb } from './ServerDb';
 import type { MXDBCollection } from '../../../common';
 import { ServerToClientSynchronisation } from '../../ServerToClientSynchronisation';
 
+export interface ProvideDbOptions {
+  changeStreamDebounceMs?: number;
+  watch?: boolean;
+}
+
 export function provideDb<R>(
   mongoDbName: string,
   mongoDbUrl: string,
   collections: MXDBCollection[],
   delegate: (db: ServerDb) => R,
-  changeStreamDebounceMs?: number,
+  options?: ProvideDbOptions,
 ): R {
   const logger = useLogger();
+  const { changeStreamDebounceMs, watch } = options ?? {};
 
   const db = new ServerDb({
     mongoDbName,
@@ -19,6 +25,7 @@ export function provideDb<R>(
     collections,
     logger,
     changeStreamDebounceMs,
+    watch,
   });
 
   setDb(db);
