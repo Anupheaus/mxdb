@@ -9,13 +9,14 @@ MongoDB persistence layer: connection, collection CRUD with audit, change stream
 ## Contents
 
 ### Database
-- `ServerDb.ts` — `ServerDb` — `MongoClient` wrapper; creates `ServerDbCollection` per config, opens change stream, fans out change events per collection
+- `ServerDb.ts` — `ServerDb` — `MongoClient` wrapper; creates `ServerDbCollection` per config, opens change stream, fans out change events per collection. Constructor takes a `watch?: boolean` prop (default **true**); when `false`, the change-stream watcher is never started (`#startWatching` is skipped after connect) — for write-only callers such as a controller writing into a tenant DB whose owning server already watches it
 - `ServerDbCollection.ts` — per-collection CRUD with audit: `get`, `getAll`, `find`, `query`, `upsert`, `remove`, `sync` (sync-engine write path), `distinct`, `clear`
 - `ServerDbCollectionEvents.ts` — debounced change-stream fan-out; accumulates events within `changeStreamDebounceMs`, runs `onAfter*` hooks, then notifies the socket layer via registered callbacks
 
 ### Context
 - `DbContext.ts` — `AsyncLocalStorage`-based context
-- `provideDb.ts` — `provideDb(mongoDbName, url, collections, cb)` — creates `ServerDb`, runs `cb` inside the storage context
+- `provideDb.ts` — `provideDb(mongoDbName, url, collections, cb, options?)` — creates a `ServerDb`, runs `cb` inside the storage context. `options` is `{ changeStreamDebounceMs?, watch? }` (5th positional arg, both optional)
+- `withDb.ts` — `withDb(db, delegate)` — scopes the ambient context to an **existing** `ServerDb` and runs `delegate`, without constructing a new connection. For reusing a cached `ServerDb` (e.g. one built earlier via `provideDb(..., { watch: false })`) across multiple calls instead of reconnecting each time. Establishes a no-op server→client sync, since the owning server's own change stream (if any) already propagates the write
 - `useDb.ts` — `useDb()` — retrieves `ServerDb` from async context
 
 ### Models and utilities
@@ -41,6 +42,7 @@ Change stream lifecycle:
 - **Retry backoff in `sync()`** handles transient close errors (`isTransientMongoCloseError`); all other errors are returned as `SyncWriteResult.error` and reported back to the client without retrying.
 - **`changeStreamDebounceMs` trades latency for throughput** — lower values dispatch faster but increase per-event load. Default 20ms.
 - **`AsyncLocalStorage` context must be active** for `useDb()` to work. If you see "no ServerDb in context" in tests, ensure the call is wrapped in `provideDb`.
+- **`watch: false` means no change stream at all** — inserts/updates/deletes on that `ServerDb` never fire `onAfter*` extension hooks and never notify connected clients. Only use it for a `ServerDb` whose collection(s) are already watched elsewhere (e.g. the owning server's own default `ServerDb`), and reuse that one `ServerDb` instance via `withDb()` rather than constructing a fresh watch-free connection per call.
 
 ## Related
 
