@@ -40,6 +40,13 @@ let db: OO1Db | null = null;
 let sqlite3: Sqlite3 | null = null;
 const ports = new Map<string, PortEntry>();
 
+// [LOCK-DIAG] Unique per SharedWorker *instance*. If two distinct ids appear in the logs for the
+// same dbName, two SharedWorker instances are alive at once (e.g. worker URL changed across a dev
+// restart) — that would explain a cross-instance lock conflict. A single id points to an in-instance
+// close→reopen race instead.
+const WORKER_INSTANCE_ID = ulid(); // [LOCK-DIAG]
+console.warn('[LOCK-DIAG] SharedWorker instance booted', { t: Date.now(), workerInstance: WORKER_INSTANCE_ID }); // [LOCK-DIAG]
+
 // Per-database encryption state
 let cryptoKey: CryptoKey | null = null;
 let encryptedFileName = '';
@@ -86,6 +93,8 @@ async function handleOpen(
   correlationId: string,
 ) {
   try {
+    // [LOCK-DIAG] Entry snapshot: which instance, requested db, and current open state.
+    console.warn('[LOCK-DIAG] handleOpen ENTER', { t: Date.now(), workerInstance: WORKER_INSTANCE_ID, dbName, currentlyOpenDbName: openDbName, dbIsNull: db == null, lockHeld: lockRef.release != null }); // [LOCK-DIAG]
     const acquired = await acquireDbLock(dbName, lockRef);
     if (!acquired) {
       replyErrorOn(port, correlationId, new Error(`Database "${dbName}" is already open in another context.`));
@@ -236,6 +245,7 @@ function handleQueryMulti(
 
 async function handleClose(port: MessagePort, correlationId: string) {
   try {
+    console.warn('[LOCK-DIAG] handleClose ENTER', { t: Date.now(), workerInstance: WORKER_INSTANCE_ID, openDbName, dbIsNull: db == null }); // [LOCK-DIAG]
     if (db && sqlite3 && cryptoKey) await flushEncrypted(sqlite3, db, cryptoKey, encryptedFileName);
     db?.close();
     db = null;

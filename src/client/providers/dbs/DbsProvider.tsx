@@ -30,6 +30,10 @@ export const DbsProvider = createComponent('DbsProvider', ({
     if (encryptionKey == null) {
       throw new Error('MXDB: DbsProvider requires an encryptionKey — unencrypted local storage is not permitted. Derive a key via WebAuthn PRF (deriveEncryptionKey) before opening the database.');
     }
+    // [LOCK-DIAG] This useMemo re-running is what drives the close→reopen churn. Logging the deps'
+    // identities tells us WHICH dep changed on reconnect (encryptionKey is the prime suspect — a
+    // fresh Uint8Array is produced on every re-auth).
+    console.warn('[LOCK-DIAG] DbsProvider useMemo RE-RUN (close→open)', { t: Date.now(), name, collectionsCount: collections.length }); // [LOCK-DIAG]
     dbs.close(name);
     const configurations = collections.map(collection => configRegistry.getOrError(collection));
     const db = dbs.open(name, configurations, encryptionKey, logger);

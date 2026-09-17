@@ -18,6 +18,7 @@ Normative **target behaviour** and **long-form design** (implementation may lag 
 | [plans/client-to-server-synchronisation.md](./plans/client-to-server-synchronisation.md) | **`ClientToServerSynchronisation`**, **`mxdbClientToServerSyncAction`**, debounce, queue, phase B gate |
 | [plans/server-to-client-synchronisation.md](./plans/server-to-client-synchronisation.md) | **`ServerToClientSynchronisation`**, mirror, **`mxdbServerToClientSyncAction`**, ack |
 | [plans/client-record-creation-sync.md](./plans/client-record-creation-sync.md) | Local-first creates vs server reconciliation |
+| [plans/virtual-collections.md](./plans/virtual-collections.md) | Server-only projected collections & public (JWT-scoped) read access |
 | [plans/design.md](./plans/design.md) | Master design spec, auditor semantics, platform notes (WebAuthn, OPFS, Cordova), change plan |
 
 ## History (`archive/`)
