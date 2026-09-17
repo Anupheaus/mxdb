@@ -37,6 +37,12 @@ export interface GoogleOAuthServerAuthConfig {
 
 export type ServerAuthConfig = WebAuthnServerAuthConfig | GoogleOAuthServerAuthConfig;
 
+/** Target database for a per-connection routing decision — see `ServerConfig.resolveConnectionDb`. */
+export interface ConnectionDbTarget { dbName: string; mongoDbUrl: string; }
+
+/** Minimal shape mxdb needs from the socket.io handshake to make a routing decision. */
+export interface ConnectionHandshake { headers: Record<string, unknown>; auth?: Record<string, unknown>; query?: Record<string, unknown>; }
+
 export interface ServerConfig extends Omit<StartSocketServerConfig, 'auth'> {
   collections: MXDBCollection[];
   mongoDbUrl: string;
@@ -52,6 +58,13 @@ export interface ServerConfig extends Omit<StartSocketServerConfig, 'auth'> {
     account?: MXDBAccount;
     reason: 'signedOut' | 'connectionLost';
   }): PromiseMaybe<void>;
+  /**
+   * Optional per-connection database router. When supplied, it is called (inside the per-connection
+   * auth scope, before authentication) with the socket handshake; returning a target scopes THIS
+   * connection to that database. Returning null leaves the connection on the default (startup) DB.
+   * Absent → no per-connection routing (single-DB behaviour, unchanged).
+   */
+  resolveConnectionDb?(handshake: ConnectionHandshake): Promise<ConnectionDbTarget | null>;
 }
 
 export interface ServerInstance {

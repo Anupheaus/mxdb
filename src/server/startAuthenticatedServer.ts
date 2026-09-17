@@ -1,5 +1,6 @@
-import type { ServerDb } from './providers';
-import { setServerToClientSync } from './providers';
+import type { ServerDb, ConnectionDbPool } from './providers';
+import { setDb, setServerToClientSync } from './providers';
+import { resolveAndScopeConnection } from './providers/db/connectionDbRouter';
 import { registerClientS2C, unregisterClientS2C } from './providers/db/clientS2CStore';
 import { seedCollections } from './seeding';
 import { internalActions } from './actions';
@@ -17,7 +18,7 @@ import { GoogleOAuthAuthCollection } from './auth/GoogleOAuthAuthCollection';
 import { registerDevAuthRoute } from './auth/registerDevAuthRoute';
 import { mxdbServerToClientSyncAction } from '../common/internalActions';
 import type { Socket } from 'socket.io';
-import type { Koa, ServerAuthConfig, ServerConfig } from './internalModels';
+import type { ConnectionHandshake, Koa, ServerAuthConfig, ServerConfig } from './internalModels';
 import type { AuthCollection } from './auth/AuthCollection';
 import type { NexusAuthRecord } from '@anupheaus/nexus/common';
 import { Logger } from '@anupheaus/common';
@@ -67,6 +68,9 @@ export function listConnectedClients(): ConnectedClientInfo[] {
 
 interface Props extends ServerConfig {
   db: ServerDb;
+  /** Pool of per-tenant `ServerDb` instances for connections routed via `resolveConnectionDb`.
+   *  Never populated when `resolveConnectionDb` is not supplied. */
+  dbPool: ConnectionDbPool;
 }
 
 function parseSessionToken(client: Socket): string | undefined {
@@ -99,6 +103,7 @@ function createAuthCollection(
 
 export async function startAuthenticatedServer({
   db,
+  dbPool,
   shouldSeedCollections,
   collections,
   logger,
@@ -111,6 +116,7 @@ export async function startAuthenticatedServer({
   onGetAccountDetails,
   auth,
   changeStreamDebounceMs,
+  resolveConnectionDb,
   ...config
 }: Props): Promise<{ app: Koa; authColl: AuthCollection<NexusAuthRecord>; startListening: () => Promise<void>; stopListening: () => Promise<void> }> {
   const { configureAuthentication, useAuthentication } = defineAuthentication<
@@ -118,6 +124,15 @@ export async function startAuthenticatedServer({
     MXDBAccount
   >();
   const authColl = createAuthCollection(auth, db);
+
+  // Absent `resolveConnectionDb` → `onResolveConnection: undefined`, a no-op in nexus — the
+  // single-DB deployment behaviour is unchanged.
+  const onResolveConnection = resolveConnectionDb == null ? undefined : async (socket: Socket) =>
+    resolveAndScopeConnection(socket.handshake as unknown as ConnectionHandshake, {
+      resolveConnectionDb,
+      getOrCreateServerDb: target => dbPool.getOrCreate(target),
+      setDb,
+    });
 
   const socketAuth =
     auth.mode === 'webauthn'
@@ -130,6 +145,7 @@ export async function startAuthenticatedServer({
           return auth.onGetInviteDetails(userId, accountId);
         },
         onGetUser: buildOnGetUser(auth),
+        onResolveConnection,
       })
       : configureAuthentication({
         mode: 'google-oauth',
@@ -142,6 +158,7 @@ export async function startAuthenticatedServer({
         syncUserToClient: auth.syncUserToClient ?? false,
         onGetUser: buildOnGetUser(auth),
         onCreateUser: auth.onCreateUser,
+        onResolveConnection,
       });
 
   logger?.info('[startAuthenticatedServer] calling startSocketServer');

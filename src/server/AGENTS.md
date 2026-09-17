@@ -10,7 +10,7 @@ Exposes one public function (`startServer`) and one composable extension hook (`
 
 ### Entry points
 - `startServer.ts` — `startServer(config)` — main async init; connects to MongoDB, starts socket server, returns `ServerInstance`
-- `startAuthenticatedServer.ts` — inner bootstrap called by `startServer`; wires auth namespace, socket actions, and Koa. Registers per-socket S2C **before** auth `await`s so C2S handlers never hit a no-op S2C fallback during connect.
+- `startAuthenticatedServer.ts` — inner bootstrap called by `startServer`; wires auth namespace, socket actions, and Koa. Registers per-socket S2C **before** auth `await`s so C2S handlers never hit a no-op S2C fallback during connect. When `config.resolveConnectionDb` is supplied, builds an `onResolveConnection` callback (via `connectionDbRouter.resolveAndScopeConnection`) and passes it into `configureAuthentication`, so nexus runs it inside the per-connection auth scope, before the auth store is queried; absent, `onResolveConnection` is `undefined` — a no-op in nexus
 - `index.ts` exports — `useAuthDevices()` for invite/device admin inside socket actions and HTTP routes (after `startServer`)
 
 ### Collections API (`collections/`)
@@ -51,7 +51,7 @@ JSON-RPC 2.0 server at `POST /mcp` exposing `mxdb_clients_list` and `mxdb_client
 ### Utilities / internal
 - `subscriptionDataStore.ts` — per-client key-value store used by subscriptions to track prior data (e.g. previous record ids for getAll diffs)
 - `clientDbWatches.ts` — tracks which clients are subscribed to which collections
-- `internalModels.ts` — `ServerConfig` and `ServerInstance` type definitions
+- `internalModels.ts` — `ServerConfig` and `ServerInstance` type definitions, plus `ConnectionDbTarget`/`ConnectionHandshake` for the optional `resolveConnectionDb` per-connection DB router
 
 ### Remote MCP (admin / AI integration)
 

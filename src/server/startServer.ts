@@ -1,4 +1,4 @@
-import { provideDb } from './providers';
+import { provideDb, ServerDb, createConnectionDbPool } from './providers';
 import { Logger } from '@anupheaus/common';
 import { startAuthenticatedServer } from './startAuthenticatedServer';
 import { getDevices, enableDevice, disableDevice, deleteDevice, expireStalePendingInvites } from './auth/deviceManagement';
@@ -22,13 +22,24 @@ export async function startServer(config: ServerConfig): Promise<ServerInstance>
 
   logger.info('[startServer] begin', { name, mongoDbName, collectionCount: collections.length });
 
+  // Pool of ServerDb instances for connections routed to a non-default tenant database via
+  // `config.resolveConnectionDb` (see `connectionDbRouter.ts`). Unused — and never populated —
+  // when `resolveConnectionDb` is not supplied, so the single-DB deployment is unaffected.
+  const dbPool = createConnectionDbPool(target => new ServerDb({
+    mongoDbName: target.dbName,
+    mongoDbUrl: target.mongoDbUrl,
+    collections,
+    logger: logger!,
+    watch: true,
+  }));
+
   return logger.provide(() =>
     provideDb(mongoDbName, mongoDbUrl, collections, async db => {
       logger!.info('[startServer] provideDb — waiting for Mongo');
       await db.getMongoDb();
       logger!.info('[startServer] Mongo connected');
 
-      const { app, authColl, startListening, stopListening } = await startAuthenticatedServer({ ...config, db, logger });
+      const { app, authColl, startListening, stopListening } = await startAuthenticatedServer({ ...config, db, logger, dbPool });
 
       if (app == null) throw new Error('Failed to start server');
 
@@ -59,7 +70,7 @@ export async function startServer(config: ServerConfig): Promise<ServerInstance>
         enableDevice: enable,
         disableDevice: disable,
         deleteDevice: remove,
-        close: async () => { await stopListening(); await db.close(); },
+        close: async () => { await stopListening(); await db.close(); await dbPool.closeAll(); },
       };
 
       if (config.auth.mode === 'webauthn') {

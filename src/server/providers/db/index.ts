@@ -3,3 +3,4 @@ export * from './provideDb';
 export * from './ServerDb';
 export * from './ServerDbCollection';
 export * from './withDb';
+export * from './connectionDbRouter';
