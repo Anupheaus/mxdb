@@ -35,6 +35,11 @@ export default defineConfig({
   resolve: { alias },
   test: {
     environment: 'node',
+    // In CI there is no sibling ../react-ui/src, so `@anupheaus/react-ui` resolves to its published
+    // dist in node_modules. Left externalised, its `@mui/material/styles` subpath import is handed to
+    // Node's native ESM loader, which rejects it as a directory import (ERR_UNSUPPORTED_DIR_IMPORT).
+    // Inlining react-ui + its heavy UI deps makes Vite resolve those subpaths to concrete files.
+    server: { deps: { inline: [/@anupheaus\/react-ui/, /@mui\//, /@emotion\//, /@uiw\//] } },
     include: [
       'src/**/*.tests.ts',
       'src/**/*.tests.tsx',

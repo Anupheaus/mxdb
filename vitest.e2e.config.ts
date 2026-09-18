@@ -72,6 +72,11 @@ export default defineConfig(({ mode }) => {
       // respects preload-tls.cjs for wss:// to the self-signed e2e HTTPS server. Browser
       // globals come from installBrowserEnvironment() in vitestGlobals.ts.
       environment: 'node',
+      // See vitest.config.ts: inline react-ui + its UI deps so Vite resolves the `@mui/material/styles`
+      // subpath to a concrete file. Without a sibling ../react-ui/src (CI), the externalised dist import
+      // otherwise reaches Node's ESM loader and fails as a directory import (ERR_UNSUPPORTED_DIR_IMPORT),
+      // making the client-importing e2e suites fail to load (0 tests).
+      server: { deps: { inline: [/@anupheaus\/react-ui/, /@mui\//, /@emotion\//, /@uiw\//] } },
       include,
       exclude,
       testTimeout,
