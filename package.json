@@ -82,7 +82,7 @@
   "typings": "./dist/server.d.ts",
   "dependencies": {
     "@anupheaus/common": "^0.2.1",
-    "@anupheaus/nexus": "^1.1.0",
+    "@anupheaus/nexus": "^1.1.1",
     "@anupheaus/react-ui": "^0.0.86",
     "@faker-js/faker": "^10.5.0",
     "@sqlite.org/sqlite-wasm": "3.51.2-build8",
