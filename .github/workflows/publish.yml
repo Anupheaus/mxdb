@@ -227,6 +227,19 @@ jobs:
             -out tests/e2e/setup/certs/localhost.crt \
             -extfile /tmp/localhost.ext
 
+      - name: DIAG react-ui resolution
+        run: |
+          echo "=== committed lockfile: @anupheaus/react-ui specifier+version ==="
+          grep -n -A2 "'@anupheaus/react-ui':" pnpm-lock.yaml | head -6 || true
+          echo "=== resolved packages of react-ui in lockfile ==="
+          grep -oE "@anupheaus/react-ui@[0-9.]+" pnpm-lock.yaml | sort -u || true
+          echo "=== react-ui versions materialised in node_modules/.pnpm ==="
+          ls node_modules/.pnpm 2>/dev/null | grep -i react-ui || echo "(none in .pnpm)"
+          echo "=== pnpm why @anupheaus/react-ui (what pulls each version) ==="
+          pnpm why @anupheaus/react-ui || true
+          echo "=== version actually resolved by mxdb's import path ==="
+          node -e "const p=require.resolve('@anupheaus/react-ui/package.json'); console.log(p, require(p).version)" || true
+
       - name: Run CRUD E2E tests
         run: pnpm run test:crud
 
