@@ -94,7 +94,13 @@ export default defineConfig(({ mode }) => {
           optimizer: {
             ssr: {
               enabled: true,
-              include: ['@anupheaus/react-ui', '@mui/material', '@mui/x-date-pickers', '@emotion/react', '@emotion/styled'],
+              // Vite's SSR optimizer only bundles the packages listed here and externalises everything
+              // else, so every dep in react-ui's chain that has a problematic import (a @mui v5 directory
+              // import, or a .css import) must be listed explicitly. @uiw/* ship the .css stubbed below.
+              include: [
+                '@anupheaus/react-ui', '@mui/material', '@mui/x-date-pickers', '@emotion/react', '@emotion/styled',
+                '@uiw/react-md-editor', '@uiw/react-markdown-preview',
+              ],
               // esbuild bundles react-ui's transitive .css imports (via @uiw/react-md-editor) too; stub
               // them to empty modules so the prebundle doesn't emit CSS that Node can't load
               // (ERR_UNKNOWN_FILE_EXTENSION). Mirrors the `css: true` handling for Vite's own pipeline.
