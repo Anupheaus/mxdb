@@ -3,20 +3,18 @@ import path from 'path';
 import fs from 'fs';
 import { vitestE2eTlsEnv } from './tests/e2e/setup/vitestTlsEnv';
 
-// Minimal shape of the esbuild plugin build API we use (avoids importing esbuild's types, which are
-// only transitively installed). Stubs CSS to empty modules during the SSR dep prebundle (see
-// deps.optimizer.ssr below). onResolve claims every .css import into a private namespace so esbuild
-// does not externalise it (an externalised .css would reach Node → ERR_UNKNOWN_FILE_EXTENSION); the
-// matching onLoad then returns an empty module.
-interface EsbuildBuild {
-  onResolve(options: { filter: RegExp }, callback: (args: { path: string }) => { path: string; namespace: string }): void;
-  onLoad(options: { filter: RegExp; namespace?: string }, callback: () => { contents: string; loader: 'js' }): void;
-}
-const esbuildCssStubPlugin = {
-  name: 'stub-css',
-  setup(build: EsbuildBuild) {
-    build.onResolve({ filter: /\.css$/ }, (args) => ({ path: args.path, namespace: 'css-stub' }));
-    build.onLoad({ filter: /.*/, namespace: 'css-stub' }, () => ({ contents: '', loader: 'js' }));
+// TEMP DIAGNOSTIC (CI only): log whether react-ui / @mui / @uiw modules pass through Vite's transform
+// pipeline (inlined) or are handed to Node (externalised). If we never see react-ui's dist here, it is
+// being externalised despite server.deps.inline — which is what breaks @mui subpath resolution in CI.
+const diagInlinePlugin = {
+  name: 'diag-inline',
+  enforce: 'pre' as const,
+  load(id: string) {
+    if (process.env.CI && /(@anupheaus\/react-ui|@mui\/material|@uiw\/react-md|react-async-script)/.test(id)) {
+      // eslint-disable-next-line no-console
+      console.error('[DIAG-LOAD-VIA-VITE]', id.replace(/.*node_modules\//, ''));
+    }
+    return null;
   },
 };
 
@@ -75,6 +73,7 @@ export default defineConfig(({ mode }) => {
   const testTimeout = isStress ? 300_000 : 120_000;
 
   return {
+    plugins: [diagInlinePlugin],
     resolve: sharedResolve,
     test: {
       env: vitestE2eTlsEnv(__dirname),
@@ -83,40 +82,10 @@ export default defineConfig(({ mode }) => {
       // respects preload-tls.cjs for wss:// to the self-signed e2e HTTPS server. Browser
       // globals come from installBrowserEnvironment() in vitestGlobals.ts.
       environment: 'node',
-      // react-ui ships an ESM dist that externalises @mui v5, whose bare subpath imports (e.g.
-      // `@mui/material/styles` → `@mui/utils/formatMuiErrorMessage`) are directory imports Node's ESM
-      // loader rejects with ERR_UNSUPPORTED_DIR_IMPORT. `server.deps.inline` should make Vite transform
-      // them, but on Linux CI (in this e2e context) react-ui's node_modules dist was still externalised
-      // and reached Node's loader. So in CI we ALSO esbuild-prebundle react-ui + its MUI/emotion deps via
-      // deps.optimizer.ssr: esbuild is a bundler and resolves those directory imports at bundle time,
-      // regardless of the SSR externalisation heuristics. Gated to CI (no sibling react-ui src) because
-      // the SSR optimizer trips ERR_UNSUPPORTED_ESM_URL_SCHEME on Windows; locally react-ui is aliased to
-      // sibling src and transformed directly, so the optimizer is not needed.
-      deps: reactUiSrc
-        ? undefined
-        : {
-          optimizer: {
-            ssr: {
-              enabled: true,
-              // Vite's SSR optimizer only bundles the packages listed here and externalises everything
-              // else, so every dep in react-ui's chain that has a problematic import (a @mui v5 directory
-              // import, or a .css import) must be listed explicitly. @uiw/* ship the .css stubbed below.
-              include: [
-                '@anupheaus/react-ui', '@mui/material', '@mui/x-date-pickers', '@emotion/react', '@emotion/styled',
-                '@uiw/react-md-editor', '@uiw/react-markdown-preview',
-              ],
-              // esbuild bundles react-ui's transitive .css imports (via @uiw/react-md-editor) too; stub
-              // them to empty modules so the prebundle doesn't emit CSS that Node can't load
-              // (ERR_UNKNOWN_FILE_EXTENSION). Mirrors the `css: true` handling for Vite's own pipeline.
-              esbuildOptions: { plugins: [esbuildCssStubPlugin] },
-            },
-          },
-        },
+      // Inline react-ui + its MUI/emotion/uiw deps so Vite transforms them (resolving @mui v5's bare
+      // subpath directory imports and CSS) instead of handing the ESM dist to Node's loader.
       server: { deps: { inline: [/@anupheaus\/react-ui/, /@mui\//, /@emotion\//, /@uiw\//] } },
-      // Handle react-ui's transitive CSS imports (via @uiw/react-md-editor) the same way the unit
-      // config does. `css: true` (Vitest returns empty modules for CSS) — NOT a custom stub plugin —
-      // is required for react-ui to stay inlined on Linux CI; with a plugin-based .css stub instead,
-      // Vite externalised react-ui's ESM dist and its @mui subpaths hit Node's loader (dir-import error).
+      // Handle react-ui's transitive CSS imports (via @uiw/react-md-editor) the same way the unit config does.
       css: true,
       include,
       exclude,
