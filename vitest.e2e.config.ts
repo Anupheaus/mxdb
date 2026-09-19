@@ -25,8 +25,11 @@ if (socketApiSrc) {
 }
 const commonSrc = localAlias('../common/src');
 if (commonSrc) alias['@anupheaus/common'] = commonSrc;
+// Always alias react-ui to a concrete path so Vite transforms it (rather than externalising its ESM
+// dist to Node, whose loader rejects @mui v5's bare subpath directory imports). Sibling src when
+// present (local/dev), else the installed node_modules package (CI).
 const reactUiSrc = localAlias('../react-ui/src');
-if (reactUiSrc) alias['@anupheaus/react-ui'] = reactUiSrc;
+alias['@anupheaus/react-ui'] = reactUiSrc ?? path.resolve(__dirname, 'node_modules/@anupheaus/react-ui');
 
 const sharedResolve = { alias };
 
@@ -72,10 +75,11 @@ export default defineConfig(({ mode }) => {
       // respects preload-tls.cjs for wss:// to the self-signed e2e HTTPS server. Browser
       // globals come from installBrowserEnvironment() in vitestGlobals.ts.
       environment: 'node',
-      // See vitest.config.ts: inline react-ui + its UI deps so Vite resolves the `@mui/material/styles`
-      // subpath to a concrete file. Without a sibling ../react-ui/src (CI), the externalised dist import
-      // otherwise reaches Node's ESM loader and fails as a directory import (ERR_UNSUPPORTED_DIR_IMPORT),
-      // making the client-importing e2e suites fail to load (0 tests).
+      // react-ui is ALWAYS aliased (sibling src locally, node_modules dist in CI — see `resolve.alias`)
+      // so Vite transforms it; combined with inlining @mui/@emotion/@uiw, its @mui v5 subpath imports
+      // resolve at bundle time. Without the CI alias, react-ui's externalised ESM dist reaches Node's
+      // loader and its bare @mui subpaths throw ERR_UNSUPPORTED_DIR_IMPORT (in the forks pool
+      // `server.deps.inline` alone did not reliably transform the node_modules ESM dist).
       server: { deps: { inline: [/@anupheaus\/react-ui/, /@mui\//, /@emotion\//, /@uiw\//] } },
       include,
       exclude,
