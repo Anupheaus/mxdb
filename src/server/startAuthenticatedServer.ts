@@ -10,6 +10,7 @@ import {
   useAuthentication as useSocketAuthentication,
 } from '@anupheaus/nexus/server';
 import { defineAuthentication } from '@anupheaus/nexus/server';
+import type { TLSCertificate } from '@anupheaus/nexus/server';
 import { internalSubscriptions } from './subscriptions';
 import { addClientWatches, removeClientWatches } from './clientDbWatches';
 import { ServerToClientSynchronisation } from './ServerToClientSynchronisation';
@@ -119,7 +120,7 @@ export async function startAuthenticatedServer({
   changeStreamDebounceMs,
   resolveConnectionDb,
   ...config
-}: Props): Promise<{ app: Koa; authColl: AuthCollection<NexusAuthRecord>; startListening: () => Promise<void>; stopListening: () => Promise<void> }> {
+}: Props): Promise<{ app: Koa; authColl: AuthCollection<NexusAuthRecord>; startListening: () => Promise<void>; stopListening: () => Promise<void>; updateCertificate: (cert: TLSCertificate) => void }> {
   const { configureAuthentication, useAuthentication } = defineAuthentication<
     MXDBUser,
     MXDBAccount
@@ -175,7 +176,7 @@ export async function startAuthenticatedServer({
       });
 
   logger?.info('[startAuthenticatedServer] calling startSocketServer');
-  const { app, startListening, stopListening } = await startSocketServer({
+  const { app, startListening, stopListening, updateCertificate } = await startSocketServer({
     ...config,
     logger,
     actions: [...internalActions, ...(actions ?? [])],
@@ -333,5 +334,5 @@ export async function startAuthenticatedServer({
 
   logger?.info('[startAuthenticatedServer] done');
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  return { app: app as any as Koa, authColl, startListening, stopListening };
+  return { app: app as any as Koa, authColl, startListening, stopListening, updateCertificate };
 }

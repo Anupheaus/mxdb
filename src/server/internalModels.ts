@@ -3,7 +3,7 @@ import type { Server as HttpServer } from 'http';
 import type { Server as HttpsServer } from 'https';
 import type { MXDBAccount, MXDBDeviceInfo, MXDBUser } from '../common/models';
 import type { MXDBCollection } from '../common';
-import type { ServerConfig as StartSocketServerConfig } from '@anupheaus/nexus/server';
+import type { ServerConfig as StartSocketServerConfig, TLSCertificate } from '@anupheaus/nexus/server';
 import type { CreateInviteOptions } from '@anupheaus/nexus/server';
 import type { InviteDetails } from '@anupheaus/nexus/common';
 import type { GoogleProfile } from '@anupheaus/nexus/common';
@@ -75,5 +75,10 @@ export interface ServerInstance {
   enableDevice(requestId: string): Promise<void>;
   disableDevice(requestId: string): Promise<void>;
   deleteDevice(requestId: string): Promise<void>;
+  /**
+   * Hot-swap the server's TLS certificate without a restart (via nexus `setSecureContext`) — for cert
+   * renewal. No-op when the server is not HTTPS.
+   */
+  updateCertificate(cert: TLSCertificate): void;
   close(): Promise<void>;
 }
