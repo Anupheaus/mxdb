@@ -3,33 +3,6 @@ import path from 'path';
 import fs from 'fs';
 import { vitestE2eTlsEnv } from './tests/e2e/setup/vitestTlsEnv';
 
-// @mui v5 packages have no `exports` map, so a bare subpath that points at a directory (e.g.
-// `@mui/utils/formatMuiErrorMessage`, imported by the inlined `@mui/material/styles/index.js`) does not
-// resolve to a file. Vite leaves such an unresolved bare import external, and Node then rejects the
-// directory import (ERR_UNSUPPORTED_DIR_IMPORT). This resolver rewrites any extensionless `@mui/*`
-// subpath to its `/index.js` so it resolves to a real file (whether it ends up inlined or externalised).
-interface ResolvePluginContext {
-  resolve(
-    source: string,
-    importer: string | undefined,
-    options: { skipSelf: boolean },
-  ): Promise<{ id: string } | null>;
-}
-const muiDirectoryImportPlugin = {
-  name: 'mui-directory-import-fix',
-  enforce: 'pre' as const,
-  async resolveId(this: ResolvePluginContext, source: string, importer: string | undefined) {
-    // Only bare @mui subpaths with at least a package + one segment, and no explicit file extension.
-    if (!/^@mui\/[^/]+\/.+/.test(source) || /\.[cm]?[jt]sx?$|\.json$/.test(source)) return null;
-    const resolved = await this.resolve(`${source}/index.js`, importer, { skipSelf: true });
-    if (process.env.CI && /formatMuiErrorMessage/.test(source)) {
-      // eslint-disable-next-line no-console
-      console.error('[DIAG-RESOLVE]', source, '->', resolved ? resolved.id.replace(/.*node_modules\//, '') : 'NULL', '| importer:', importer?.replace(/.*node_modules\//, '') ?? 'none');
-    }
-    return resolved ? resolved.id : null;
-  },
-};
-
 const localAlias = (relDir: string) => {
   const relative = path.resolve(__dirname, relDir);
   if (fs.existsSync(relative)) return relative;
@@ -85,14 +58,13 @@ export default defineConfig(({ mode }) => {
   const testTimeout = isStress ? 300_000 : 120_000;
 
   return {
-    plugins: [muiDirectoryImportPlugin],
     resolve: sharedResolve,
     test: {
       env: vitestE2eTlsEnv(__dirname),
       pool: 'forks',
-      // Use Node (not Vitest's jsdom env) so engine.io-client uses the `ws` package, which
-      // respects preload-tls.cjs for wss:// to the self-signed e2e HTTPS server. Browser
-      // globals come from installBrowserEnvironment() in vitestGlobals.ts.
+      // Use Node (not Vitest's jsdom env) so engine.io-client uses the `ws` package for wss:// to the
+      // self-signed e2e HTTPS server (trusted via tlsSetup.ts + NODE_EXTRA_CA_CERTS). Browser globals
+      // come from installBrowserEnvironment() in vitestGlobals.ts.
       environment: 'node',
       // Inline react-ui + its MUI/emotion/uiw deps so Vite transforms them (resolving @mui v5's bare
       // subpath directory imports and CSS) instead of handing the ESM dist to Node's loader.
@@ -104,7 +76,7 @@ export default defineConfig(({ mode }) => {
       testTimeout,
       globals: true,
       globalSetup: ['./tests/e2e/setup/e2eGlobalSetup.ts'],
-      setupFiles: ['./tests/e2e/setup/e2eVitestSetup.ts', './tests/e2e/setup/vitestGlobals.ts'],
+      setupFiles: ['./tests/e2e/setup/tlsSetup.ts', './tests/e2e/setup/e2eVitestSetup.ts', './tests/e2e/setup/vitestGlobals.ts'],
       dangerouslyIgnoreUnhandledErrors: true,
     },
   };
