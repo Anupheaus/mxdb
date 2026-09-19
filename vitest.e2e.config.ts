@@ -68,8 +68,16 @@ export default defineConfig(({ mode }) => {
       environment: 'node',
       // react-ui ships an ESM dist that externalises @mui v5, whose bare subpath imports (e.g.
       // `@mui/material/styles` → `@mui/utils/formatMuiErrorMessage`) are directory imports Node's ESM
-      // loader rejects with ERR_UNSUPPORTED_DIR_IMPORT. Inlining react-ui + its MUI/emotion/uiw deps
-      // makes Vite transform them so those subpaths resolve at bundle time.
+      // loader rejects with ERR_UNSUPPORTED_DIR_IMPORT. `server.deps.inline` should make Vite transform
+      // them, but on Linux CI (in this e2e context) react-ui's node_modules dist was still externalised
+      // and reached Node's loader. So in CI we ALSO esbuild-prebundle react-ui + its MUI/emotion deps via
+      // deps.optimizer.ssr: esbuild is a bundler and resolves those directory imports at bundle time,
+      // regardless of the SSR externalisation heuristics. Gated to CI (no sibling react-ui src) because
+      // the SSR optimizer trips ERR_UNSUPPORTED_ESM_URL_SCHEME on Windows; locally react-ui is aliased to
+      // sibling src and transformed directly, so the optimizer is not needed.
+      deps: reactUiSrc
+        ? undefined
+        : { optimizer: { ssr: { enabled: true, include: ['@anupheaus/react-ui', '@mui/material', '@mui/x-date-pickers', '@emotion/react', '@emotion/styled'] } } },
       server: { deps: { inline: [/@anupheaus\/react-ui/, /@mui\//, /@emotion\//, /@uiw\//] } },
       // Handle react-ui's transitive CSS imports (via @uiw/react-md-editor) the same way the unit
       // config does. `css: true` (Vitest returns empty modules for CSS) — NOT a custom stub plugin —
