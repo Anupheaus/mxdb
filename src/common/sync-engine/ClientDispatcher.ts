@@ -44,6 +44,13 @@ export class ClientDispatcher {
     this.#logger.debug('[CD] ClientDispatcher created');
   }
 
+  /** True while the dispatcher is running. Goes false when stop() runs — including the
+   *  self-stop on an unauthorized dispatch — so callers can detect a dispatcher that stopped
+   *  itself and needs restarting on the next connect. */
+  get isStarted(): boolean {
+    return this.#started;
+  }
+
   enqueue(item: ClientDispatcherEnqueueItem): void {
     if (!this.#started) return;
     const key = `${item.collectionName}:${item.recordId}`;

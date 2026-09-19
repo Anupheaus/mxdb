@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { Logger } from '@anupheaus/common';
 
 let capturedCdProps: any;
+let capturedCdInstance: any;
 const mockCdStart = vi.fn();
 const mockCdStop = vi.fn();
 const mockCdEnqueue = vi.fn();
@@ -10,12 +11,17 @@ vi.mock('../../../common/sync-engine', async importOriginal => {
   const actual = await importOriginal() as object;
   return {
     ...actual,
+    // Mirror the real ClientDispatcher's #started flag so `isStarted` reflects start()/stop(),
+    // which the wrapper's start() guard relies on to detect a dispatcher that stopped itself.
     ClientDispatcher: class {
+      #started = false;
       constructor(_logger: unknown, props: unknown) {
         capturedCdProps = props;
+        capturedCdInstance = this;
       }
-      start = mockCdStart;
-      stop = mockCdStop;
+      get isStarted(): boolean { return this.#started; }
+      start() { this.#started = true; mockCdStart(); }
+      stop() { this.#started = false; mockCdStop(); }
       enqueue = mockCdEnqueue;
     },
   };
@@ -85,6 +91,24 @@ describe('ClientToServerSynchronisation', () => {
     await c2s.start();
 
     expect(mockCdStart).toHaveBeenCalledOnce();
+  });
+
+  it('restarts the dispatcher on a later start() if the dispatcher stopped itself (e.g. after an unauthorized dispatch)', async () => {
+    const db = makeDb();
+    const c2s = makeC2S(db);
+
+    await c2s.start();
+    expect(mockCdStart).toHaveBeenCalledOnce();
+
+    // Simulate the ClientDispatcher stopping itself internally — its unauthorized-dispatch path
+    // calls its own stop(), which the wrapper is never told about, leaving the wrapper's #started
+    // flag stale (true) while the dispatcher is actually stopped.
+    capturedCdInstance.stop();
+
+    // A later reconnect calls start() again. It must actually restart the dispatcher rather than
+    // no-op on the stale "already started" flag, otherwise sync never resumes on the new socket.
+    await c2s.start();
+    expect(mockCdStart).toHaveBeenCalledTimes(2);
   });
 
   it('stop calls cd.stop', async () => {

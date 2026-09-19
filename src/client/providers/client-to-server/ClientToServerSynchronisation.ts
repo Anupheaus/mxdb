@@ -88,7 +88,11 @@ export class ClientToServerSynchronisation {
    * the synchronous sync callbacks see a fully-populated in-memory layer.
    */
   async start(): Promise<void> {
-    if (this.#started) return;
+    // Re-run whenever the underlying dispatcher is not actually running, even if our own #started
+    // flag is still set. The dispatcher can stop itself (its unauthorized-dispatch path calls its
+    // own stop()) without routing through our stop(), leaving #started stale; guarding on #started
+    // alone would then no-op every future start() and sync would never resume on a later connect.
+    if (this.#started && this.#cd.isStarted) return;
     this.#started = true;
     const db = this.#getDb();
     await Promise.all(this.#collections.map(c => db.use(c.name).whenReady()));
