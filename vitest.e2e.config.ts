@@ -1,7 +1,6 @@
 import { configDefaults, defineConfig } from 'vitest/config';
 import path from 'path';
 import fs from 'fs';
-import { vitestE2eTlsEnv } from './tests/e2e/setup/vitestTlsEnv';
 
 const localAlias = (relDir: string) => {
   const relative = path.resolve(__dirname, relDir);
@@ -60,7 +59,6 @@ export default defineConfig(({ mode }) => {
   return {
     resolve: sharedResolve,
     test: {
-      env: vitestE2eTlsEnv(__dirname),
       pool: 'forks',
       // Use Node (not Vitest's jsdom env) so engine.io-client uses the `ws` package for wss:// to the
       // self-signed e2e HTTPS server (trusted via tlsSetup.ts + NODE_EXTRA_CA_CERTS). Browser globals
