@@ -27,7 +27,7 @@ const REACT_UI_OPTIMIZE_DEPS = [
   '@emotion/react', '@emotion/styled',
   '@mui/material', '@mui/x-date-pickers', '@mui/utils', '@mui/system',
   '@uiw/react-md-editor', '@uiw/react-markdown-preview',
-  'color', 'crypto-js', 'flatted', 'luxon', 'qr-code-styling', 'react-async-script',
+  'color', 'crypto-js', 'flatted', 'luxon', 'qr-code-styling',
   'react-hot-toast', 'react-icons', 'signature_pad', 'tss-react', 'use-resize-observer',
 ];
 
@@ -43,6 +43,9 @@ const localAlias = (relDir: string) => {
 const alias: Record<string, string> = {
   react: path.resolve(__dirname, 'node_modules/react'),
   'react-dom': path.resolve(__dirname, 'node_modules/react-dom'),
+  // react-ui's RecaptchaWrapper calls react-async-script's default export (a HOC loader) at module load;
+  // its CJS interop breaks under the e2e prebundle and reCAPTCHA isn't exercised by sync tests, so stub it.
+  'react-async-script': path.resolve(__dirname, 'tests/e2e/setup/stubs/react-async-script.mjs'),
 };
 
 const socketApiSrc = localAlias('../nexus/src');
