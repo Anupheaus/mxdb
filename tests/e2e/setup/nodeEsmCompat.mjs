@@ -15,24 +15,32 @@ import { stat } from 'node:fs/promises';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 export async function resolve(specifier, context, nextResolve) {
+  // @mui's dist is CJS-style code (extensionless relative imports, directory subpaths) loaded here as
+  // ESM, where Node does neither extension nor directory resolution. Emulate both.
+  const hasExt = /\.[cm]?jsx?(\?|#|$)/.test(specifier);
   let resolved;
   try {
     resolved = await nextResolve(specifier, context);
   } catch (err) {
-    // Some directory subpaths fail at resolve time; retry with an explicit /index.js.
-    if ((err?.code === 'ERR_UNSUPPORTED_DIR_IMPORT' || err?.code === 'ERR_MODULE_NOT_FOUND') && !/\.[cm]?jsx?$/.test(specifier)) {
-      return nextResolve(`${specifier}/index.js`, context);
+    if ((err?.code === 'ERR_UNSUPPORTED_DIR_IMPORT' || err?.code === 'ERR_MODULE_NOT_FOUND') && !hasExt) {
+      // Try `<specifier>.js` (a file), then `<specifier>/index.js` (a directory).
+      for (const suffix of ['.js', '/index.js']) {
+        try {
+          return await nextResolve(`${specifier}${suffix}`, context);
+        } catch { /* try the next suffix */ }
+      }
     }
     throw err;
   }
-  // If it resolved to a real directory, redirect to its index.js (the dir-import case).
-  if (resolved.url.startsWith('file:') && !/\.[cm]?jsx?(\?|#|$)/.test(resolved.url)) {
+  // Resolved, but to a real directory: redirect to its index.js (the directory-import case).
+  if (!hasExt && resolved.url.startsWith('file:') && !/\.[cm]?jsx?(\?|#|$)/.test(resolved.url)) {
     try {
-      if ((await stat(fileURLToPath(resolved.url))).isDirectory()) {
-        return { ...resolved, url: pathToFileURL(`${fileURLToPath(resolved.url)}/index.js`).href };
+      const filePath = fileURLToPath(resolved.url);
+      if ((await stat(filePath)).isDirectory()) {
+        return { ...resolved, url: pathToFileURL(`${filePath}/index.js`).href };
       }
     } catch {
-      /* not a filesystem path or missing — leave as-is */
+      /* not a filesystem path, or missing — leave as-is */
     }
   }
   return resolved;
