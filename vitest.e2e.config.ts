@@ -3,6 +3,19 @@ import path from 'path';
 import fs from 'fs';
 import { vitestE2eTlsEnv } from './tests/e2e/setup/vitestTlsEnv';
 
+// Minimal shape of the esbuild plugin build API we use (avoids importing esbuild's types, which are
+// only transitively installed). Stubs CSS to empty modules during the SSR dep prebundle (see
+// deps.optimizer.ssr below).
+interface EsbuildBuild {
+  onLoad(options: { filter: RegExp }, callback: () => { contents: string; loader: 'js' }): void;
+}
+const esbuildCssStubPlugin = {
+  name: 'stub-css',
+  setup(build: EsbuildBuild) {
+    build.onLoad({ filter: /\.css$/ }, () => ({ contents: '', loader: 'js' }));
+  },
+};
+
 const localAlias = (relDir: string) => {
   const relative = path.resolve(__dirname, relDir);
   if (fs.existsSync(relative)) return relative;
@@ -77,7 +90,18 @@ export default defineConfig(({ mode }) => {
       // sibling src and transformed directly, so the optimizer is not needed.
       deps: reactUiSrc
         ? undefined
-        : { optimizer: { ssr: { enabled: true, include: ['@anupheaus/react-ui', '@mui/material', '@mui/x-date-pickers', '@emotion/react', '@emotion/styled'] } } },
+        : {
+          optimizer: {
+            ssr: {
+              enabled: true,
+              include: ['@anupheaus/react-ui', '@mui/material', '@mui/x-date-pickers', '@emotion/react', '@emotion/styled'],
+              // esbuild bundles react-ui's transitive .css imports (via @uiw/react-md-editor) too; stub
+              // them to empty modules so the prebundle doesn't emit CSS that Node can't load
+              // (ERR_UNKNOWN_FILE_EXTENSION). Mirrors the `css: true` handling for Vite's own pipeline.
+              esbuildOptions: { plugins: [esbuildCssStubPlugin] },
+            },
+          },
+        },
       server: { deps: { inline: [/@anupheaus\/react-ui/, /@mui\//, /@emotion\//, /@uiw\//] } },
       // Handle react-ui's transitive CSS imports (via @uiw/react-md-editor) the same way the unit
       // config does. `css: true` (Vitest returns empty modules for CSS) — NOT a custom stub plugin —
