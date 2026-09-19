@@ -1,6 +1,35 @@
 import { configDefaults, defineConfig } from 'vitest/config';
 import path from 'path';
 import fs from 'fs';
+import { vitestE2eTlsEnv } from './tests/e2e/setup/vitestTlsEnv';
+
+// react-ui's transitive .css imports (via @uiw/react-md-editor) must be stubbed inside the SSR dep
+// prebundle too (css:true only covers Vite's own transform). onResolve claims every .css into a private
+// namespace so esbuild doesn't externalise it (an external .css would reach Node → ERR_UNKNOWN_FILE_EXTENSION).
+interface EsbuildBuild {
+  onResolve(options: { filter: RegExp }, callback: (args: { path: string }) => { path: string; namespace: string }): void;
+  onLoad(options: { filter: RegExp; namespace?: string }, callback: () => { contents: string; loader: 'js' }): void;
+}
+const esbuildCssStubPlugin = {
+  name: 'stub-css',
+  setup(build: EsbuildBuild) {
+    build.onResolve({ filter: /\.css$/ }, (args) => ({ path: args.path, namespace: 'css-stub' }));
+    build.onLoad({ filter: /.*/, namespace: 'css-stub' }, () => ({ contents: '', loader: 'js' }));
+  },
+};
+
+// react-ui's runtime deps. Vite's SSR optimizer only bundles what's listed in include and externalises
+// everything else, so react-ui plus ALL of its deps are prebundled by esbuild — which resolves @mui v5's
+// directory subpaths, CJS/ESM interop (crypto-js, react-async-script, …) and (with the stub above) .css,
+// none of which Node's own loader handles when react-ui's ESM dist is externalised.
+const REACT_UI_OPTIMIZE_DEPS = [
+  '@anupheaus/react-ui',
+  '@emotion/react', '@emotion/styled',
+  '@mui/material', '@mui/x-date-pickers', '@mui/utils', '@mui/system',
+  '@uiw/react-md-editor', '@uiw/react-markdown-preview',
+  'color', 'crypto-js', 'flatted', 'luxon', 'qr-code-styling', 'react-async-script',
+  'react-hot-toast', 'react-icons', 'signature_pad', 'tss-react', 'use-resize-observer',
+];
 
 const localAlias = (relDir: string) => {
   const relative = path.resolve(__dirname, relDir);
@@ -59,13 +88,21 @@ export default defineConfig(({ mode }) => {
   return {
     resolve: sharedResolve,
     test: {
+      env: vitestE2eTlsEnv(__dirname),
       pool: 'forks',
-      // Use Node (not Vitest's jsdom env) so engine.io-client uses the `ws` package for wss:// to the
-      // self-signed e2e HTTPS server (trusted via tlsSetup.ts + NODE_EXTRA_CA_CERTS). Browser globals
-      // come from installBrowserEnvironment() in vitestGlobals.ts.
+      // Use Node (not Vitest's jsdom env) so engine.io-client uses the `ws` package, which respects
+      // preload-tls.cjs for wss:// to the self-signed e2e HTTPS server. Browser globals come from
+      // installBrowserEnvironment() in vitestGlobals.ts.
       environment: 'node',
-      // Inline react-ui + its MUI/emotion/uiw deps so Vite transforms them (resolving @mui v5's bare
-      // subpath directory imports and CSS) instead of handing the ESM dist to Node's loader.
+      // In CI (no sibling react-ui src) vite-node externalises react-ui's ESM dist at execution, so its
+      // @mui v5 directory subpaths and CJS deps reach Node's loader and fail. esbuild-prebundle react-ui
+      // and all its runtime deps so they're served as bundled ESM instead — esbuild resolves the directory
+      // imports, CJS/ESM interop and (with the stub plugin) .css. Gated to CI because the SSR optimizer
+      // trips ERR_UNSUPPORTED_ESM_URL_SCHEME on Windows; locally react-ui is sibling src and transformed.
+      deps: reactUiSrc
+        ? undefined
+        : { optimizer: { ssr: { enabled: true, include: REACT_UI_OPTIMIZE_DEPS, esbuildOptions: { plugins: [esbuildCssStubPlugin] } } } },
+      // Also inline via Vite's own pipeline (used locally with sibling src, and a belt for CI).
       server: { deps: { inline: [/@anupheaus\/react-ui/, /@mui\//, /@emotion\//, /@uiw\//] } },
       // Handle react-ui's transitive CSS imports (via @uiw/react-md-editor) the same way the unit config does.
       css: true,
@@ -74,7 +111,7 @@ export default defineConfig(({ mode }) => {
       testTimeout,
       globals: true,
       globalSetup: ['./tests/e2e/setup/e2eGlobalSetup.ts'],
-      setupFiles: ['./tests/e2e/setup/tlsSetup.ts', './tests/e2e/setup/e2eVitestSetup.ts', './tests/e2e/setup/vitestGlobals.ts'],
+      setupFiles: ['./tests/e2e/setup/e2eVitestSetup.ts', './tests/e2e/setup/vitestGlobals.ts'],
       dangerouslyIgnoreUnhandledErrors: true,
     },
   };
