@@ -25,11 +25,10 @@ if (socketApiSrc) {
 }
 const commonSrc = localAlias('../common/src');
 if (commonSrc) alias['@anupheaus/common'] = commonSrc;
-// Always alias react-ui to a concrete path so Vite transforms it (rather than externalising its ESM
-// dist to Node, whose loader rejects @mui v5's bare subpath directory imports). Sibling src when
-// present (local/dev), else the installed node_modules package (CI).
+// Alias react-ui to its sibling SOURCE when present (local/dev) so Vite transforms it. In CI there is
+// no sibling, so it resolves to the node_modules ESM dist and is inlined instead (see server.deps.inline).
 const reactUiSrc = localAlias('../react-ui/src');
-alias['@anupheaus/react-ui'] = reactUiSrc ?? path.resolve(__dirname, 'node_modules/@anupheaus/react-ui');
+if (reactUiSrc) alias['@anupheaus/react-ui'] = reactUiSrc;
 
 const sharedResolve = { alias };
 
@@ -70,16 +69,22 @@ export default defineConfig(({ mode }) => {
     resolve: sharedResolve,
     test: {
       env: vitestE2eTlsEnv(__dirname),
-      pool: 'forks',
+      // The `threads` pool (Vitest 1.x default) — NOT `forks`. In the forks pool on Linux CI,
+      // `server.deps.inline` below did not reliably transform react-ui's node_modules ESM dist, so its
+      // externalised @mui v5 subpath imports reached Node's ESM loader and threw ERR_UNSUPPORTED_DIR_IMPORT
+      // (e.g. `@mui/material/styles` → `@mui/utils/formatMuiErrorMessage`). The thread pool inlines them
+      // correctly — the same mechanism the unit config relies on in CI. TLS trust for wss:// still applies
+      // via `env` above (NODE_EXTRA_CA_CERTS + preload-tls), verified against the self-signed e2e server.
+      pool: 'threads',
+      // Run all e2e files sequentially in one worker (like the former single-fork isolation) so they
+      // don't contend over the shared MongoDB/HTTPS e2e server; the thread pool still inlines correctly.
+      poolOptions: { threads: { singleThread: true } },
       // Use Node (not Vitest's jsdom env) so engine.io-client uses the `ws` package, which
       // respects preload-tls.cjs for wss:// to the self-signed e2e HTTPS server. Browser
       // globals come from installBrowserEnvironment() in vitestGlobals.ts.
       environment: 'node',
-      // react-ui is ALWAYS aliased (sibling src locally, node_modules dist in CI — see `resolve.alias`)
-      // so Vite transforms it; combined with inlining @mui/@emotion/@uiw, its @mui v5 subpath imports
-      // resolve at bundle time. Without the CI alias, react-ui's externalised ESM dist reaches Node's
-      // loader and its bare @mui subpaths throw ERR_UNSUPPORTED_DIR_IMPORT (in the forks pool
-      // `server.deps.inline` alone did not reliably transform the node_modules ESM dist).
+      // Inlining react-ui + its MUI/emotion/uiw deps makes Vite transform them so their @mui v5 bare
+      // subpath imports resolve at bundle time instead of hitting Node's ESM loader (see pool note above).
       server: { deps: { inline: [/@anupheaus\/react-ui/, /@mui\//, /@emotion\//, /@uiw\//] } },
       include,
       exclude,
