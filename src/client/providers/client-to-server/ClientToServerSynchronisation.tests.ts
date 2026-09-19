@@ -17,6 +17,7 @@ vi.mock('../../../common/sync-engine', async importOriginal => {
       #started = false;
       constructor(_logger: unknown, props: unknown) {
         capturedCdProps = props;
+        // eslint-disable-next-line @typescript-eslint/no-this-alias -- test needs the constructed instance
         capturedCdInstance = this;
       }
       get isStarted(): boolean { return this.#started; }
