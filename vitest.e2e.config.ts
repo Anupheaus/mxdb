@@ -5,14 +5,18 @@ import { vitestE2eTlsEnv } from './tests/e2e/setup/vitestTlsEnv';
 
 // Minimal shape of the esbuild plugin build API we use (avoids importing esbuild's types, which are
 // only transitively installed). Stubs CSS to empty modules during the SSR dep prebundle (see
-// deps.optimizer.ssr below).
+// deps.optimizer.ssr below). onResolve claims every .css import into a private namespace so esbuild
+// does not externalise it (an externalised .css would reach Node → ERR_UNKNOWN_FILE_EXTENSION); the
+// matching onLoad then returns an empty module.
 interface EsbuildBuild {
-  onLoad(options: { filter: RegExp }, callback: () => { contents: string; loader: 'js' }): void;
+  onResolve(options: { filter: RegExp }, callback: (args: { path: string }) => { path: string; namespace: string }): void;
+  onLoad(options: { filter: RegExp; namespace?: string }, callback: () => { contents: string; loader: 'js' }): void;
 }
 const esbuildCssStubPlugin = {
   name: 'stub-css',
   setup(build: EsbuildBuild) {
-    build.onLoad({ filter: /\.css$/ }, () => ({ contents: '', loader: 'js' }));
+    build.onResolve({ filter: /\.css$/ }, (args) => ({ path: args.path, namespace: 'css-stub' }));
+    build.onLoad({ filter: /.*/, namespace: 'css-stub' }, () => ({ contents: '', loader: 'js' }));
   },
 };
 
