@@ -6,6 +6,18 @@
  * the CA; this additionally defaults rejectUnauthorized=false as belt-and-suspenders for the self-signed cert.
  */
 import tls from 'node:tls';
+import { register } from 'node:module';
+
+// Register Node ESM customisation hooks (resolve @mui v5 directory subpaths, stub .css) so react-ui's
+// externalised ESM dist loads under Node's loader. Path comes from test.env (see vitestTlsEnv).
+const esmCompatLoader = process.env.MXDB_ESM_COMPAT_LOADER;
+if (esmCompatLoader != null && esmCompatLoader.length > 0) {
+  try {
+    register(esmCompatLoader);
+  } catch {
+    /* already registered in this worker, or hooks unavailable — ignore */
+  }
+}
 
 type ConnectArgs = Parameters<typeof tls.connect>;
 const originalConnect = tls.connect.bind(tls);
