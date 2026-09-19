@@ -36,9 +36,10 @@ export function installBrowserEnvironment(): void {
 
   (dom.window as unknown as { indexedDB: IDBFactory }).indexedDB = (globalThis as unknown as { indexedDB: IDBFactory }).indexedDB;
 
-  (globalThis as unknown as { window: unknown }).window = dom.window;
-  (globalThis as unknown as { document: Document }).document = dom.window.document;
-  // Node 22 exposes globalThis.navigator as a read-only getter; use defineProperty to override it.
+  // vitest 5 / jsdom 30 expose `window`, `document` and `navigator` on globalThis as read-only getters,
+  // so plain assignment throws ("Cannot set property … which has only a getter"); use defineProperty.
+  Object.defineProperty(globalThis, 'window', { value: dom.window, writable: true, configurable: true });
+  Object.defineProperty(globalThis, 'document', { value: dom.window.document, writable: true, configurable: true });
   Object.defineProperty(globalThis, 'navigator', { value: dom.window.navigator, writable: true, configurable: true });
 
   // Patch only the missing static; keep URL as a constructor (same approach as legacy stress globals).
