@@ -22,6 +22,10 @@ const muiDirectoryImportPlugin = {
     // Only bare @mui subpaths with at least a package + one segment, and no explicit file extension.
     if (!/^@mui\/[^/]+\/.+/.test(source) || /\.[cm]?[jt]sx?$|\.json$/.test(source)) return null;
     const resolved = await this.resolve(`${source}/index.js`, importer, { skipSelf: true });
+    if (process.env.CI && /formatMuiErrorMessage/.test(source)) {
+      // eslint-disable-next-line no-console
+      console.error('[DIAG-RESOLVE]', source, '->', resolved ? resolved.id.replace(/.*node_modules\//, '') : 'NULL', '| importer:', importer?.replace(/.*node_modules\//, '') ?? 'none');
+    }
     return resolved ? resolved.id : null;
   },
 };
