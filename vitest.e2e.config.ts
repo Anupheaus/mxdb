@@ -69,9 +69,11 @@ export default defineConfig(({ mode }) => {
       // preload-tls.cjs for wss:// to the self-signed e2e HTTPS server. Browser globals come from
       // installBrowserEnvironment() in vitestGlobals.ts.
       environment: 'node',
-      // Inline react-ui + its MUI/emotion/uiw deps so Vite transforms them (resolving @mui v5's bare
-      // subpath directory imports and CSS) rather than handing the ESM dist to Node's loader.
-      server: { deps: { inline: [/@anupheaus\/react-ui/, /@mui\//, /@emotion\//, /@uiw\//] } },
+      // Inline @anupheaus/nexus + react-ui + their MUI/emotion/uiw deps so Vite transforms them rather
+      // than handing the ESM dists to Node's loader. @anupheaus/nexus/client imports react-ui, so if nexus
+      // is externalised Node loads react-ui itself and chokes on @mui v5's bare directory subpaths
+      // (ERR_UNSUPPORTED_DIR_IMPORT) — inlining nexus is what routes that react-ui import through Vite.
+      server: { deps: { inline: [/@anupheaus\/nexus/, /@anupheaus\/react-ui/, /@mui\//, /@emotion\//, /@uiw\//] } },
       // Handle react-ui's transitive CSS imports (via @uiw/react-md-editor) the same way the unit config does.
       css: true,
       include,

@@ -66,7 +66,7 @@ describe('loadSeededData', () => {
     mockExistsSync.mockReturnValue(true);
     mockReadFileSync.mockReturnValue('{}');
     loadSeededData();
-    const calledPath = mockReadFileSync.mock.calls[0][0] as string;
+    const calledPath = mockReadFileSync.mock.calls[0]![0] as string;
     expect(calledPath).toContain('seededData.json');
   });
 });
@@ -86,19 +86,19 @@ describe('saveSeededData', () => {
   it('writes pretty-printed JSON (2-space indent)', () => {
     const data = { users: 'hash1' };
     saveSeededData(data);
-    const content = mockWriteFileSync.mock.calls[0][1] as string;
+    const content = mockWriteFileSync.mock.calls[0]![1] as string;
     expect(content).toBe(JSON.stringify(data, null, 2));
   });
 
   it('writes with utf8 encoding', () => {
     saveSeededData({});
-    const encoding = mockWriteFileSync.mock.calls[0][2] as string;
+    const encoding = mockWriteFileSync.mock.calls[0]![2] as string;
     expect(encoding).toBe('utf8');
   });
 
   it('writes an empty object as {}', () => {
     saveSeededData({});
-    const content = mockWriteFileSync.mock.calls[0][1] as string;
+    const content = mockWriteFileSync.mock.calls[0]![1] as string;
     expect(JSON.parse(content)).toEqual({});
   });
 
@@ -120,7 +120,7 @@ describe('saveSeededData', () => {
   it('handles collections with special characters in names', () => {
     const data = { 'my-collection_v2': 'hashXYZ' };
     saveSeededData(data);
-    const content = mockWriteFileSync.mock.calls[0][1] as string;
+    const content = mockWriteFileSync.mock.calls[0]![1] as string;
     expect(JSON.parse(content)).toEqual(data);
   });
 });

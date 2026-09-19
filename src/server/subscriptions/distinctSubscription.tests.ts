@@ -122,7 +122,7 @@ describe('distinctSubscription', () => {
     await onChangeCb();
 
     expect(ctx.update).toHaveBeenCalledTimes(1);
-    const callArg = (ctx.update as any).mock.calls[0][0];
+    const callArg = (ctx.update as any).mock.calls[0]![0];
     expect(typeof callArg).toBe('string');
     expect(callArg.length).toBeGreaterThan(0);
     expect(callArg).not.toBe(initialHash);

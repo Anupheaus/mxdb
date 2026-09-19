@@ -259,7 +259,7 @@ describe('ClientDispatcher', () => {
     // The queue should only have 2 items (r1 deduplicated)
     await vi.runAllTimersAsync();
     expect(onPayloadRequest).toHaveBeenCalledOnce();
-    const requestArg = onPayloadRequest.mock.calls[0][0];
+    const requestArg = onPayloadRequest.mock.calls[0]![0];
     expect(requestArg[0].recordIds).toHaveLength(2);
     expect(requestArg[0].recordIds).toContain('r1');
     expect(requestArg[0].recordIds).toContain('r2');
@@ -375,7 +375,7 @@ describe('ClientDispatcher', () => {
 
     // dispatch called with only r2 (r1 disappeared → filtered out)
     expect(onDispatch).toHaveBeenCalled();
-    const dispatchArg = onDispatch.mock.calls[0][0];
+    const dispatchArg = onDispatch.mock.calls[0]![0];
     const ids = dispatchArg[0].records.map((r: any) => r.id);
     expect(ids).toEqual(['r2']);
 

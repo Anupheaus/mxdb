@@ -69,6 +69,6 @@ describe('seedCollections', () => {
     await seedCollections([collection]);
 
     expect(onSeed).toHaveBeenCalledTimes(1);
-    expect(typeof onSeed.mock.calls[0][0]).toBe('function');
+    expect(typeof onSeed.mock.calls[0]![0]).toBe('function');
   });
 });

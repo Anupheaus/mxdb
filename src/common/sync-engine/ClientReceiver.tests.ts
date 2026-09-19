@@ -76,7 +76,7 @@ describe('ClientReceiver', () => {
 
       const result = cr.process(payload);
       expect(onUpdate).toHaveBeenCalledOnce();
-      const updateArg = onUpdate.mock.calls[0][0] as MXDBUpdateRequest;
+      const updateArg = onUpdate.mock.calls[0]![0] as MXDBUpdateRequest;
       expect(updateArg[0]!.collectionName).toBe('items');
       expect(updateArg[0]!.records?.[0]!.record).toEqual(record);
       expect(updateArg[0]!.records?.[0]!.lastAuditEntryId).toBe('ulid-1');
