@@ -307,7 +307,7 @@ describe('ServerReceiver', () => {
     expect(successIds).toContain('r1');
 
     // Verify the merged state was passed to onUpdate
-    const updateArg = onUpdate.mock.calls[0][0] as MXDBRecordStates;
+    const updateArg = onUpdate.mock.calls[0]![0] as MXDBRecordStates;
     const updatedState = updateArg[0]?.records[0];
     expect('record' in updatedState!).toBe(true);
   });
@@ -444,7 +444,7 @@ describe('ServerReceiver', () => {
     expect(onUpdate).toHaveBeenCalledOnce();
 
     // The state passed to onUpdate must be a tombstone (MXDBDeletedRecordState: no record field).
-    const updateArg = onUpdate.mock.calls[0][0] as MXDBRecordStates;
+    const updateArg = onUpdate.mock.calls[0]![0] as MXDBRecordStates;
     const persistedState = updateArg[0]?.records[0];
     expect(persistedState).toBeDefined();
     expect('record' in persistedState!).toBe(false);

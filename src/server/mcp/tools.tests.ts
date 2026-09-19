@@ -18,7 +18,7 @@ describe('createMcpTools', () => {
   });
 
   it('mxdb_clients_list returns injected listConnectedClients()', async () => {
-    const listClients = vi.fn<[], ConnectedClientInfo[]>(() => [{ socketId: 's1' }]);
+    const listClients = vi.fn<() => ConnectedClientInfo[]>(() => [{ socketId: 's1' }]);
     const tools = createMcpTools({
       clientS2CInstances: new Map(),
       listClients,
@@ -32,10 +32,7 @@ describe('createMcpTools', () => {
 
   it('mxdb_client_sqlite_query dispatches to the matched socket state', async () => {
     const socket = { id: 'abc' } as unknown as Socket;
-    const emitAdminSqlQuery = vi.fn<
-      [MXDBRemoteSqliteQueryRequest],
-      Promise<MXDBRemoteSqliteQueryResponse>
-    >(async () => ({ requestId: 'r1', rows: [], elapsedMs: 1 }));
+    const emitAdminSqlQuery = vi.fn<(req: MXDBRemoteSqliteQueryRequest) => Promise<MXDBRemoteSqliteQueryResponse>>(async () => ({ requestId: 'r1', rows: [], elapsedMs: 1 }));
 
     const clientS2CInstances = new Map<Socket, ClientS2CState>([
       [
@@ -65,10 +62,7 @@ describe('createMcpTools', () => {
 
   it('mxdb_client_sqlite_query times out with MXDB_REMOTE_SQL_TIMEOUT', async () => {
     const socket = { id: 'abc' } as unknown as Socket;
-    const emitAdminSqlQuery = vi.fn<
-      [MXDBRemoteSqliteQueryRequest],
-      Promise<MXDBRemoteSqliteQueryResponse>
-    >(() => new Promise(() => undefined) as Promise<MXDBRemoteSqliteQueryResponse>);
+    const emitAdminSqlQuery = vi.fn<(req: MXDBRemoteSqliteQueryRequest) => Promise<MXDBRemoteSqliteQueryResponse>>(() => new Promise(() => undefined) as Promise<MXDBRemoteSqliteQueryResponse>);
 
     const clientS2CInstances = new Map<Socket, ClientS2CState>([
       [

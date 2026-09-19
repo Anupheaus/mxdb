@@ -5,7 +5,18 @@ import { useSyncState } from './providers/client-to-server/SyncStateContext';
 import { DbsContext } from './providers/dbs/DbContext';
 import { MxdbReadyContext } from './auth/MxdbReadyContext';
 
-export function useMXDB() {
+// Explicit return type so the inferred type does not leak @anupheaus/nexus's nested socket.io-client
+// path (which isn't nameable from here — TS2742). The nexus-derived members are expressed via
+// ReturnType<typeof useNexus>, which TS can emit without naming socket.io-client directly.
+type UseMXDBResult = Pick<ReturnType<typeof useNexus>, 'onConnectionStateChanged' | 'disconnect' | 'connect'> & {
+  readonly isSynchronising: boolean;
+  readonly isConnected: boolean;
+  readonly clientId: string | undefined;
+  readonly isDbReady: boolean;
+  waitForDbReady(): Promise<boolean>;
+};
+
+export function useMXDB(): UseMXDBResult {
   const { getIsConnected, onConnectionStateChanged, getSocket, disconnect, connect } = useNexus();
   const [isConnected, setIsConnected] = useState(useMemo(() => getIsConnected(), []));
   const { isSyncing, onSyncStateChanged } = useSyncState();

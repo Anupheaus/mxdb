@@ -52,14 +52,14 @@ describe('ServerDbCollectionEvents', () => {
     expect(cb).not.toHaveBeenCalled();
     await vi.advanceTimersByTimeAsync(50);
     expect(onAfterDispatch).toHaveBeenCalledTimes(1);
-    expect(onAfterDispatch.mock.calls[0][0]).toMatchObject({
+    expect(onAfterDispatch.mock.calls[0]![0]).toMatchObject({
       collectionName: 'items',
       type: 'insert',
       records: expect.any(Array),
     });
-    expect(onAfterDispatch.mock.calls[0][0].records).toHaveLength(2);
+    expect(onAfterDispatch.mock.calls[0]![0].records).toHaveLength(2);
     expect(cb).toHaveBeenCalledTimes(1);
-    expect(cb.mock.calls[0][0].records).toHaveLength(2);
+    expect(cb.mock.calls[0]![0].records).toHaveLength(2);
   });
 
   it('batches delete events and dispatches after debounce', async () => {
@@ -78,7 +78,7 @@ describe('ServerDbCollectionEvents', () => {
 
     await vi.advanceTimersByTimeAsync(30);
     expect(cb).toHaveBeenCalledTimes(1);
-    expect(cb.mock.calls[0][0]).toEqual({
+    expect(cb.mock.calls[0]![0]).toEqual({
       collectionName: 'items',
       type: 'delete',
       recordIds: ['id1', 'id2'],
@@ -104,6 +104,6 @@ describe('ServerDbCollectionEvents', () => {
     expect(cb).not.toHaveBeenCalled();
     await vi.advanceTimersByTimeAsync(50);
     expect(cb).toHaveBeenCalledTimes(1);
-    expect(cb.mock.calls[0][0].records).toHaveLength(2);
+    expect(cb.mock.calls[0]![0].records).toHaveLength(2);
   });
 });

@@ -56,7 +56,7 @@ describe('AuthCollection (base class)', () => {
     expect(mockInsertOne).toHaveBeenCalledWith(
       expect.objectContaining({ _id: 'req-1', sessionToken: 'tok' })
     );
-    expect(mockInsertOne.mock.calls[0][0]).not.toHaveProperty('requestId');
+    expect(mockInsertOne.mock.calls[0]![0]).not.toHaveProperty('requestId');
   });
 
   it('findById: returns undefined when document not found', async () => {
