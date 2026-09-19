@@ -40,13 +40,6 @@ const sharedResolve = { alias };
  *
  * Forked workers read NODE_OPTIONS at startup (TLS preload + trust e2e CA).
  */
-const cssStubPlugin = {
-  name: 'stub-css',
-  transform(_code: string, id: string) {
-    if (id.endsWith('.css')) return 'export default {}';
-  },
-};
-
 export default defineConfig(({ mode }) => {
   const isCrud = mode === 'crud';
   const isPerformance = mode === 'performance';
@@ -65,27 +58,24 @@ export default defineConfig(({ mode }) => {
   const testTimeout = isStress ? 300_000 : 120_000;
 
   return {
-    plugins: [cssStubPlugin],
     resolve: sharedResolve,
     test: {
       env: vitestE2eTlsEnv(__dirname),
-      // The `threads` pool (Vitest 1.x default) — NOT `forks`. In the forks pool on Linux CI,
-      // `server.deps.inline` below did not reliably transform react-ui's node_modules ESM dist, so its
-      // externalised @mui v5 subpath imports reached Node's ESM loader and threw ERR_UNSUPPORTED_DIR_IMPORT
-      // (e.g. `@mui/material/styles` → `@mui/utils/formatMuiErrorMessage`). The thread pool inlines them
-      // correctly — the same mechanism the unit config relies on in CI. TLS trust for wss:// still applies
-      // via `env` above (NODE_EXTRA_CA_CERTS + preload-tls), verified against the self-signed e2e server.
-      pool: 'threads',
-      // Run all e2e files sequentially in one worker (like the former single-fork isolation) so they
-      // don't contend over the shared MongoDB/HTTPS e2e server; the thread pool still inlines correctly.
-      poolOptions: { threads: { singleThread: true } },
+      pool: 'forks',
       // Use Node (not Vitest's jsdom env) so engine.io-client uses the `ws` package, which
       // respects preload-tls.cjs for wss:// to the self-signed e2e HTTPS server. Browser
       // globals come from installBrowserEnvironment() in vitestGlobals.ts.
       environment: 'node',
-      // Inlining react-ui + its MUI/emotion/uiw deps makes Vite transform them so their @mui v5 bare
-      // subpath imports resolve at bundle time instead of hitting Node's ESM loader (see pool note above).
+      // react-ui ships an ESM dist that externalises @mui v5, whose bare subpath imports (e.g.
+      // `@mui/material/styles` → `@mui/utils/formatMuiErrorMessage`) are directory imports Node's ESM
+      // loader rejects with ERR_UNSUPPORTED_DIR_IMPORT. Inlining react-ui + its MUI/emotion/uiw deps
+      // makes Vite transform them so those subpaths resolve at bundle time.
       server: { deps: { inline: [/@anupheaus\/react-ui/, /@mui\//, /@emotion\//, /@uiw\//] } },
+      // Handle react-ui's transitive CSS imports (via @uiw/react-md-editor) the same way the unit
+      // config does. `css: true` (Vitest returns empty modules for CSS) — NOT a custom stub plugin —
+      // is required for react-ui to stay inlined on Linux CI; with a plugin-based .css stub instead,
+      // Vite externalised react-ui's ESM dist and its @mui subpaths hit Node's loader (dir-import error).
+      css: true,
       include,
       exclude,
       testTimeout,
