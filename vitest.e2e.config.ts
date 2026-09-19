@@ -3,34 +3,6 @@ import path from 'path';
 import fs from 'fs';
 import { vitestE2eTlsEnv } from './tests/e2e/setup/vitestTlsEnv';
 
-// react-ui's transitive .css imports (via @uiw/react-md-editor) must be stubbed inside the SSR dep
-// prebundle too (css:true only covers Vite's own transform). onResolve claims every .css into a private
-// namespace so esbuild doesn't externalise it (an external .css would reach Node → ERR_UNKNOWN_FILE_EXTENSION).
-interface EsbuildBuild {
-  onResolve(options: { filter: RegExp }, callback: (args: { path: string }) => { path: string; namespace: string }): void;
-  onLoad(options: { filter: RegExp; namespace?: string }, callback: () => { contents: string; loader: 'js' }): void;
-}
-const esbuildCssStubPlugin = {
-  name: 'stub-css',
-  setup(build: EsbuildBuild) {
-    build.onResolve({ filter: /\.css$/ }, (args) => ({ path: args.path, namespace: 'css-stub' }));
-    build.onLoad({ filter: /.*/, namespace: 'css-stub' }, () => ({ contents: '', loader: 'js' }));
-  },
-};
-
-// react-ui's runtime deps. Vite's SSR optimizer only bundles what's listed in include and externalises
-// everything else, so react-ui plus ALL of its deps are prebundled by esbuild — which resolves @mui v5's
-// directory subpaths, CJS/ESM interop (crypto-js, react-async-script, …) and (with the stub above) .css,
-// none of which Node's own loader handles when react-ui's ESM dist is externalised.
-const REACT_UI_OPTIMIZE_DEPS = [
-  '@anupheaus/react-ui',
-  '@emotion/react', '@emotion/styled',
-  '@mui/material', '@mui/x-date-pickers', '@mui/utils', '@mui/system',
-  '@uiw/react-md-editor', '@uiw/react-markdown-preview',
-  'color', 'crypto-js', 'flatted', 'luxon', 'qr-code-styling',
-  'react-hot-toast', 'react-icons', 'signature_pad', 'tss-react', 'use-resize-observer',
-];
-
 const localAlias = (relDir: string) => {
   const relative = path.resolve(__dirname, relDir);
   if (fs.existsSync(relative)) return relative;
@@ -97,15 +69,8 @@ export default defineConfig(({ mode }) => {
       // preload-tls.cjs for wss:// to the self-signed e2e HTTPS server. Browser globals come from
       // installBrowserEnvironment() in vitestGlobals.ts.
       environment: 'node',
-      // In CI (no sibling react-ui src) vite-node externalises react-ui's ESM dist at execution, so its
-      // @mui v5 directory subpaths and CJS deps reach Node's loader and fail. esbuild-prebundle react-ui
-      // and all its runtime deps so they're served as bundled ESM instead — esbuild resolves the directory
-      // imports, CJS/ESM interop and (with the stub plugin) .css. Gated to CI because the SSR optimizer
-      // trips ERR_UNSUPPORTED_ESM_URL_SCHEME on Windows; locally react-ui is sibling src and transformed.
-      deps: reactUiSrc
-        ? undefined
-        : { optimizer: { ssr: { enabled: true, include: REACT_UI_OPTIMIZE_DEPS, esbuildOptions: { plugins: [esbuildCssStubPlugin] } } } },
-      // Also inline via Vite's own pipeline (used locally with sibling src, and a belt for CI).
+      // Inline react-ui + its MUI/emotion/uiw deps so Vite transforms them (resolving @mui v5's bare
+      // subpath directory imports and CSS) rather than handing the ESM dist to Node's loader.
       server: { deps: { inline: [/@anupheaus\/react-ui/, /@mui\//, /@emotion\//, /@uiw\//] } },
       // Handle react-ui's transitive CSS imports (via @uiw/react-md-editor) the same way the unit config does.
       css: true,
