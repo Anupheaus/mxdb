@@ -124,8 +124,17 @@ export async function startMongo(): Promise<{ getUri: () => string; stop: () => 
       } catch (err: unknown) {
         lastStartError = err;
         const code = (err as any)?.code ?? (err as any)?.errorResponse?.code;
-        if (code === 109 && attempt < MAX_START_ATTEMPTS - 1) {
-          lifecycleLog('startMongo.replSetConfigInProgress.retry', { attempt, code });
+        // On a hard-kill restart the library runs replSetReconfig as soon as the port is open, but the
+        // single node can still be applying/replaying its config, so mongod rejects it with
+        // ConfigurationInProgress (code 109) / "currently updating its configuration". The library
+        // re-wraps this as a generic "Starting the MongoMemoryReplSet Instance failed" that drops the
+        // numeric code, so we ALSO match on the message. All of these are transient — stop the partial
+        // instance (preserving dbPath) and retry with backoff.
+        const message = String((err as any)?.message ?? err);
+        const isTransientReplSetConfig = code === 109
+          || /currently updating its configuration|replSetReconfig|ConfigurationInProgress/iu.test(message);
+        if (isTransientReplSetConfig && attempt < MAX_START_ATTEMPTS - 1) {
+          lifecycleLog('startMongo.replSetConfigInProgress.retry', { attempt, code, message });
           try { await instance.stop({ doCleanup: false }); } catch { /* ignore */ }
           await new Promise<void>(r => setTimeout(r, (attempt + 1) * 3_000));
           continue;
