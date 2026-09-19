@@ -3,18 +3,26 @@ import path from 'path';
 import fs from 'fs';
 import { vitestE2eTlsEnv } from './tests/e2e/setup/vitestTlsEnv';
 
-// TEMP DIAGNOSTIC (CI only): log whether react-ui / @mui / @uiw modules pass through Vite's transform
-// pipeline (inlined) or are handed to Node (externalised). If we never see react-ui's dist here, it is
-// being externalised despite server.deps.inline — which is what breaks @mui subpath resolution in CI.
-const diagInlinePlugin = {
-  name: 'diag-inline',
+// @mui v5 packages have no `exports` map, so a bare subpath that points at a directory (e.g.
+// `@mui/utils/formatMuiErrorMessage`, imported by the inlined `@mui/material/styles/index.js`) does not
+// resolve to a file. Vite leaves such an unresolved bare import external, and Node then rejects the
+// directory import (ERR_UNSUPPORTED_DIR_IMPORT). This resolver rewrites any extensionless `@mui/*`
+// subpath to its `/index.js` so it resolves to a real file (whether it ends up inlined or externalised).
+interface ResolvePluginContext {
+  resolve(
+    source: string,
+    importer: string | undefined,
+    options: { skipSelf: boolean },
+  ): Promise<{ id: string } | null>;
+}
+const muiDirectoryImportPlugin = {
+  name: 'mui-directory-import-fix',
   enforce: 'pre' as const,
-  load(id: string) {
-    if (process.env.CI && /(@anupheaus\/react-ui|@mui\/material|@uiw\/react-md|react-async-script)/.test(id)) {
-      // eslint-disable-next-line no-console
-      console.error('[DIAG-LOAD-VIA-VITE]', id.replace(/.*node_modules\//, ''));
-    }
-    return null;
+  async resolveId(this: ResolvePluginContext, source: string, importer: string | undefined) {
+    // Only bare @mui subpaths with at least a package + one segment, and no explicit file extension.
+    if (!/^@mui\/[^/]+\/.+/.test(source) || /\.[cm]?[jt]sx?$|\.json$/.test(source)) return null;
+    const resolved = await this.resolve(`${source}/index.js`, importer, { skipSelf: true });
+    return resolved ? resolved.id : null;
   },
 };
 
@@ -73,7 +81,7 @@ export default defineConfig(({ mode }) => {
   const testTimeout = isStress ? 300_000 : 120_000;
 
   return {
-    plugins: [diagInlinePlugin],
+    plugins: [muiDirectoryImportPlugin],
     resolve: sharedResolve,
     test: {
       env: vitestE2eTlsEnv(__dirname),
