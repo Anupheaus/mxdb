@@ -115,9 +115,12 @@ export async function handleClientToServerSync(request: ClientDispatcherRequest)
       const out: MXDBRecordMetas = [];
       await Promise.all(metaRequest.map(async item => {
         if (item.recordIds.length === 0) return;
-        let collection: ReturnType<typeof db.use>;
+        let collection: ReturnType<typeof db.use> | undefined;
         try { collection = db.use(item.collectionName); }
-        catch { return; } // unknown collection — caller falls back to full retrieve
+        catch { collection = undefined; }
+        // `db.use` returns undefined (it does not throw) for a collection this server db does not
+        // register — skip it; the caller falls back to full retrieve.
+        if (collection == null) return;
         const metas = await collection.getMeta(item.recordIds);
         if (metas.length > 0) out.push({ collectionName: item.collectionName, records: metas });
       }));
@@ -130,9 +133,11 @@ export async function handleClientToServerSync(request: ClientDispatcherRequest)
       // Bulk-fetch per collection: ONE audit query + ONE live-record query per collection
       // instead of 2×N sequential round trips.
       await Promise.all(retrieveRequest.map(async item => {
-        let collection: ReturnType<typeof db.use>;
+        let collection: ReturnType<typeof db.use> | undefined;
         try { collection = db.use(item.collectionName); }
-        catch {
+        catch { collection = undefined; }
+        // `db.use` returns undefined (it does not throw) for an unknown collection.
+        if (collection == null) {
           logger.warn('C2S onRetrieve: unknown collection — skipping', {
             collectionName: item.collectionName,
             recordCount: item.recordIds.length,
@@ -166,9 +171,11 @@ export async function handleClientToServerSync(request: ClientDispatcherRequest)
     onUpdate: async (records: MXDBRecordStates): Promise<MXDBSyncEngineResponse> => {
       const response: MXDBSyncEngineResponse = [];
       for (const col of records) {
-        let collection: ReturnType<typeof db.use>;
+        let collection: ReturnType<typeof db.use> | undefined;
         try { collection = db.use(col.collectionName); }
-        catch {
+        catch { collection = undefined; }
+        // `db.use` returns undefined (it does not throw) for an unknown collection.
+        if (collection == null) {
           logger.warn(`C2S onUpdate: unknown collection "${col.collectionName}" — skipping`);
           continue;
         }
