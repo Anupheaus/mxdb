@@ -65,6 +65,8 @@ class FakeLocalCollection {
   readonly #listeners = new Set<(event: MXDBCollectionEvent<Widget>) => void>();
   queryError: Error | undefined;
   getError: Error | undefined;
+  getAllError: Error | undefined;
+  distinctError: Error | undefined;
 
   async get(ids: string[]): Promise<Widget[]> {
     if (this.getError != null) throw this.getError;
@@ -72,6 +74,7 @@ class FakeLocalCollection {
   }
 
   async getAll(): Promise<Widget[]> {
+    if (this.getAllError != null) throw this.getAllError;
     return [...this.records.values()];
   }
 
@@ -82,6 +85,7 @@ class FakeLocalCollection {
   }
 
   async distinct<Key extends keyof Widget>({ field }: DistinctProps<Widget, Key>): Promise<DistinctResults<Widget, Key>> {
+    if (this.distinctError != null) throw this.distinctError;
     return [...new Set([...this.records.values()].map(record => record[field]))] as DistinctResults<Widget, Key>;
   }
 
@@ -426,21 +430,24 @@ describe('useCollection reactive hooks', () => {
   });
 });
 
-// ─── useQuery re-runs ─────────────────────────────────────────────────────────
+// ─── Reactive re-runs ─────────────────────────────────────────────────────────
+
+/** The two things that re-run a reactive hook's read after it has loaded. */
+const rerunTriggers: [string, () => Promise<void>][] = [
+  ['a collection change', async () => {
+    act(() => local.emit({ type: 'upsert', records: [alpha], auditAction: 'default' }));
+    await act(async () => { await vi.advanceTimersByTimeAsync(PAST_CHANGE_DEBOUNCE_MS); });
+  }],
+  ['a subscription update', async () => {
+    await act(async () => {
+      pushSubscriptionUpdate();
+      await vi.advanceTimersByTimeAsync(0);
+    });
+  }],
+];
 
 describe('useCollection useQuery re-runs', () => {
-  const triggers: [string, () => Promise<void>][] = [
-    ['a collection change', async () => {
-      act(() => local.emit({ type: 'upsert', records: [alpha], auditAction: 'default' }));
-      await act(async () => { await vi.advanceTimersByTimeAsync(PAST_CHANGE_DEBOUNCE_MS); });
-    }],
-    ['a subscription update', async () => {
-      await act(async () => {
-        pushSubscriptionUpdate();
-        await vi.advanceTimersByTimeAsync(0);
-      });
-    }],
-  ];
+  const triggers = rerunTriggers;
 
   it.each(triggers)('surfaces a failed re-run triggered by %s as an error, keeping the last records', async (_label, trigger) => {
     const failure = new Error('sqlite unavailable');
@@ -466,6 +473,70 @@ describe('useCollection useQuery re-runs', () => {
     await trigger();
 
     expect(observed.value).toEqual({ records: [alpha], total: 1, isLoading: false, error: undefined });
+  });
+});
+
+describe('useCollection useGetAll and useDistinct failures', () => {
+  interface ReadHookCase {
+    use(collection: CollectionApi): unknown;
+    failReads(error: Error | undefined): void;
+    /** The hook's data once it has loaded `alpha`. */
+    loaded: object;
+  }
+
+  const hooks: [string, ReadHookCase][] = [
+    ['useGetAll', {
+      use: collection => collection.useGetAll(),
+      failReads: error => { local.getAllError = error; },
+      loaded: { records: [alpha] },
+    }],
+    ['useDistinct', {
+      use: collection => collection.useDistinct('city'),
+      failReads: error => { local.distinctError = error; },
+      loaded: { values: ['London'] },
+    }],
+  ];
+
+  // These hooks report failures to the console; keep the test output clean.
+  beforeEach(() => { vi.spyOn(console, 'error').mockImplementation(() => undefined); });
+  afterEach(() => { vi.restoreAllMocks(); });
+
+  const rerunCases = hooks.flatMap(([hookName, hook]) =>
+    rerunTriggers.map(([triggerName, trigger]) => [hookName, triggerName, hook, trigger] as const));
+
+  it.each(hooks)('%s surfaces a failing initial read as an error', async (_label, { use, failReads }) => {
+    const failure = new Error('sqlite unavailable');
+    failReads(failure);
+    render(WIDGETS, use);
+    await settle();
+
+    expect(observed.value).toMatchObject({ isLoading: false, error: failure });
+  });
+
+  it.each(rerunCases)('%s surfaces a failed re-run triggered by %s as an error, keeping the last data', async (_hook, _trigger, { use, failReads, loaded }, trigger) => {
+    const failure = new Error('sqlite unavailable');
+    local.seed(alpha);
+    render(WIDGETS, use);
+    await settle();
+
+    failReads(failure);
+    await trigger();
+
+    expect({ state: observed.value, callbackErrors: nexus.callbackErrors })
+      .toEqual({ state: { ...loaded, isLoading: false, error: failure }, callbackErrors: [] });
+  });
+
+  it.each(rerunCases)('%s clears the error once a re-run triggered by %s succeeds with the same data', async (_hook, _trigger, { use, failReads, loaded }, trigger) => {
+    local.seed(alpha);
+    render(WIDGETS, use);
+    await settle();
+    failReads(new Error('sqlite unavailable'));
+    await trigger();
+
+    failReads(undefined);
+    await trigger();
+
+    expect(observed.value).toEqual({ ...loaded, isLoading: false, error: undefined });
   });
 });
 

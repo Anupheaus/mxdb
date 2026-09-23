@@ -24,12 +24,13 @@ Primary collection API for React components: imperative CRUD operations and reac
 ### Reactive hooks
 - `createUseGet.ts` — `useGet(id)` — subscribes to a single record; re-renders on change
 - `createUseGetAll.ts` — `useGetAll()` — subscribes to all records
-- `createUseQuery.ts` — `useQuery(request)` — subscribes to a query result. A failure of the initial run or of any reactive re-run (collection change / subscription update) produces the same state: last records kept, `isLoading: false`, `error` set. The next successful re-run clears `error`.
+- `createUseQuery.ts` — `useQuery(request)` — subscribes to a query result
 - `createUseDistinct.ts` — `useDistinct(field, filters?)` — subscribes to distinct values
+- **Failure semantics (`useQuery`, `useGetAll`, `useDistinct`):** a failure of the initial run or of any reactive re-run (collection change / subscription update) produces the same state: last data kept, `isLoading: false`, `error` set. The next successful run clears `error`, even if its result is identical to the one before the failure. `useGet` handles its own fetch failure the same way (its change listener only applies event payloads, so it has no re-run to fail).
 - `createUseSubscription.ts` — `useSubscription(name, request)` — subscribes to a named server-side subscription
 
 ### Utilities
-- `useSubscriptionWrapper.ts` — shared subscription lifecycle (subscribe, unsubscribe, re-subscribe on dependency change). Re-runs triggered by a collection change (debounced) or a subscription update are fire-and-forget, so the wrapper catches their failures. It passes each failure to the caller's optional 4th `onError` callback (used by `useQuery`), or logs it when no callback is given (`getAll` / `distinct`). A failure also resets the last-result hash, so the next successful result is delivered even if it is unchanged. Failures of the initial run still reject the returned promise.
+- `useSubscriptionWrapper.ts` — shared subscription lifecycle (subscribe, unsubscribe, re-subscribe on dependency change). Re-runs triggered by a collection change (debounced) or a subscription update are fire-and-forget, so the wrapper catches their failures. It passes each failure to the caller's optional `onError` callback (the reactive hooks pass one through `query` / `getAll` / `distinct`), or logs it when the caller gives none. A failure also resets the last-result hash, so the next successful result is delivered even if it is unchanged. Failures of the initial run still reject the returned promise.
 
 ## Architecture
 

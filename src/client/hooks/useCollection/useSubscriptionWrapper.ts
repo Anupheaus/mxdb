@@ -67,7 +67,8 @@ export function useSubscriptionWrapper<RecordType extends Record, Request extend
 
   // `onError` receives failures of the reactive RE-RUNS (triggered by a collection change or a subscription update),
   // which nothing awaits. A failure of the initial run still rejects the returned promise.
-  async function invoke(props: AddDisableTo<Request>, onResponse: (result: Response) => void, onSameResponse: () => void, onError: (error: unknown) => void): Promise<void>;
+  async function invoke(props: AddDisableTo<Request>, onResponse: (result: Response) => void, onSameResponse: (() => void) | undefined,
+    onError: (error: unknown) => void): Promise<void>;
   async function invoke(props: AddDisableTo<Request>, onResponse: (result: Response) => void, onSameResponse: () => void): Promise<void>;
   async function invoke(props: AddDisableTo<Request>, onResponse: (result: Response) => void): Promise<void>;
   async function invoke(props: AddDisableTo<Request>): Promise<Response>;
