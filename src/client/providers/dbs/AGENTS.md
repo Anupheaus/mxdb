@@ -9,7 +9,7 @@ The `dbs` provider creates and holds the `Db` instance which in turn owns a `Sql
 ## Contents
 
 ### Provider / context
-- `Dbs.ts` / `DbsProvider` — React provider; creates `Db` on mount, tears it down on unmount
+- `Dbs.ts` / `DbsProvider` — React provider; creates `Db` on mount, tears it down on unmount. `DbsProvider` re-runs `close` → `open` **without awaiting** whenever a dep (notably the encryption key) changes, so `Dbs.close` removes the map entry synchronously and `open` builds a fresh `Db` that waits for the pending close before opening (the shared worker holds one handle per DB). Never let `open` return an instance that is closing — that left the provider on a closed `Db` and hung every query ("Authenticating, please wait..." after registration)
 - `DbContext.ts` / `useDb()` — context hook returning the `Db` instance
 
 ### Database classes
