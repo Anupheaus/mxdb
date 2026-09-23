@@ -153,3 +153,39 @@ describe('distinctSubscription', () => {
     expect(h.removeOnChange).toHaveBeenCalledWith('mxdb.distinct.sub-1');
   });
 });
+
+// ─── Change comparison baseline ────────────────────────────────────────────────
+
+/** The response the subscription sends for a given ordered set of distinct record ids. */
+function hashOf(ids: string[]): string {
+  return ids.join('|').hash();
+}
+
+/** Subscribe with `options`, then apply each change in turn; returns the updates the client was sent. */
+async function updatesForChanges(options: object, changes: string[][]): Promise<unknown[][]> {
+  const ctx = makeContext(options);
+  await (serverDistinctSubscription as unknown as (context: typeof ctx) => Promise<unknown>)(ctx);
+  const [, onChangeCb] = h.onChange.mock.calls[0]! as [string, () => Promise<void>];
+  for (const ids of changes) {
+    h.distinct.mockResolvedValue(makeRecords(ids));
+    await onChangeCb();
+  }
+  return ctx.update.mock.calls;
+}
+
+describe('distinctSubscription — change comparison baseline', () => {
+  // Initial distinct result is ['r1', 'r2'] (see beforeEach).
+  const scenarios: Array<[string, object, string[][], string[][]]> = [
+    ['first-time subscription with no visible change sends nothing', {}, [['r1', 'r2']], []],
+    ['re-subscribe with stale remembered values compares against the fresh initial response', { previousResponse: hashOf(['stale']) }, [['r1', 'r2']], []],
+    ['first-time: a change then a change back sends both', {}, [['r1', 'r2', 'r3'], ['r1', 'r2']], [['r1', 'r2', 'r3'], ['r1', 'r2']]],
+    ['re-subscribe: a change then a change back sends both', { previousResponse: hashOf(['r1', 'r2']) }, [['r1', 'r2', 'r3'], ['r1', 'r2']], [['r1', 'r2', 'r3'], ['r1', 'r2']]],
+    ['a repeated no-op after an update sends nothing more', {}, [['r1', 'r2', 'r3'], ['r1', 'r2', 'r3']], [['r1', 'r2', 'r3']]],
+  ];
+
+  it.each(scenarios)('%s', async (_label, options, changes, expectedUpdateIds) => {
+    const updates = await updatesForChanges(options, changes);
+
+    expect(updates).toEqual(expectedUpdateIds.map(ids => [hashOf(ids)]));
+  });
+});

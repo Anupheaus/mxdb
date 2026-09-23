@@ -340,6 +340,72 @@ describe('querySubscription — collection changes', () => {
     expect(subscription.update.mock.calls).toEqual(expectedUpdate == null ? [] : [[expectedUpdate]]);
   });
 
+  it('sends no update on a first-time subscription when a change leaves the results as initially sent', async () => {
+    h.query.mockResolvedValue(queryResult(['a', 'b'], 2));
+    const subscription = subscribe();
+    await subscription.response;
+
+    await subscription.fireChange();
+
+    expect(subscription.update.mock.calls).toEqual([]);
+  });
+
+  it('compares against the initial response, not a stale remembered one, on re-subscribe', async () => {
+    // Remembered from an earlier subscribe, but the client is sent the fresh initial response (2).
+    h.query.mockResolvedValue(queryResult(['a', 'b'], 2));
+    const subscription = subscribe({ previousResponse: 5, previousRecordIds: ['x'] });
+    await subscription.response;
+
+    await subscription.fireChange();
+
+    expect(subscription.update.mock.calls).toEqual([]);
+  });
+
+  // Each step: the query result after a change, and the update the client should receive (if any).
+  const changeSequences: Array<[string, SubscribeOptions, Array<[QueryResult, number | undefined]>]> = [
+    ['re-subscribe: a change and then a change back', { previousResponse: 2, previousRecordIds: ['a', 'b'] }, [
+      [queryResult(['a', 'b', 'c'], 3), 3],
+      [queryResult(['a', 'b'], 2), 2],
+    ]],
+    ['first-time: a change and then a change back', {}, [
+      [queryResult(['a', 'b', 'c'], 3), 3],
+      [queryResult(['a', 'b'], 2), 2],
+    ]],
+    ['first-time: a change followed by a no-op change', {}, [
+      [queryResult(['a', 'b', 'c'], 3), 3],
+      [queryResult(['a', 'b', 'c'], 3), undefined],
+    ]],
+    ['first-time: a reorder with the same total, then the same order again', {}, [
+      [queryResult(['b', 'a'], 2), 2],
+      [queryResult(['b', 'a'], 2), undefined],
+    ]],
+  ];
+
+  it.each(changeSequences)('%s updates the client only for visible changes since the last value sent', async (_label, options, steps) => {
+    h.query.mockResolvedValue(queryResult(['a', 'b'], 2));
+    const subscription = subscribe(options);
+    await subscription.response;
+
+    for (const [result] of steps) {
+      h.query.mockResolvedValue(result);
+      await subscription.fireChange();
+    }
+
+    const expectedUpdates = steps.filter(([, expected]) => expected != null).map(([, expected]) => [expected]);
+    expect(subscription.update.mock.calls).toEqual(expectedUpdates);
+  });
+
+  it('remembers the latest record ids after a change so a later re-subscribe starts from them', async () => {
+    h.query.mockResolvedValue(queryResult(['a', 'b'], 2));
+    const subscription = subscribe();
+    await subscription.response;
+    h.query.mockResolvedValue(queryResult(['a', 'b', 'c'], 3));
+
+    await subscription.fireChange();
+
+    expect(subscription.updateAdditionalData).toHaveBeenLastCalledWith(['a', 'b', 'c']);
+  });
+
   it('does not throw from the change callback when the re-query fails', async () => {
     const subscription = subscribe();
     await subscription.response;

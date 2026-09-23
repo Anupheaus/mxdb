@@ -9,9 +9,9 @@ Subscriptions differ from actions in that they remain active after the initial r
 ## Contents
 
 - `getAllSubscription.ts` — `serverGetAllSubscription` — pushes a full snapshot initially, then diffs on each change and pushes added/removed ids
-- `querySubscription.ts` — `serverQuerySubscription` — paginated/filtered subscription; pushes matching records and total count on change. Forwards the request's `serverHints` to the collection's `onQuery` hook (see [../collections/AGENTS.md](../collections/AGENTS.md#server-query-hints-serverhints)), then drops them before the actual fetch
-- `distinctSubscription.ts` — `serverDistinctSubscription` — distinct field values; pushes updates on change
-- `createServerCollectionSubscription.ts` — factory that creates type-safe collection subscription handlers; wires `useCollection`, `onChange`, and `pushSubscriptionResultRecords`
+- `querySubscription.ts` — `serverQuerySubscription` — paginated/filtered subscription; pushes matching records on every change and sends the client a new total only when the total or the ordered record ids differ from what the client last received (the initial response, then each update sent). Forwards the request's `serverHints` to the collection's `onQuery` hook (see [../collections/AGENTS.md](../collections/AGENTS.md#server-query-hints-serverhints)), then drops them before the actual fetch
+- `distinctSubscription.ts` — `serverDistinctSubscription` — distinct field values; pushes records on every change and sends the client a new hash of the ordered ids only when it differs from what the client last received
+- `createServerCollectionSubscription.ts` — factory that creates type-safe collection subscription handlers; remembers the previous response / additional data per subscription id (cleared on unsubscribe) and wraps `update` so it never rejects (see gotchas)
 - `pushSubscriptionResultRecords.ts` — routes records to the client via the S2C dispatch path (updates the `ServerDispatcher` filter with `addToFilter=true`)
 - `internalSubscriptions.ts` — re-exports internal subscription descriptors from `src/common/internalSubscriptions.ts`
 
@@ -27,6 +27,8 @@ Each subscription:
 ## Ambiguities and gotchas
 
 - **Subscription data reaches the client as S2C cursor pushes, not action responses.** This is intentional — routing through the SD keeps the SD filter accurate. The client-side `useSubscription` hook uses the `ClientReceiver` path, not a direct response handler.
+- **The handler's `update` never rejects.** It returns a promise that resolves once the push has been sent (await it to sequence), but a failed push is caught inside the wrapper: a socket disconnect (`isSocketDisconnectError` in `../utils/`, shared with `useCollection`'s `onChange` guard) is logged at `debug`, anything else at `error` with the subscription id. Fire-and-forget calls are therefore safe.
+- **`previousResponse` / `additionalData` are what an *earlier* subscribe with the same id left behind** — not what this subscribe's client holds, since the client is sent this subscribe's fresh initial response. Change-diffing baselines must start from the initial response computed at subscribe time and advance with every update sent; comparing against the handler-parameter snapshot goes stale after the first update. `serverQuerySubscription` and `serverDistinctSubscription` keep that baseline in a closure; `serverGetAllSubscription` re-reads it from the data store, which it rewrites on every snapshot (initial and change).
 - **`serverGetAllSubscription` stores prior record ids** via `updateAdditionalData` to compute the `removedIds` diff on each change. If this data is lost (e.g. server restart mid-subscription), the next push sends a full snapshot, which is safe.
 
 ## Related

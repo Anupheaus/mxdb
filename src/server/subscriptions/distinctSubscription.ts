@@ -5,7 +5,7 @@ import { createServerCollectionSubscription } from './createServerCollectionSubs
 import { pushSubscriptionResultRecords } from './pushSubscriptionResultRecords';
 
 export const serverDistinctSubscription = createServerCollectionSubscription()(mxdbDistinctSubscription,
-  async ({ request: { collectionName, ...request }, previousResponse, subscriptionId, update, onUnsubscribe }) => {
+  async ({ request: { collectionName, ...request }, subscriptionId, update, onUnsubscribe }) => {
     const { collection, distinct, onChange, removeOnChange } = useCollection(collectionName);
     // Capture at subscription-setup time. onChange callbacks fire from the MongoDB change stream
     // outside any ALS context, so a late useServerToClientSynchronisation() would fall back to the no-op.
@@ -19,17 +19,24 @@ export const serverDistinctSubscription = createServerCollectionSubscription()(m
       return records.ids();
     }
 
+    // The hash the client currently holds: the initial response, then each update sent since. Changes are
+    // compared against this — not the `previousResponse` remembered from an earlier subscribe, which this
+    // subscribe's fresh initial response has already superseded on the client.
+    let sentHash: string | undefined;
+
     const internalSubscriptionId = `mxdb.distinct.${subscriptionId}`;
     onChange(internalSubscriptionId, async () => {
       const newRecordIds = await refreshDistinctAndPushToSubscriber();
       const newHash = newRecordIds.join('|').hash();
-      // if the record is new or should now appear in this query or has changed place, we need to update
-      if (previousResponse != newHash) { return update(newHash); }
+      // a record is new, should now appear in this query, or has changed place
+      if (newHash === sentHash) return;
+      sentHash = newHash;
+      await update(newHash);
     });
 
     onUnsubscribe(() => removeOnChange(internalSubscriptionId));
 
     const recordIds = await refreshDistinctAndPushToSubscriber();
-
-    return recordIds.join('|').hash();
+    sentHash = recordIds.join('|').hash();
+    return sentHash;
   });

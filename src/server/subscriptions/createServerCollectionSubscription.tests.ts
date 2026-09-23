@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import type { NexusSubscription } from '@anupheaus/nexus/common';
 
 /**
@@ -11,10 +11,15 @@ import type { NexusSubscription } from '@anupheaus/nexus/common';
  * fake socket. The real per-subscription data store is used so the memory is observable.
  */
 
+const h = vi.hoisted(() => ({
+  logger: { error: vi.fn(), warn: vi.fn(), debug: vi.fn(), info: vi.fn(), silly: vi.fn() },
+}));
+
 vi.mock('@anupheaus/nexus/server', async importOriginal => ({
   ...(await importOriginal<object>()),
   createServerSubscription: (_subscription: unknown, handler: unknown) => handler,
   useClient: () => ({ id: 'socket-1' }),
+  useLogger: () => h.logger,
 }));
 
 import { createServerCollectionSubscription } from './createServerCollectionSubscription';
@@ -31,7 +36,7 @@ interface HandlerParameters {
   previousResponse: Response | undefined;
   additionalData: AdditionalData | undefined;
   updateAdditionalData(data: AdditionalData): void;
-  update(response: Response): void;
+  update(response: Response): void | Promise<void>;
   onUnsubscribe(handler: () => void): void;
 }
 
@@ -61,8 +66,11 @@ interface Subscriber {
   unsubscribe(): void;
 }
 
-/** Wraps `handler` and returns a fake socket client bound to one fresh subscription id. */
-function createSubscriber(handler: Handler): Subscriber {
+/**
+ * Wraps `handler` and returns a fake socket client bound to one fresh subscription id.
+ * `emitUpdate` stands in for the socket emit of each pushed update (e.g. to make it reject).
+ */
+function createSubscriber(handler: Handler, emitUpdate: (response: Response) => Promise<void> = async () => undefined): Subscriber {
   const socketHandler = createServerCollectionSubscription<AdditionalData>()(subscription, handler) as unknown as SocketLevelHandler;
   const subscriptionId = `sub-${++nextSubscriptionNumber}`;
   const emittedUpdates: Response[] = [];
@@ -73,7 +81,7 @@ function createSubscriber(handler: Handler): Subscriber {
     subscribe: (request = { query: 'q' }) => socketHandler({
       request,
       subscriptionId,
-      update: async response => { emittedUpdates.push(response); },
+      update: async response => { emittedUpdates.push(response); await emitUpdate(response); },
       onUnsubscribe: unsubscribeHandler => { unsubscribeHandlers.push(unsubscribeHandler); },
     }),
     unsubscribe: () => { for (const unsubscribeHandler of unsubscribeHandlers.splice(0)) unsubscribeHandler(); },
@@ -225,5 +233,97 @@ describe('createServerCollectionSubscription', () => {
     await subscriber.subscribe();
 
     expect(calls[2]!.previousResponse).toBe(100);
+  });
+});
+
+// ─── Failed socket-level updates ───────────────────────────────────────────────
+
+/** Lets any rejection nobody handled surface as a process 'unhandledRejection' event. */
+async function flushUnhandledRejections(): Promise<void> {
+  await new Promise(resolve => setImmediate(resolve));
+}
+
+describe('createServerCollectionSubscription — failed socket-level updates', () => {
+  const unhandledRejections: unknown[] = [];
+  const recordUnhandledRejection = (reason: unknown) => { unhandledRejections.push(reason); };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    unhandledRejections.length = 0;
+    process.on('unhandledRejection', recordUnhandledRejection);
+  });
+
+  afterEach(() => {
+    process.off('unhandledRejection', recordUnhandledRejection);
+  });
+
+  const disconnectErrors: Array<[string, unknown]> = [
+    ['a socket disconnect', new Error('socket has been disconnected')],
+    ['a transport close', new Error('transport close')],
+    ['an error-like object for a socket disconnect', { message: 'Socket has been disconnected' }],
+  ];
+
+  const otherErrors: Array<[string, unknown, string]> = [
+    ['an unexpected error', new Error('emit exploded'), 'emit exploded'],
+    ['a non-error rejection value', 'plain string reason', 'plain string reason'],
+  ];
+
+  const allErrors: Array<[string, unknown]> = [...disconnectErrors, ...otherErrors.map(([label, error]): [string, unknown] => [label, error])];
+
+  it.each(allErrors)('does not leave an unhandled rejection when a fire-and-forget update fails with %s', async (_label, error) => {
+    const subscriber = createSubscriber(({ update }) => { void update(5); return 1; }, () => Promise.reject(error));
+
+    await subscriber.subscribe();
+    await flushUnhandledRejections();
+
+    expect(unhandledRejections).toEqual([]);
+  });
+
+  it.each(allErrors)('resolves the update returned to the handler when it fails with %s', async (_label, error) => {
+    let pushed: void | Promise<void> = undefined;
+    const subscriber = createSubscriber(({ update }) => { pushed = update(5); return 1; }, () => Promise.reject(error));
+    await subscriber.subscribe();
+
+    await expect(pushed).resolves.toBeUndefined();
+  });
+
+  it.each(disconnectErrors)('logs %s quietly at debug level only', async (_label, error) => {
+    let pushed: void | Promise<void> = undefined;
+    const subscriber = createSubscriber(({ update }) => { pushed = update(5); return 1; }, () => Promise.reject(error));
+    await subscriber.subscribe();
+
+    await pushed;
+
+    expect(h.logger.debug).toHaveBeenCalledWith(expect.stringContaining('socket disconnected'),
+      expect.objectContaining({ subscriptionId: subscriber.subscriptionId }));
+    expect([h.logger.warn.mock.calls, h.logger.error.mock.calls]).toEqual([[], []]);
+  });
+
+  it.each(otherErrors)('logs %s as an error with the subscription and failure details', async (_label, error, message) => {
+    let pushed: void | Promise<void> = undefined;
+    const subscriber = createSubscriber(({ update }) => { pushed = update(5); return 1; }, () => Promise.reject(error));
+    await subscriber.subscribe();
+
+    await pushed;
+
+    expect(h.logger.error).toHaveBeenCalledWith(expect.any(String),
+      expect.objectContaining({ subscriptionId: subscriber.subscriptionId, error: message }));
+  });
+
+  it('resolves the update returned to the handler only once the client has been sent it', async () => {
+    let releaseEmit!: () => void;
+    let pushed: void | Promise<void> = undefined;
+    const subscriber = createSubscriber(({ update }) => { pushed = update(5); return 1; },
+      () => new Promise<void>(resolve => { releaseEmit = resolve; }));
+    await subscriber.subscribe();
+    let isSettled = false;
+    void Promise.resolve(pushed).then(() => { isSettled = true; });
+    await flushUnhandledRejections();
+    const isSettledBeforeEmit = isSettled;
+
+    releaseEmit();
+    await pushed;
+
+    expect([isSettledBeforeEmit, isSettled]).toEqual([false, true]);
   });
 });

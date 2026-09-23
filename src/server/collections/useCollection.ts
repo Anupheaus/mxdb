@@ -4,6 +4,7 @@ import type { MXDBCollection, MXDBOnChangeEvent } from '../../common';
 import type { ServerDb, ServerDbCollection } from '../providers';
 import { useDb } from '../providers';
 import { useLogger } from '@anupheaus/nexus/server';
+import { isSocketDisconnectError } from '../utils/isSocketDisconnectError';
 
 const subscriptionIds = new Map<string, Unsubscribe>();
 
@@ -27,7 +28,7 @@ function createOnChange(db: ServerDb, dbCollection: ServerDbCollection<any>, log
         if (result != null && typeof (result as any).catch === 'function') {
           (result as Promise<unknown>).catch(err => {
             const msg = (err as any)?.message ?? String(err);
-            if (/socket has been disconnected|transport close/i.test(msg)) {
+            if (isSocketDisconnectError(err)) {
               logger.debug('onChange callback rejected (socket disconnected — expected during teardown)', {
                 collectionName: dbCollection.name, subscriptionId, error: msg,
               });
