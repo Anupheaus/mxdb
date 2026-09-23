@@ -64,8 +64,10 @@ function pruneOldLogs(logsDir: string, prefix: string, keep: number): void {
     try {
       fs.unlinkSync(path.join(logsDir, file));
     } catch (err) {
-      // parallel test workers may have already deleted this file — ignore
-      if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
+      // Best-effort housekeeping: parallel test workers may already have deleted this file (ENOENT) or,
+      // on Windows, be deleting/holding it at the same moment (EPERM/EBUSY). Never fail a suite over it.
+      const { code } = err as NodeJS.ErrnoException;
+      if (code !== 'ENOENT' && code !== 'EPERM' && code !== 'EBUSY') throw err;
     }
   }
 }
