@@ -29,8 +29,10 @@ interface FakeSync {
   setDispatching(value: boolean): void;
 }
 
-const { syncs, nexus, sendBatchAction, startBehaviour } = vi.hoisted(() => ({
+const { syncs, nexus, sendBatchAction, startBehaviour, logWarn } = vi.hoisted(() => ({
   syncs: [] as FakeSync[],
+  /** Shared by every logger the provider creates, so warnings can be asserted on. */
+  logWarn: vi.fn(),
   /** When set, every sync engine start() rejects with this value. */
   startBehaviour: { rejectWith: undefined as unknown },
   nexus: {
@@ -73,7 +75,7 @@ vi.mock('@anupheaus/react-ui', async importOriginal => ({
   ...(await importOriginal<Record<string, unknown>>()),
   createComponent: (_name: string, component: unknown) => component,
   useLogger: () => {
-    const logger: Record<string, unknown> = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn(), silly: vi.fn() };
+    const logger: Record<string, unknown> = { debug: vi.fn(), info: vi.fn(), warn: logWarn, error: vi.fn(), silly: vi.fn() };
     logger.createSubLogger = () => logger;
     return logger;
   },
@@ -156,6 +158,7 @@ beforeEach(() => {
   probe.receiver = null;
   probe.isSyncing = false;
   sendBatchAction.mockReset();
+  logWarn.mockReset();
   root = createRoot(document.createElement('div'));
 });
 
@@ -296,5 +299,52 @@ describe('ClientToServerSyncProvider applying server pushes', () => {
     probe.receiver!.process([{ collectionName: 'items', records: [{ recordId: 'r1', lastAuditEntryId: '01SERVER' }] }]);
 
     expect(items.applyServerDeleteSync).toHaveBeenCalledWith(['r1']);
+  });
+
+  // Different clients (e.g. mobile vs web) register different collection lists, but the server may push
+  // records for any collection the user can see — one this client doesn't hold must not sink the push.
+  describe('for a collection this client has not registered', () => {
+    const pushMixed = (): MXDBRecordCursors => [
+      { collectionName: 'unknown', records: [{ record: { id: 'x1' }, lastAuditEntryId: '01SERVER' }] },
+      { collectionName: 'items', records: [{ record: { id: 'r1' }, lastAuditEntryId: '01SERVER' }] },
+    ];
+
+    it('still writes the records for registered collections', async () => {
+      const items = makeCollection();
+      await render(makeDb({ items }));
+
+      probe.receiver!.process(pushMixed());
+
+      expect(items.batchApplyServerWriteSync).toHaveBeenCalledWith([{ record: { id: 'r1' }, lastAuditEntryId: '01SERVER' }]);
+    });
+
+    it('acknowledges the registered records and declines the unregistered ones so the server stops re-sending them', async () => {
+      await render(makeDb({ items: makeCollection() }));
+
+      const response = probe.receiver!.process(pushMixed());
+
+      expect(response).toHaveLength(2);
+      expect(response).toEqual(expect.arrayContaining([
+        { collectionName: 'items', successfulRecordIds: ['r1'] },
+        { collectionName: 'unknown', successfulRecordIds: [], declinedRecordIds: ['x1'] },
+      ]));
+    });
+
+    it('warns once per push, naming the unregistered collection', async () => {
+      await render(makeDb({ items: makeCollection() }));
+
+      probe.receiver!.process(pushMixed());
+
+      expect(logWarn).toHaveBeenCalledTimes(1);
+      expect(logWarn).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ collectionName: 'unknown' }));
+    });
+
+    it('treats a delete for an unregistered collection as already consistent', async () => {
+      await render(makeDb({}));
+
+      const response = probe.receiver!.process([{ collectionName: 'unknown', records: [{ recordId: 'x1', lastAuditEntryId: '01SERVER' }] }]);
+
+      expect(response).toEqual([{ collectionName: 'unknown', successfulRecordIds: ['x1'] }]);
+    });
   });
 });
