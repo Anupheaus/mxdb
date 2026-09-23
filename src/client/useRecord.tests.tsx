@@ -29,6 +29,18 @@ const { store } = vi.hoisted(() => ({
   },
 }));
 
+// useRecord never talks to nexus itself, but importing ConflictResolutionContext via the providers barrel
+// transitively loads `@anupheaus/nexus/client`. In CI (no sibling sources) that is nexus's published dist, whose
+// react-ui/@mui imports Node's native loader can't resolve — so stub it, as every other client test does.
+vi.mock('@anupheaus/nexus/client', () => ({
+  Nexus: vi.fn(),
+  useAction: vi.fn(),
+  useAuthentication: vi.fn(),
+  useNexus: vi.fn(),
+  useServerActionHandler: vi.fn(),
+  useSubscription: vi.fn(),
+}));
+
 vi.mock('./hooks/useCollection/useCollection', () => ({
   useCollection: () => ({
     useGet: (id: string | undefined) => { store.requestedIds.push(id); return store.state; },

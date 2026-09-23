@@ -39,10 +39,7 @@ export default defineConfig({
     // dist in node_modules. Left externalised, its `@mui/material/styles` subpath import is handed to
     // Node's native ESM loader, which rejects it as a directory import (ERR_UNSUPPORTED_DIR_IMPORT).
     // Inlining react-ui + its heavy UI deps makes Vite resolve those subpaths to concrete files.
-    // nexus must be inlined too: its published client dist imports `@anupheaus/react-ui`, and if nexus
-    // itself is externalised that import happens inside Node's loader, bypassing the react-ui inlining
-    // (hit by any test that loads the real `@anupheaus/nexus/client` instead of mocking it).
-    server: { deps: { inline: [/@anupheaus\/react-ui/, /@anupheaus\/nexus/, /@mui\//, /@emotion\//, /@uiw\//] } },
+    server: { deps: { inline: [/@anupheaus\/react-ui/, /@mui\//, /@emotion\//, /@uiw\//] } },
     include: [
       'src/**/*.tests.ts',
       'src/**/*.tests.tsx',
