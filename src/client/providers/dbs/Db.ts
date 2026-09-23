@@ -2,7 +2,7 @@ import { InternalError, type Logger, type Record } from '@anupheaus/common';
 import { DbCollection } from './DbCollection';
 import type { MXDBCollectionConfig } from '../../../common/models';
 import { SqliteWorkerClient } from '../../db-worker/SqliteWorkerClient';
-import { buildTableDDL } from '../../db-worker/buildTableDDL';
+import { buildAuditTableDDL, buildTableDDL } from '../../db-worker/buildTableDDL';
 
 /** Internal auth table DDL — not part of user-defined collections. */
 const AUTH_TABLE_DDL = `CREATE TABLE IF NOT EXISTS mxdb_authentication (
@@ -159,11 +159,7 @@ export class Db {
     // Recreate with composite PK. Use a temp name to avoid DROP IF EXISTS race.
     const tempTable = `${auditTable}_migrating`;
     await this.#worker.execBatch([
-      {
-        sql: `CREATE TABLE IF NOT EXISTS "${tempTable}" ` +
-          '(id TEXT NOT NULL, recordId TEXT NOT NULL, type INTEGER NOT NULL, ' +
-          'timestamp INTEGER NOT NULL, record TEXT, ops TEXT, PRIMARY KEY (id, recordId))',
-      },
+      { sql: buildAuditTableDDL(tempTable) },
       {
         sql: `INSERT OR IGNORE INTO "${tempTable}" SELECT id, recordId, type, timestamp, record, ops FROM "${auditTable}"`,
       },

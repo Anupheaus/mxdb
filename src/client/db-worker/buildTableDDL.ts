@@ -13,6 +13,17 @@ export function q(identifier: string): string {
   return `"${identifier.replace(/"/g, '""')}"`;
 }
 
+/**
+ * `CREATE TABLE` for a collection's audit table. The key is composite because the same audit entry id
+ * legitimately appears under several records (e.g. one branch ULID applied to every record in a server
+ * push). The single source for both new tables and `Db`'s migration of legacy `id TEXT PRIMARY KEY` tables.
+ */
+export function buildAuditTableDDL(auditTable: string): string {
+  return `CREATE TABLE IF NOT EXISTS ${q(auditTable)} ` +
+    '(id TEXT NOT NULL, recordId TEXT NOT NULL, type INTEGER NOT NULL, ' +
+    'timestamp INTEGER NOT NULL, record TEXT, ops TEXT, PRIMARY KEY (id, recordId))';
+}
+
 export function buildTableDDL(collectionName: string, indexes: MXDBCollectionIndex[], _isAudited: boolean): string[] {
   void _isAudited;
   const liveTable = `${collectionName}${LIVE_TABLE_SUFFIX}`;
@@ -25,11 +36,7 @@ export function buildTableDDL(collectionName: string, indexes: MXDBCollectionInd
   );
 
   // Audit table for all collections (same sync protocol; `disableAudit` only affects server UX / validation emphasis).
-  statements.push(
-    `CREATE TABLE IF NOT EXISTS ${q(auditTable)} ` +
-    '(id TEXT PRIMARY KEY, recordId TEXT NOT NULL, type INTEGER NOT NULL, ' +
-    'timestamp INTEGER NOT NULL, record TEXT, ops TEXT)'
-  );
+  statements.push(buildAuditTableDDL(auditTable));
   statements.push(
     `CREATE INDEX IF NOT EXISTS ${q(`idx_${collectionName}_audit_by_record`)} ` +
     `ON ${q(auditTable)}(recordId, id)`

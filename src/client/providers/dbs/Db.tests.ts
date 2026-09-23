@@ -218,6 +218,30 @@ describe('Db', () => {
     expect(() => notifyExternalChange('unknown')).not.toThrow();
   });
 
+  describe('audit table layout for a brand-new database', () => {
+    it('creates the audit table with the composite (id, recordId) key from the start', async () => {
+      const db = new Db(DB_NAME, configs);
+
+      const [schema] = await db.queryRaw<SchemaRow>('SELECT sql FROM sqlite_master WHERE type = \'table\' AND name = ?', ['accounts_audit']);
+
+      expect(schema?.sql).toContain('PRIMARY KEY (id, recordId)');
+    });
+
+    it('stores a shared branch anchor for several records in its first session', async () => {
+      // A server push applies one branch ULID to every record in the batch, so the same audit
+      // entry id legitimately appears under several records.
+      const db = new Db(DB_NAME, configs);
+      const accounts = db.use<TestRecord>('accounts');
+      const branchUlid = ulid();
+
+      await accounts.upsert({ id: 'a1', name: 'One' }, 'branched', branchUlid);
+      await accounts.upsert({ id: 'a2', name: 'Two' }, 'branched', branchUlid);
+
+      const rows = await db.queryRaw<{ recordId: string }>('SELECT recordId FROM "accounts_audit" WHERE id = ? ORDER BY recordId', [branchUlid]);
+      expect(rows.map(({ recordId }) => recordId)).toEqual(['a1', 'a2']);
+    });
+  });
+
   describe('legacy audit table migration', () => {
     it('migrates a single-column primary key audit table to the composite (id, recordId) key', async () => {
       seedExistingDatabase([LEGACY_AUDIT_DDL]);
