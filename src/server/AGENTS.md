@@ -4,13 +4,13 @@
 
 ## Overview
 
-Exposes one public function (`startServer`) and one composable extension hook (`extendCollection`). Internally it wires Socket.IO actions/subscriptions, a MongoDB persistence layer, change-stream-driven S2C notifications, and a WebAuthn/invite-link auth flow.
+Exposes one public function (`startServer`) and one composable extension hook (`extendCollection`). Internally it wires Socket.IO actions/subscriptions, a MongoDB persistence layer, change-stream-driven S2C notifications, and nexus-backed auth (WebAuthn invite links or Google OAuth).
 
 ## Contents
 
 ### Entry points
 - `startServer.ts` — `startServer(config)` — main async init; connects to MongoDB, starts socket server, returns `ServerInstance`
-- `startAuthenticatedServer.ts` — inner bootstrap called by `startServer`; wires auth namespace, socket actions, and Koa. Registers per-socket S2C **before** auth `await`s so C2S handlers never hit a no-op S2C fallback during connect. When `config.resolveConnectionDb` is supplied, builds an `onResolveConnection` callback (via `connectionDbRouter.resolveAndScopeConnection`) and passes it into `configureAuthentication`, so nexus runs it inside the per-connection auth scope, before the auth store is queried; absent, `onResolveConnection` is `undefined` — a no-op in nexus
+- `startAuthenticatedServer.ts` — inner bootstrap called by `startServer`; configures nexus authentication (which serves the WebAuthn invite/register/reauth REST routes), socket actions, and Koa. Registers per-socket S2C **before** auth `await`s so C2S handlers never hit a no-op S2C fallback during connect. When `config.resolveConnectionDb` is supplied, builds an `onResolveConnection` callback (via `connectionDbRouter.resolveAndScopeConnection`) and passes it into `configureAuthentication`, so nexus runs it inside the per-connection auth scope, before the auth store is queried; absent, `onResolveConnection` is `undefined` — a no-op in nexus
 - `index.ts` exports — `useAuthDevices()` for invite/device admin inside socket actions and HTTP routes (after `startServer`)
 
 ### Collections API (`collections/`)
@@ -26,7 +26,7 @@ Server-side reactive subscriptions: `getAll`, `query`, `distinct`. See [subscrip
 `ServerDb`, `ServerDbCollection`, change stream, `DbContext`. See [providers/db/AGENTS.md](providers/db/AGENTS.md).
 
 ### Auth (`auth/`)
-Auth strategy classes (WebAuthn, Google OAuth), invite-link handshake, device management, and context hook. See [auth/AGENTS.md](auth/AGENTS.md).
+Auth strategy classes (WebAuthn, Google OAuth) used as nexus auth stores, device management, and context hook. The invite-link flow itself lives in nexus. See [auth/AGENTS.md](auth/AGENTS.md).
 
 ### Audit (`audit/`)
 - `toServerAuditOf.ts` — promotes a client `AuditOf` to `ServerAuditOf` by adding `socketId`, `timestamp`
@@ -71,7 +71,7 @@ Implementation lives under `src/server/mcp/`.
 
 `startServer` wires everything in order:
 1. `provideDb` — connects MongoDB, opens `ServerDb`, starts change stream
-2. `startAuthenticatedServer` — starts Socket.IO, registers auth namespace, mounts actions and subscriptions
+2. `startAuthenticatedServer` — configures nexus auth, starts Socket.IO, mounts actions and subscriptions
 3. Per-socket: `ServerReceiver` + `ServerDispatcher` created on connect, destroyed on disconnect
 
 ## Ambiguities and gotchas
@@ -82,7 +82,7 @@ Implementation lives under `src/server/mcp/`.
 
 ## Related
 
-- [auth/AGENTS.md](auth/AGENTS.md) — WebAuthn / Google OAuth strategies, invite-link flow, device management
+- [auth/AGENTS.md](auth/AGENTS.md) — WebAuthn / Google OAuth strategies, nexus invite-link flow, device management
 - [hooks/AGENTS.md](hooks/AGENTS.md) — server hooks (createUseRecord, createUseRecords, useAuditor, useClient)
 - [collections/AGENTS.md](collections/AGENTS.md) — extendCollection and useCollection
 - [actions/AGENTS.md](actions/AGENTS.md) — socket action handlers

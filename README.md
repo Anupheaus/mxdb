@@ -97,7 +97,7 @@ const instance = await startServer({
 | `mongoDbUrl` | `string` | ✓ | MongoDB connection URI. |
 | `mongoDbName` | `string` | ✓ | Database name. |
 | `auth` | `ServerAuthConfig` | ✓ | Authentication configuration — see **Auth modes** below. |
-| `name` | `string` | ✓ | App name — used in invite-link routes (`/<name>/register`). |
+| `name` | `string` | ✓ | App name — prefixes the auth REST routes (e.g. `/<name>/socketAPI/webauthn/invite`). |
 | `server` | HTTP/HTTPS/HTTP2 server | | Node HTTP server to attach the socket to. Mutually exclusive with `ssl`. |
 | `shouldSeedCollections` | `boolean` | | If true, runs `onSeed` hooks at startup. |
 | `changeStreamDebounceMs` | `number` | | Idle window (ms) before change-stream events are dispatched; events within the window are batched. Default `20`. |
@@ -132,7 +132,7 @@ interface ServerInstance {
 }
 ```
 
-Use `createInvite` to generate a time-limited URL you can send to a user. They open it in the browser, the client calls `useMXDBInvite()(url)`, WebAuthn registers a new device, and the device receives an auth token. Use **`useAuthDevices()`** (or the legacy `ServerInstance` helpers) to list, enable/disable, and delete devices per user.
+Use `createInvite` to generate a time-limited URL you can send to a user. The link is `{baseUrl}?requestId=…`; when the user opens it and the app calls `useAuthentication().signIn()`, nexus registers a new WebAuthn device and sets a session cookie. Use **`useAuthDevices()`** (or the legacy `ServerInstance` helpers) to list, enable/disable, and delete devices per user.
 
 ## Client setup
 
@@ -216,10 +216,11 @@ await signOut();
 
 **Flow:**
 1. Server calls `instance.createInvite({ userId, baseUrl })` and sends the URL to the user.
-2. Client calls `useMXDBInvite()(url)` — opens a WebAuthn prompt, registers a credential with the PRF extension, and exchanges a registration token with the server.
-3. The server calls `onGetUserDetails(userId)` to associate the new device with user data and issues an auth token.
-4. The token is stored encrypted in IndexedDB; `MXDBSync` uses it on subsequent loads.
-5. Token rotation happens automatically in the background.
+2. The user opens the URL (`{baseUrl}?requestId=…`) and the app calls `useAuthentication().signIn()`. Seeing `requestId`, nexus fetches a one-time registration token and invite details from `GET /{name}/socketAPI/webauthn/invite` (backed by `onGetInviteDetails`).
+3. The browser creates a passkey with the PRF extension; the client posts its key hash to `POST /{name}/socketAPI/webauthn/register`, which enables the device and sets the `nexus_session` HTTP-only cookie.
+4. The socket reconnects with that session and the PRF output derives the key for the local encrypted database. Later loads sign in via WebAuthn reauth.
+
+See [src/server/auth/AGENTS.md](src/server/auth/AGENTS.md) for the full flow.
 
 ## `useRecord`
 

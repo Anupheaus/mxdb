@@ -1,10 +1,10 @@
 # Server auth (`src/server/auth/`)
 
-Auth strategy classes, invite-link handshake, device management, and context hook.
+Auth strategy classes (the stores nexus's auth flows read and write), device management, and context hook.
 
 ## Overview
 
-The auth layer implements a device-scoped, invite-link registration flow. The library supports multiple auth backends — WebAuthn (PRF-based passkey) and Google OAuth — through a common abstract base class (`AuthCollection`). Each strategy is a concrete subclass with its own MongoDB indexes and lookup methods. The invite-link handshake runs on a separate Socket.IO server mounted at `/{name}/register`.
+The auth layer implements a device-scoped, invite-link registration flow. The library supports multiple auth backends — WebAuthn (PRF-based passkey) and Google OAuth — through a common abstract base class (`AuthCollection`). Each strategy is a concrete subclass with its own MongoDB indexes and lookup methods. The invite-link handshake itself is **not** implemented here — it is owned by `@anupheaus/nexus`, which `startAuthenticatedServer` configures with a `WebAuthnAuthCollection` store (see **Invite link flow** below).
 
 This auth layer is intentionally isolated from the sync collection system: `AuthCollection` writes directly to a raw MongoDB collection (`mxdb_authentication`) and never goes through `ServerDbCollection` — auth records are never synced to clients.
 
@@ -14,9 +14,6 @@ This auth layer is intentionally isolated from the sync collection system: `Auth
 - `AuthCollection.ts` — abstract base class; implements `SocketAPIAuthStore<TRecord>`. Handles `mxdb_authentication` collection setup (TTL index on `expiresAt`, sparse index on `userId`), `requestId` ↔ `_id` mapping, and CRUD helpers (`findAllByUserId`, `create`, `update`, `delete`). Subclasses override `createIndexes()` to add strategy-specific indexes (call `super.createIndexes()` first). Every query resolves its `ServerDb` fresh via `useDb()` (not the db captured by the constructor) so per-connection routing (`connectionDbRouter.ts`'s `setDb`, run before the auth store is queried) redirects a long-lived `AuthCollection` instance at the current tenant DB; one initialized (collection-ensured + indexed) Mongo collection is cached per distinct `ServerDb` seen. The constructor argument is kept only as a fallback for callers outside any `provideDb`/`useDb` scope.
 - `WebAuthnAuthCollection.ts` — concrete subclass for WebAuthn/passkey auth. Adds sparse indexes on `registrationToken` and `keyHash`; implements `WebAuthnAuthStore` interface.
 - `GoogleOAuthAuthCollection.ts` — concrete subclass for Google OAuth. Implements `GoogleOAuthAuthStore` interface; currently no extra indexes beyond the base.
-
-### Invite-link handshake
-- `InviteNamespace.ts` — dedicated `socket.io` Server mounted at `/{name}/register` (separate from the main socket). Two-step flow: (1) client connects with `{ requestId }`, server validates invite and emits `INVITE_DETAILS`; (2) client emits `COMPLETE_REGISTRATION`, server stores key hash, issues initial token, emits `AUTH_SUCCESS`.
 
 ### Device management
 - `deviceManagement.ts` — `getDevices`, `enableDevice`, `disableDevice`, `deleteDevice`, `expireStalePendingInvites`. Registered on **`useAuthDevices()`** at startup; also exposed on the **`ServerInstance`** from `startServer`.
@@ -51,10 +48,17 @@ SocketAPIAuthStore (socket-api interface)
 `startAuthenticatedServer` constructs the appropriate `AuthCollection` subclass(es) and passes them to the socket-api server config. Which strategies are active depends on what the host app configures.
 
 ### Invite link flow (WebAuthn)
-1. Host app calls `instance.createInvite(userId, baseUrl)` → stores a time-limited invite record → returns a URL.
-2. Client opens URL → calls `useMXDBInvite()(url)` → connects to `/{name}/register` → WebAuthn prompt.
-3. `InviteNamespace` validates invite (rate limit, single-use, TTL) → issues auth token.
-4. Token stored encrypted in client SQLite; rotated automatically in the background.
+
+Owned by nexus; mxdb only supplies the store (`WebAuthnAuthCollection`) and `auth.onGetInviteDetails` via `configureAuthentication({ mode: 'webauthn', … })` in `startAuthenticatedServer.ts`.
+
+1. Host app calls `createInvite({ userId, baseUrl, accountId? })` (on the `ServerInstance`, or `useAuthDevices().createInvite`) → nexus writes a pending `mxdb_authentication` record (`isEnabled: false`, random UUID `requestId`) and returns `{baseUrl}?requestId={requestId}`.
+2. User opens the URL; the app calls `useAuthentication().signIn()` (re-exported from `@anupheaus/nexus/client`). Seeing `?requestId=` in `window.location`, nexus runs its registration ceremony instead of reauth.
+3. `GET /{name}/socketAPI/webauthn/invite` (public REST action) — looks up the record, rejects it if missing or already enabled, stores a one-time `registrationToken` on it, and returns that token plus `onGetInviteDetails(userId, accountId)`.
+4. Client runs `navigator.credentials.create()` with the PRF extension (challenge = `registrationToken`) and hashes the PRF output into a `keyHash`.
+5. `POST /{name}/socketAPI/webauthn/register` — finds the record by `registrationToken`, stores `keyHash` + `deviceDetails`, sets `isEnabled: true`, clears the token, and sets the `nexus_session` HTTP-only cookie.
+6. Client strips `requestId` from the URL, reconnects the socket with the new session, then calls `onPrf` — mxdb derives the local encryption key from the PRF output and opens the encrypted database.
+
+Pending invites that are never redeemed are removed by `expireStalePendingInvites`. When `resolveConnectionDb` is configured, the invite/register REST calls are routed to the tenant DB through `onResolveRestConnection`.
 
 ## Ambiguities and gotchas
 
@@ -69,3 +73,4 @@ SocketAPIAuthStore (socket-api interface)
 - [../hooks/AGENTS.md](../hooks/AGENTS.md) — `useClient()` provides auth context (userId, token) inside handlers
 - [../providers/db/AGENTS.md](../providers/db/AGENTS.md) — `ServerDb`/`useDb()`; `AuthCollection`'s constructor argument is now only a fallback
 - [../../client/auth/deriveKey.ts](../../client/auth/deriveKey.ts) — client-side PRF key derivation (counterpart to WebAuthn server auth)
+- nexus `src/server/actions/webauthnInviteAction.ts` / `webauthnRegisterAction.ts` (sibling repo `../nexus`) — the REST handlers that implement the invite flow
