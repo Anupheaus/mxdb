@@ -2,7 +2,7 @@ import type { DataFilters, DataResponse, Logger } from '@anupheaus/common';
 import { bind, DataSorts, InternalError, is, type Record } from '@anupheaus/common';
 import type { MXDBCollectionConfig, MXDBCollectionIndex } from '../../../common';
 import { configRegistry, type MongoDocOf, type MXDBCollection, type QueryProps, type DistinctProps } from '../../../common';
-import type { ClientSession, Collection, Db, IndexDescriptionInfo, Sort, SortDirection, WithId } from 'mongodb';
+import type { ClientSession, Collection, Db, IndexDescriptionInfo, Sort, WithId } from 'mongodb';
 import { dbUtils } from './db-transforms';
 import { useAuthentication } from '@anupheaus/nexus/server';
 import { DateTime } from 'luxon';
@@ -12,6 +12,42 @@ import { toServerAuditOf } from '../../audit/toServerAuditOf';
 
 const slowFilterParseThreshold = 1000;
 const slowQueryThreshold = 3000;
+
+const SORT_ASCENDING = 1;
+const SORT_DESCENDING = -1;
+
+/** MongoDB sort document; key order is significant (earlier keys sort first). */
+interface MongoSortSpec {
+  [field: string]: typeof SORT_ASCENDING | typeof SORT_DESCENDING;
+}
+
+/**
+ * Makes a query's result order deterministic so offset/limit pages never overlap or skip records:
+ * with no requested sort, natural (insertion) order is used; otherwise `_id` is appended as a final
+ * tie-breaker (unless the caller already sorts on it) so records with equal sort keys keep a fixed order.
+ */
+function withStableOrder(sort: MongoSortSpec | undefined): Sort {
+  if (sort == null) return { $natural: SORT_ASCENDING };
+  if ('_id' in sort) return sort;
+  return { ...sort, _id: SORT_ASCENDING };
+}
+
+/**
+ * Recursively translates a filter value into its MongoDB form: `id` keys become `_id` and Luxon
+ * `DateTime`s become native `Date`s. Recurses into arrays too, so values inside logical operators
+ * (`$or`/`$and`/`$nor`) and array operators (`$in`/`$nin`/`$all`) are translated as well — otherwise
+ * `{ $or: [{ id: 'a' }] }` would query a non-existent `id` field and silently match nothing.
+ * Returns new objects/arrays; the caller's filters are never mutated.
+ */
+function toMongoFilterValue(value: unknown): unknown {
+  if (DateTime.isDateTime(value)) return value.toJSDate();
+  if (Array.isArray(value)) return value.map(toMongoFilterValue);
+  if (!is.plainObject(value)) return value;
+  return Object.fromEntries(Object.entries(value).map(([key, nestedValue]) => [
+    key === 'id' ? '_id' : key,
+    toMongoFilterValue(nestedValue),
+  ]));
+}
 
 // Transient failure retry config (per-record)
 const SYNC_RETRY_BASE_DELAY_MS = 100;
@@ -154,7 +190,7 @@ export class ServerDbCollection<RecordType extends Record = Record> {
       const limit = request.pagination?.limit;
       const sort = this.#parseSorts(request.sorts);
       const startTime = performance.now();
-      const rawDocs = await collection.find(filters ?? {}, { sort, skip: offset, limit }).sort({ $natural: 1 }).toArray();
+      const rawDocs = await collection.find(filters ?? {}, { sort: withStableOrder(sort), skip: offset, limit }).toArray();
       const endTime = performance.now();
       if (endTime - startTime >= slowQueryThreshold) this.#logger.warn('Slow query', {
         collectionName: collection.collectionName,
@@ -429,30 +465,21 @@ export class ServerDbCollection<RecordType extends Record = Record> {
 
   #parseFilters(filters: DataFilters<RecordType> | undefined) {
     if (filters == null) return undefined;
-    const clonedFilters = Object.clone(filters) as any;
-    const parse = (target: unknown) => {
-      if (!is.plainObject(target)) return;
-      Object.entries(target as object).forEach(([key, value]) => {
-        if (key === 'id') {
-          Reflect.deleteProperty(target, 'id');
-          Reflect.set(target, '_id', value);
-        } else if (DateTime.isDateTime(value) && !(value instanceof Date)) {
-          Reflect.set(target, key, value.toJSDate());
-        } else {
-          parse(value);
-        }
-      });
-    };
-    parse(clonedFilters);
-    return clonedFilters;
+    return toMongoFilterValue(filters) as any;
   }
 
-  #parseSorts(sorts: DataSorts<RecordType> | undefined): Sort | undefined {
+  /**
+   * Converts requested sorts into a MongoDB sort document (`{ field: 1 | -1 }`). A document — rather than
+   * the driver's tuple-array form — is required because the same spec feeds both `find()` and an
+   * aggregation `$sort` stage, and `$sort` only accepts a document with numeric directions.
+   */
+  #parseSorts(sorts: DataSorts<RecordType> | undefined): MongoSortSpec | undefined {
     const strictSorts = DataSorts.toArray(sorts);
     if (strictSorts.length === 0) return;
-    return strictSorts.map(([field, direction]): [string, SortDirection] =>
-      [field === 'id' ? '_id' : field as string, direction]
-    );
+    return Object.fromEntries(strictSorts.map(([field, direction]) => [
+      field === 'id' ? '_id' : String(field),
+      direction === 'desc' ? SORT_DESCENDING : SORT_ASCENDING,
+    ]));
   }
 
   async #getCollectionByName<R extends Record = RecordType>(name: string) {

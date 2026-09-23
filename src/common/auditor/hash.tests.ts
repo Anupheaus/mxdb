@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, afterEach, vi } from 'vitest';
 import { deterministicJson, contentHash, hashRecord } from './hash';
 import type { Record as MXDBRecord } from '@anupheaus/common';
 
@@ -122,5 +122,21 @@ describe('hashRecord', () => {
     const h1 = await hashRecord({ id: 'r1', value: 1 } as MXDBRecord);
     const h2 = await hashRecord({ id: 'r2', value: 1 } as MXDBRecord);
     expect(h1).not.toBe(h2);
+  });
+});
+
+describe('hashRecord without WebCrypto', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('produces the same hash through the Node crypto fallback as through WebCrypto', async () => {
+    const record = { id: 'r1', value: 1, nested: { b: 2, a: 1 } } as MXDBRecord;
+    const webCryptoHash = await hashRecord(record);
+    vi.stubGlobal('crypto', undefined);
+
+    const nodeHash = await hashRecord(record);
+
+    expect(nodeHash).toBe(webCryptoHash);
   });
 });

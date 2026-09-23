@@ -27,6 +27,7 @@ const h = vi.hoisted(() => ({
   pushSubscriptionResultRecords: vi.fn(),
   collectionToken: { name: 'items', type: null as unknown },
   auth: { user: { id: 'u1' } as { id: string } | undefined, throws: false },
+  logger: { error: vi.fn(), warn: vi.fn(), debug: vi.fn(), info: vi.fn(), silly: vi.fn() },
 }));
 
 // Return the handler unwrapped so we can call it directly.
@@ -49,7 +50,7 @@ vi.mock('./pushSubscriptionResultRecords', () => ({
 }));
 
 vi.mock('@anupheaus/nexus/server', () => ({
-  useLogger: () => ({ error: vi.fn(), warn: vi.fn(), debug: vi.fn(), info: vi.fn(), silly: vi.fn() }),
+  useLogger: () => h.logger,
   useAuthentication: () => {
     if (h.auth.throws) throw new Error('no auth context');
     return { user: h.auth.user };
@@ -183,5 +184,261 @@ describe('querySubscription — serverHints handling', () => {
 
     expect(queryArg).not.toHaveProperty('serverHints');
     expect(queryArg.filters).toBeUndefined();
+  });
+});
+
+// ─── Live updates, unsubscribe and failures ───────────────────────────────────
+
+interface QueryResult { data: { id: string }[]; total: number }
+
+function queryResult(ids: string[], total = ids.length): QueryResult {
+  return { data: ids.map(id => ({ id })), total };
+}
+
+interface LiveSubscription {
+  /** Resolves to the subscription's initial response (the total). */
+  response: Promise<number>;
+  update: ReturnType<typeof vi.fn>;
+  updateAdditionalData: ReturnType<typeof vi.fn>;
+  /** Fire the collection change callback registered by the subscription and wait for it to finish. */
+  fireChange(): Promise<void>;
+  /** Simulate the client unsubscribing. */
+  unsubscribe(): void;
+}
+
+interface SubscribeOptions {
+  request?: RequestShape;
+  /** Response remembered from an earlier subscribe with the same id (re-subscribe). */
+  previousResponse?: number;
+  /** Record ids remembered from an earlier subscribe with the same id (re-subscribe). */
+  previousRecordIds?: string[];
+}
+
+function subscribe({ request = {}, previousResponse, previousRecordIds }: SubscribeOptions = {}): LiveSubscription {
+  const update = vi.fn();
+  const updateAdditionalData = vi.fn();
+  const unsubscribeHandlers: Array<() => void> = [];
+  const response = (serverQuerySubscription as unknown as (p: unknown) => Promise<number>)({
+    request: { collectionName: 'items', ...request },
+    previousResponse,
+    subscriptionId: 'sub-1',
+    additionalData: previousRecordIds,
+    updateAdditionalData,
+    update,
+    onUnsubscribe: (handler: () => void) => { unsubscribeHandlers.push(handler); },
+  });
+  return {
+    response,
+    update,
+    updateAdditionalData,
+    fireChange: async () => {
+      const [, changeCallback] = h.onChange.mock.calls.at(-1)! as [string, () => Promise<void>];
+      await changeCallback();
+    },
+    unsubscribe: () => { for (const handler of unsubscribeHandlers) handler(); },
+  };
+}
+
+describe('querySubscription — initial response', () => {
+  it('responds with the query total', async () => {
+    h.query.mockResolvedValue(queryResult(['a', 'b'], 17));
+
+    await expect(subscribe().response).resolves.toBe(17);
+  });
+
+  it('remembers the ids of the matching records for later change comparisons', async () => {
+    h.query.mockResolvedValue(queryResult(['b', 'a']));
+    const subscription = subscribe();
+
+    await subscription.response;
+
+    expect(subscription.updateAdditionalData).toHaveBeenCalledWith(['b', 'a']);
+  });
+
+  it('pushes the matching records to the client', async () => {
+    const result = queryResult(['a', 'b']);
+    h.query.mockResolvedValue(result);
+
+    await subscribe().response;
+
+    expect(h.pushSubscriptionResultRecords).toHaveBeenCalledWith(expect.anything(), h.collectionToken, result.data, []);
+  });
+
+  const accurateTotalCases: Array<[boolean | undefined, boolean]> = [
+    [undefined, true],
+    [true, true],
+    [false, false],
+  ];
+
+  it.each(accurateTotalCases)('asks the query for an accurate total when getAccurateTotal is %s → %s', async (requested, expected) => {
+    await subscribe({ request: { getAccurateTotal: requested } }).response;
+
+    expect(h.query.mock.calls[0]![0].getAccurateTotal).toBe(expected);
+  });
+
+  it('rejects when the initial query fails', async () => {
+    h.query.mockRejectedValue(new Error('mongo down'));
+
+    await expect(subscribe().response).rejects.toThrow('mongo down');
+  });
+
+  it('logs the initial query failure', async () => {
+    h.query.mockRejectedValue(new Error('mongo down'));
+
+    await subscribe().response.catch(() => undefined);
+
+    expect(h.logger.error).toHaveBeenCalledWith('querySubscription setup error (initial push failed)',
+      expect.objectContaining({ collectionName: 'items', subscriptionId: 'sub-1', error: 'mongo down' }));
+  });
+
+  it('rejects when pushing the initial records to the client fails', async () => {
+    h.pushSubscriptionResultRecords.mockRejectedValue(new Error('emit failed'));
+
+    await expect(subscribe().response).rejects.toThrow('emit failed');
+  });
+});
+
+describe('querySubscription — collection changes', () => {
+  it('re-runs the query and pushes the fresh records when the collection changes', async () => {
+    const subscription = subscribe();
+    await subscription.response;
+    const fresh = queryResult(['a', 'b', 'c']);
+    h.query.mockResolvedValue(fresh);
+
+    await subscription.fireChange();
+
+    expect(h.pushSubscriptionResultRecords).toHaveBeenLastCalledWith(expect.anything(), h.collectionToken, fresh.data, []);
+  });
+
+  it('pushes change results through the S2C captured when the subscription was set up', async () => {
+    const subscription = subscribe();
+    await subscription.response;
+    const setupS2C = h.pushSubscriptionResultRecords.mock.calls[0]![0];
+
+    await subscription.fireChange();
+
+    expect(h.pushSubscriptionResultRecords.mock.calls[1]![0]).toBe(setupS2C);
+  });
+
+  // Re-subscribe scenario: the subscription remembers total 2 with ids [a, b].
+  const changeOutcomes: Array<[string, QueryResult, number | undefined]> = [
+    ['the total changes', queryResult(['a', 'b'], 5), 5],
+    ['a record is added', queryResult(['a', 'b', 'c'], 2), 2],
+    ['the order changes', queryResult(['b', 'a'], 2), 2],
+    ['a record is replaced by another', queryResult(['a', 'z'], 2), 2],
+    ['nothing visible changes', queryResult(['a', 'b'], 2), undefined],
+  ];
+
+  it.each(changeOutcomes)('when %s, sends the client update %s', async (_label, result, expectedUpdate) => {
+    h.query.mockResolvedValue(queryResult(['a', 'b'], 2));
+    const subscription = subscribe({ previousResponse: 2, previousRecordIds: ['a', 'b'] });
+    await subscription.response;
+    h.query.mockResolvedValue(result);
+
+    await subscription.fireChange();
+
+    expect(subscription.update.mock.calls).toEqual(expectedUpdate == null ? [] : [[expectedUpdate]]);
+  });
+
+  it('sends no update on a first-time subscription when a change leaves the results as initially sent', async () => {
+    h.query.mockResolvedValue(queryResult(['a', 'b'], 2));
+    const subscription = subscribe();
+    await subscription.response;
+
+    await subscription.fireChange();
+
+    expect(subscription.update.mock.calls).toEqual([]);
+  });
+
+  it('compares against the initial response, not a stale remembered one, on re-subscribe', async () => {
+    // Remembered from an earlier subscribe, but the client is sent the fresh initial response (2).
+    h.query.mockResolvedValue(queryResult(['a', 'b'], 2));
+    const subscription = subscribe({ previousResponse: 5, previousRecordIds: ['x'] });
+    await subscription.response;
+
+    await subscription.fireChange();
+
+    expect(subscription.update.mock.calls).toEqual([]);
+  });
+
+  // Each step: the query result after a change, and the update the client should receive (if any).
+  const changeSequences: Array<[string, SubscribeOptions, Array<[QueryResult, number | undefined]>]> = [
+    ['re-subscribe: a change and then a change back', { previousResponse: 2, previousRecordIds: ['a', 'b'] }, [
+      [queryResult(['a', 'b', 'c'], 3), 3],
+      [queryResult(['a', 'b'], 2), 2],
+    ]],
+    ['first-time: a change and then a change back', {}, [
+      [queryResult(['a', 'b', 'c'], 3), 3],
+      [queryResult(['a', 'b'], 2), 2],
+    ]],
+    ['first-time: a change followed by a no-op change', {}, [
+      [queryResult(['a', 'b', 'c'], 3), 3],
+      [queryResult(['a', 'b', 'c'], 3), undefined],
+    ]],
+    ['first-time: a reorder with the same total, then the same order again', {}, [
+      [queryResult(['b', 'a'], 2), 2],
+      [queryResult(['b', 'a'], 2), undefined],
+    ]],
+  ];
+
+  it.each(changeSequences)('%s updates the client only for visible changes since the last value sent', async (_label, options, steps) => {
+    h.query.mockResolvedValue(queryResult(['a', 'b'], 2));
+    const subscription = subscribe(options);
+    await subscription.response;
+
+    for (const [result] of steps) {
+      h.query.mockResolvedValue(result);
+      await subscription.fireChange();
+    }
+
+    const expectedUpdates = steps.filter(([, expected]) => expected != null).map(([, expected]) => [expected]);
+    expect(subscription.update.mock.calls).toEqual(expectedUpdates);
+  });
+
+  it('remembers the latest record ids after a change so a later re-subscribe starts from them', async () => {
+    h.query.mockResolvedValue(queryResult(['a', 'b'], 2));
+    const subscription = subscribe();
+    await subscription.response;
+    h.query.mockResolvedValue(queryResult(['a', 'b', 'c'], 3));
+
+    await subscription.fireChange();
+
+    expect(subscription.updateAdditionalData).toHaveBeenLastCalledWith(['a', 'b', 'c']);
+  });
+
+  it('does not throw from the change callback when the re-query fails', async () => {
+    const subscription = subscribe();
+    await subscription.response;
+    h.query.mockRejectedValue(new Error('mongo blip'));
+
+    await expect(subscription.fireChange()).resolves.toBeUndefined();
+  });
+
+  it('sends no update and logs when the re-query fails', async () => {
+    const subscription = subscribe();
+    await subscription.response;
+    h.query.mockRejectedValue(new Error('mongo blip'));
+
+    await subscription.fireChange();
+
+    expect(subscription.update).not.toHaveBeenCalled();
+    expect(h.logger.error).toHaveBeenCalledWith('querySubscription onChange error',
+      expect.objectContaining({ collectionName: 'items', subscriptionId: 'sub-1', error: 'mongo blip' }));
+  });
+
+  it('stops watching the collection when the client unsubscribes', async () => {
+    const subscription = subscribe();
+    await subscription.response;
+    const [watchId] = h.onChange.mock.calls[0]! as [string];
+
+    subscription.unsubscribe();
+
+    expect(h.removeOnChange).toHaveBeenCalledWith(watchId);
+  });
+
+  it('watches under an id unique to the subscription', async () => {
+    await subscribe().response;
+
+    expect(h.onChange.mock.calls[0]![0]).toBe('mxdb.query.sub-1');
   });
 });

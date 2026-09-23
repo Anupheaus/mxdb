@@ -49,21 +49,45 @@ export const ClientToServerSyncProvider = createComponent('ClientToServerSyncPro
   const logger = useLogger('sync-engine');
 
   const { cr, c2s } = useMemo(() => {
-    const cr = new ClientReceiver(logger.createSubLogger('cr'), {
+    const crLogger = logger.createSubLogger('cr');
+
+    // Different clients (e.g. mobile vs web) register different collection lists, yet the server may push
+    // records for any collection the user can see. Returns undefined for a collection this client doesn't
+    // hold so the push can skip it rather than fail as a whole. Db exposes no non-throwing lookup, and
+    // `use` only throws for an unregistered collection, so swallowing the error here is safe.
+    const findCollection = <T extends MXDBRecord>(collectionName: string) => {
+      try { return db.use<T>(collectionName); }
+      catch { return undefined; }
+    };
+
+    const cr = new ClientReceiver(crLogger, {
       onRetrieve: <T extends MXDBRecord>(request: MXDBRecordStatesRequest): MXDBRecordStates<T> => {
         const out: MXDBRecordStates<T> = [];
         for (const item of request) {
-          const states = db.use<T>(item.collectionName).getStatesSync(item.recordIds);
-          if (states.length > 0) out.push({ collectionName: item.collectionName, records: states });
+          const { collectionName, recordIds } = item;
+          const collection = findCollection<T>(collectionName);
+          if (collection == null) {
+            // onRetrieve runs once per push, so this warns once per push per unregistered collection.
+            crLogger.warn('Skipping server push for a collection this client has not registered', { collectionName, recordCount: recordIds.length });
+            continue;
+          }
+          const states = collection.getStatesSync(recordIds);
+          if (states.length > 0) out.push({ collectionName, records: states });
         }
         return out;
       },
       onUpdate: (updates: MXDBUpdateRequest): MXDBSyncEngineResponse => {
         const response: MXDBSyncEngineResponse = [];
         for (const item of updates) {
-          let collection: ReturnType<typeof db.use>;
-          try { collection = db.use(item.collectionName); }
-          catch { continue; }
+          const collection = findCollection(item.collectionName);
+          if (collection == null) {
+            // Decline (never acknowledge) records this client can't store: the ServerDispatcher then stops
+            // re-sending them without counting them as a stuck client. Reporting nothing would make it retry
+            // every push until its ignore cap trips; reporting success would claim a write that never happened.
+            const declinedRecordIds = [...(item.records ?? []).map(({ record }) => record.id), ...(item.deletedRecordIds ?? [])];
+            response.push({ collectionName: item.collectionName, successfulRecordIds: [], declinedRecordIds });
+            continue;
+          }
           const successfulRecordIds: string[] = [];
           if ((item.records?.length ?? 0) > 0) {
             // Use batch method: one exec-batch + one onChange instead of N of each.

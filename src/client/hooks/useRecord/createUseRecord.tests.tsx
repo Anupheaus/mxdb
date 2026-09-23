@@ -430,3 +430,88 @@ describe('createUseRecord (client) — autoSave', () => {
     h.unmount();
   });
 });
+
+describe('createUseRecord (client) — autoSave when the save fails', () => {
+  const collection = { name: 'orders', type: {} as any };
+  const mockedUseMXDBRecord = vi.mocked(useMXDBRecord);
+  const unhandled: unknown[] = [];
+  const onUnhandled = (reason: unknown) => { unhandled.push(reason); };
+  let unmount: (() => void) | undefined;
+
+  beforeEach(() => {
+    // Real setImmediate so Node can report unhandled rejections between steps.
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    unhandled.length = 0;
+    process.on('unhandledRejection', onUnhandled);
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+  });
+  afterEach(() => {
+    unmount?.();
+    unmount = undefined;
+    process.off('unhandledRejection', onUnhandled);
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+    vi.clearAllMocks();
+  });
+
+  function renderSettled(upsert: ReturnType<typeof vi.fn>) {
+    mockedUseMXDBRecord.mockReturnValue({ record: { id: 'id-1', name: 'real' }, isLoading: false, upsert, remove: vi.fn() } as any);
+    const useOrder = createUseRecord('order', collection, { hydrateRecord: r => r ?? { id: 'id-1', name: '' } });
+    return renderHook(() => useOrder('id-1', true));
+  }
+
+  const nextMacrotask = () => new Promise(resolve => setImmediate(resolve));
+
+  it('does not surface an unhandled rejection when the debounced save fails', async () => {
+    const upsert = vi.fn().mockRejectedValueOnce(new Error('disk full'));
+    const { result, unmount: u } = renderSettled(upsert);
+    unmount = u;
+
+    act(() => { result.current.autoSaveOrder.withConfig({ debounceMS: 100 })({ id: 'id-1', name: 'edited' }); });
+    await act(async () => { vi.advanceTimersByTime(100); });
+    await nextMacrotask();
+
+    expect(unhandled).toEqual([]);
+  });
+
+  it('keeps a failed edit pending and saves it on the next flush instead of dropping it', async () => {
+    const upsert = vi.fn().mockRejectedValueOnce(new Error('disk full')).mockResolvedValue(undefined);
+    const { result, unmount: u } = renderSettled(upsert);
+
+    act(() => { result.current.autoSaveOrder.withConfig({ debounceMS: 100 })({ id: 'id-1', name: 'edited' }); });
+    await act(async () => { vi.advanceTimersByTime(100); });
+    u(); // unmount flushes pending edits
+    await nextMacrotask();
+
+    expect(upsert.mock.calls).toEqual([[{ id: 'id-1', name: 'edited' }], [{ id: 'id-1', name: 'edited' }]]);
+  });
+
+  it('does not let a failed older save overwrite a newer pending edit', async () => {
+    let rejectSave!: (error: Error) => void;
+    const upsert = vi.fn()
+      .mockImplementationOnce(() => new Promise((_resolve, reject) => { rejectSave = reject; }))
+      .mockResolvedValue(undefined);
+    const { result, unmount: u } = renderSettled(upsert);
+    const save = (name: string) => result.current.autoSaveOrder.withConfig({ debounceMS: 100 })({ id: 'id-1', name });
+
+    act(() => { save('first'); });
+    await act(async () => { vi.advanceTimersByTime(100); }); // first save in flight
+    act(() => { save('second'); });                          // newer edit queued meanwhile
+    await act(async () => { rejectSave(new Error('disk full')); });
+    u();
+    await nextMacrotask();
+
+    expect(upsert.mock.calls.at(-1)).toEqual([{ id: 'id-1', name: 'second' }]);
+  });
+
+  it('reports the failed save', async () => {
+    const upsert = vi.fn().mockRejectedValueOnce(new Error('disk full'));
+    const { result, unmount: u } = renderSettled(upsert);
+    unmount = u;
+
+    act(() => { result.current.autoSaveOrder.withConfig({ debounceMS: 100 })({ id: 'id-1', name: 'edited' }); });
+    await act(async () => { vi.advanceTimersByTime(100); });
+
+    expect(console.error).toHaveBeenCalledWith(expect.stringContaining('orders'), expect.objectContaining({ message: 'disk full' }));
+  });
+});

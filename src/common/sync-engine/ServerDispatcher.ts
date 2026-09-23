@@ -38,6 +38,10 @@ const MAX_CONSECUTIVE_IGNORES = 3;
  *    cursor to be sent at all — change-stream fan-out is not allowed to bootstrap
  *    records the CR has never acknowledged.
  */
+const DEFAULT_RETRY_INTERVAL_MS = 250;
+/** Upper bound for the exponential backoff after consecutive failed dispatches. */
+const MAX_FAILURE_RETRY_INTERVAL_MS = 30_000;
+
 interface QueuedBatch {
   cursors: MXDBRecordCursors;
   addToFilter: boolean;
@@ -55,6 +59,8 @@ export class ServerDispatcher {
   #isPaused = false;
   #inFlight = false;
   #retryTimer: ReturnType<typeof setTimeout> | undefined = undefined;
+  /** Dispatches in a row that failed (other than SyncPaused) — drives the retry backoff. */
+  #consecutiveFailures = 0;
   #queue: QueuedBatch[] = [];
   // Map<collectionName, Map<recordId, FilterRecord>> — O(1) per-collection and per-record lookups.
   #filter: Map<string, Map<string, ServerDispatcherFilterRecord>> = new Map();
@@ -343,6 +349,7 @@ export class ServerDispatcher {
     this.#inFlight = true;
     let success = false;
     let syncPaused = false;
+    let failed = false;
     let response: MXDBSyncEngineResponse | undefined;
 
     try {
@@ -509,23 +516,41 @@ export class ServerDispatcher {
         syncPaused = true;
         this.#logger.debug('[SD] SyncPausedError received — scheduling retry');
       } else {
-        this.#logger.error('[SD] dispatch error', { error: err });
-        this.#inFlight = false;
-        throw err;
+        // Never rethrow: every caller is fire-and-forget (push/resume/retry timer), so a rethrow
+        // becomes an unhandled rejection, which by default terminates the Node process. The
+        // queue was not spliced, so the undelivered cursors are retried with backoff.
+        failed = true;
+        this.#consecutiveFailures++;
+        this.#logger.warn('[SD] dispatch failed — will retry', {
+          clientId: this.#props.clientId ?? 'unknown',
+          consecutiveFailures: this.#consecutiveFailures,
+          error: err,
+        });
       }
     } finally {
       this.#inFlight = false;
     }
 
     if (success) {
+      this.#consecutiveFailures = 0;
       if (this.#queue.length > 0 && !this.#isPaused) {
         void this.#dispatch();
       }
-    } else if (syncPaused) {
+    } else if (syncPaused || failed) {
       if (!this.#isPaused) {
-        this.#startRetryTimer();
+        this.#startRetryTimer(failed ? this.#failureRetryInterval() : this.#baseRetryInterval());
       }
     }
+  }
+
+  #baseRetryInterval(): number {
+    return this.#props.retryInterval ?? DEFAULT_RETRY_INTERVAL_MS;
+  }
+
+  /** Exponential backoff (base, 2×base, 4×base, …) capped at {@link MAX_FAILURE_RETRY_INTERVAL_MS}. */
+  #failureRetryInterval(): number {
+    const exponent = Math.max(0, this.#consecutiveFailures - 1);
+    return Math.min(this.#baseRetryInterval() * 2 ** exponent, MAX_FAILURE_RETRY_INTERVAL_MS);
   }
 
   /**
@@ -564,8 +589,7 @@ export class ServerDispatcher {
     if (counts.size === 0) this.#ignoredCounts.delete(collectionName);
   }
 
-  #startRetryTimer(): void {
-    const interval = this.#props.retryInterval ?? 250;
+  #startRetryTimer(interval: number): void {
     this.#retryTimer = setTimeout(() => {
       this.#retryTimer = undefined;
       if (!this.#isPaused && !this.#inFlight) {

@@ -19,12 +19,23 @@ export function createUseGetAll<RecordType extends Record>(getAll: GetAll<Record
         setState(s => ({ ...s, isLoading: true }));
         const requestId = requestIdRef.current = Math.uniqueId();
         if (props.debug) console.log('[MXDB] Subscribing getAll', { requestId, props }); // eslint-disable-line no-console
-        getAll(props, records => {
-          if (props.debug) console.log('[MXDB] getAll response', { requestId, count: records.length }); // eslint-disable-line no-console
+        // Shared by the initial run (its rejected promise) and the reactive re-runs (collection change /
+        // subscription update), so a failure surfaces identically whichever run hit it: last records kept, error set.
+        const onError = (error: unknown) => {
+          console.error('[MXDB] useGetAll threw', { props, error }); // eslint-disable-line no-console
           if (requestId !== requestIdRef.current) return;
-          lastResponseRef.current = { records };
-          setState({ records, isLoading: false, error: undefined });
-        }, () => setState(s => ({ ...s, ...lastResponseRef.current, isLoading: false })));
+          setState(s => ({ ...s, isLoading: false, error: error as MXDBError }));
+        };
+        getAll(props, {
+          onResponse: records => {
+            if (props.debug) console.log('[MXDB] getAll response', { requestId, count: records.length }); // eslint-disable-line no-console
+            if (requestId !== requestIdRef.current) return;
+            lastResponseRef.current = { records };
+            setState({ records, isLoading: false, error: undefined });
+          },
+          onSameResponse: () => setState(s => ({ ...s, ...lastResponseRef.current, isLoading: false })),
+          onError,
+        }).catch(onError);
       }
     }, [Object.hash(props)]);
 

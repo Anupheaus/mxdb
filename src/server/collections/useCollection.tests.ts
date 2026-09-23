@@ -141,4 +141,92 @@ describe('useCollection', () => {
 
     expect(mockUnsubscribe).toHaveBeenCalled();
   });
+
+  // ─── Callback failures ───────────────────────────────────────────────────────
+
+  /** Let a rejected callback promise's catch handler run. Timer-free. */
+  async function flushMicrotasks(): Promise<void> {
+    for (let tick = 0; tick < 10; tick++) await Promise.resolve();
+  }
+
+  const asyncRejections: Array<[string, string, 'debug' | 'error']> = [
+    ['a socket disconnect (expected during teardown)', 'socket has been disconnected', 'debug'],
+    ['a transport close (expected during teardown)', 'transport close', 'debug'],
+    ['any other failure', 'query exploded', 'error'],
+  ];
+
+  it.each(asyncRejections)('logs an async callback rejection caused by %s at %s level instead of leaking it', async (_label, message, level) => {
+    const result = useCollection('items');
+    result.onChange('sub-async', async () => { throw new Error(message); });
+
+    onChangeCallback!({ collectionName: 'items' });
+    await flushMicrotasks();
+
+    // An escaped rejection would fail the run as an unhandled rejection; the log proves it was caught.
+    expect(mockLogger[level]).toHaveBeenCalledWith(expect.stringContaining('onChange callback rejected'),
+      { collectionName: 'items', subscriptionId: 'sub-async', error: message });
+  });
+
+  it('logs a non-Error rejection by its string form', async () => {
+    const result = useCollection('items');
+    result.onChange(() => Promise.reject('plain string'));
+
+    onChangeCallback!({ collectionName: 'items' });
+    await flushMicrotasks();
+
+    expect(mockLogger.error).toHaveBeenCalledWith('onChange callback rejected',
+      { collectionName: 'items', subscriptionId: undefined, error: 'plain string' });
+  });
+
+  it('does not let a synchronously throwing callback break the change stream', () => {
+    const result = useCollection('items');
+    result.onChange('sub-sync', () => { throw new Error('sync boom'); });
+
+    expect(() => onChangeCallback!({ collectionName: 'items' })).not.toThrow();
+  });
+
+  it('logs a synchronously throwing callback', () => {
+    const result = useCollection('items');
+    result.onChange('sub-sync', () => { throw new Error('sync boom'); });
+
+    onChangeCallback!({ collectionName: 'items' });
+
+    expect(mockLogger.error).toHaveBeenCalledWith('onChange callback threw synchronously',
+      { collectionName: 'items', subscriptionId: 'sub-sync', error: 'sync boom' });
+  });
+
+  // ─── onChange registration contract ─────────────────────────────────────────
+
+  it('returns an unsubscribe function for an anonymous watch', () => {
+    const result = useCollection('items');
+
+    const unsubscribe = result.onChange(vi.fn());
+
+    expect(unsubscribe).toBe(mockUnsubscribe);
+  });
+
+  it('throws when no callback is supplied', () => {
+    const result = useCollection('items');
+
+    expect(() => (result.onChange as unknown as (id: string) => void)('sub-without-callback'))
+      .toThrow('Callback is required to subscribe to changes for this collection');
+  });
+
+  it('ignores removal of a watch id that was never registered', () => {
+    const result = useCollection('items');
+
+    result.removeOnChange('never-registered');
+
+    expect(mockUnsubscribe).not.toHaveBeenCalled();
+  });
+
+  it('only unsubscribes a named watch once even if removed twice', () => {
+    const result = useCollection('items');
+    result.onChange('sub-twice', vi.fn());
+
+    result.removeOnChange('sub-twice');
+    result.removeOnChange('sub-twice');
+
+    expect(mockUnsubscribe).toHaveBeenCalledTimes(1);
+  });
 });

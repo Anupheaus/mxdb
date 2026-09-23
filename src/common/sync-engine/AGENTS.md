@@ -33,6 +33,7 @@ One SR + SD pair per connected client on the server. One CD + CR pair per client
 2. **No audit entries may ever be lost** — collapse/push/apply must preserve pending entries.
 3. **Delete is final** — enforced at every boundary (CR, SD, SR, client store).
 4. **In-memory read layer** — sync callbacks are synchronous because they hit an in-memory copy, not SQLite.
+5. **Dispatchers never reject into fire-and-forget calls** — `ServerDispatcher.#dispatch` runs from `void` call sites (`push`, `resume`, retry timer). A failed `onDispatch` (e.g. the socket dropped mid-emit) is logged and retried with exponential backoff (`retryInterval` × 2ⁿ, capped at 30 s; reset on success). The queue is kept, so nothing is marked acknowledged. `close()`/`pause()` stops the retries. A rethrow here used to be an unhandled rejection that could terminate the server.
 
 ## Related
 

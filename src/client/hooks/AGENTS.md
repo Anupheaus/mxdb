@@ -47,7 +47,7 @@ This directory contains two layers:
 
 **`RemoveDasherized` key mapping:** Dasherized collection names like `'order-item'` are converted to camelCase at both the type level (`RemoveDasherized<Name>`) and at runtime (`name.toVariableName()`). The result key is `orderItem`, the upsert key is `upsertOrderItem`, etc.
 
-**Auto-save in `createUseRecord`:** `autoSaveXxx(record)` debounces upserts (30 s). The debounce is flushed on component unmount (`useOnUnmount`) and on `window.beforeunload`. The flush clears the pending record before awaiting, preventing a double-save if the user cancels navigation.
+**Auto-save in `createUseRecord`:** `autoSaveXxx(record)` debounces upserts (30 s). The debounce is flushed on component unmount (`useOnUnmount`) and on `window.beforeunload`. The flush clears the pending record before awaiting, preventing a double-save if the user cancels navigation. If the save fails, the flush never rejects (all callers are fire-and-forget): the error is logged and the record is put back as pending — unless a newer edit was queued meanwhile — so the next flush (next edit, unmount or `beforeunload`) retries it rather than dropping the edit.
 
 **`useXxx.query()` vs `useXxx().queryXxx`:** The reactive `.query()` sub-hook calls `useCollection().useQuery()` internally — it subscribes to live updates and re-renders when results change. The `queryXxx` method on the `useXxx()` result is a one-time async call (wraps `useCollection().query()`) — not reactive. Both return the same named shape `{ xxx[], totalXxx }` (`.query()` adds `isLoadingXxx`; `queryXxx` does not).
 

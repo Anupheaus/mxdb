@@ -17,7 +17,16 @@ export function createUseDistinct<RecordType extends Record>(distinct: Distinct<
 
     useLayoutEffect(() => {
       setState(s => ({ ...s, isLoading: true }));
-      distinct(field, fields => setState({ values: fields as DistinctField[], isLoading: false, error: undefined }));
+      // Shared by the initial run (its rejected promise) and the reactive re-runs (collection change /
+      // subscription update), so a failure surfaces identically whichever run hit it: last values kept, error set.
+      const onError = (error: unknown) => {
+        console.error('[MXDB] useDistinct threw', { field, error }); // eslint-disable-line no-console
+        setState(s => ({ ...s, isLoading: false, error: error as MXDBError }));
+      };
+      distinct({ field }, {
+        onResponse: fields => setState({ values: fields as DistinctField[], isLoading: false, error: undefined }),
+        onError,
+      }).catch(onError);
     }, [field]);
 
     return getState();

@@ -163,7 +163,16 @@ export function createUseRecord<
       if (lastAutoSaveRecordRef.current == null) return;
       const recordToSave = lastAutoSaveRecordRef.current;
       lastAutoSaveRecordRef.current = undefined;
-      await upsertRecord(recordToSave);
+      try {
+        await upsertRecord(recordToSave);
+      } catch (error) {
+        // Every caller is fire-and-forget (debounce timer, unmount, beforeunload), so rethrowing would be an
+        // unhandled rejection. Keep the edit pending so the next flush retries it instead of silently
+        // dropping it — unless a newer edit has been queued meanwhile, which supersedes this one.
+        lastAutoSaveRecordRef.current ??= recordToSave;
+        // eslint-disable-next-line no-console -- record factories have no logger (same as useGet)
+        console.error(`Auto-save of "${collection.name}" record "${recordToSave.id}" failed; it will be retried on the next save`, error);
+      }
     });
     useOnUnmount(() => void flushSave());
     useLayoutEffect(() => {

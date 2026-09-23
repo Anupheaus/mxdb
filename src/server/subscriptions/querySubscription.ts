@@ -8,7 +8,7 @@ import { useAuthentication, useLogger } from '@anupheaus/nexus/server';
 import type { QueryProps } from '../../common';
 
 export const serverQuerySubscription = createServerCollectionSubscription<string[]>()(mxdbQuerySubscription,
-  async ({ request, previousResponse, subscriptionId, additionalData: previousRecordIds, updateAdditionalData, update, onUnsubscribe }) => {
+  async ({ request, subscriptionId, updateAdditionalData, update, onUnsubscribe }) => {
     const logger = useLogger();
     const { collectionName, filters, pagination, sorts, serverHints, getAccurateTotal } = request;
     const { collection, query, onChange, removeOnChange } = useCollection(collectionName);
@@ -47,18 +47,36 @@ export const serverQuerySubscription = createServerCollectionSubscription<string
       return [records.ids(), total];
     }
 
+    // What the client currently holds: the initial response, then each update sent since. Changes are
+    // compared against this — not the response/ids remembered from an earlier subscribe, which this
+    // subscribe's fresh initial response has already superseded on the client.
+    let sentTotal: number | undefined;
+    let sentRecordIds: string[] = [];
+
+    function rememberSentResult(recordIds: string[], total: number): void {
+      sentTotal = total;
+      sentRecordIds = recordIds;
+      // Persisted alongside the previous response (saved by `update`) so a re-subscribe starts from them.
+      updateAdditionalData(recordIds);
+    }
+
+    function hasVisiblyChanged(recordIds: string[], total: number): boolean {
+      if (total !== sentTotal || recordIds.length !== sentRecordIds.length) return true;
+      // a record is new, should now appear in this query, or has changed place
+      return sentRecordIds.some((id, index) => recordIds[index] !== id);
+    }
+
     const watchId = `mxdb.query.${subscriptionId}`;
     onChange(watchId, async () => {
       try {
         const [newRecordIds, newTotal] = await refreshQueryAndPushToSubscriber();
-        // if the new total is different or we have different number of record ids, we need to update
-        if (newTotal !== previousResponse || newRecordIds.length !== previousRecordIds?.length) { return update(newTotal); }
-        // if the record is new or should now appear in this query or has changed place, we need to update
-        if (previousRecordIds.some((id, index) => newRecordIds[index] !== id)) { return update(newTotal); }
+        if (!hasVisiblyChanged(newRecordIds, newTotal)) return;
+        rememberSentResult(newRecordIds, newTotal);
+        await update(newTotal);
       } catch (err) {
         logger.error('querySubscription onChange error', {
           collectionName, subscriptionId,
-          previousRecordCount: previousRecordIds?.length ?? 0,
+          previousRecordCount: sentRecordIds.length,
           capturedS2CIsNoOp: capturedS2C.isNoOp,
           error: err instanceof Error ? err.message : String(err),
         });
@@ -69,7 +87,7 @@ export const serverQuerySubscription = createServerCollectionSubscription<string
 
     try {
       const [recordIds, total] = await refreshQueryAndPushToSubscriber();
-      updateAdditionalData(recordIds);
+      rememberSentResult(recordIds, total);
       return total;
     } catch (err) {
       logger.error('querySubscription setup error (initial push failed)', {
