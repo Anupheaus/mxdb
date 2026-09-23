@@ -47,9 +47,9 @@ Legacy **`mxdbSyncCollectionsAction`**, **`mxdbUpsertAction`**, **`mxdbRemoveAct
 | **Connection + sync UI state** | `isConnected`, `clientId`, optional test disconnect/reconnect, sync spinner hook-up | `useMXDB` — [`src/client/useMXDB.ts`](../../src/client/useMXDB.ts) |
 | **Single-record hook** | Load / edit one record with rebase-on-push behaviour | `useRecord` — [`src/client/useRecord.ts`](../../src/client/useRecord.ts) |
 | **Collection hook** | `get`, `useGet`, `getAll`, `useGetAll`, `upsert`, `remove`, `query`, `useQuery`, `distinct`, `useDistinct`, `onChange`, … | `useCollection` — [`src/client/hooks/useCollection/useCollection.ts`](../../src/client/hooks/useCollection/useCollection.ts) |
-| **Auth** | Whether IndexedDB session is ready | `useMXDBAuth` — [`src/client/hooks/useMXDBAuth.ts`](../../src/client/hooks/useMXDBAuth.ts) |
-| **Invite / registration** | Invite flow helpers | `useMXDBInvite` — [`src/client/hooks/useMXDBInvite.ts`](../../src/client/hooks/useMXDBInvite.ts) |
-| **Sign out** | Clear local session | `useMXDBSignOut` — [`src/client/hooks/useMXDBSignOut.ts`](../../src/client/hooks/useMXDBSignOut.ts) |
+| **Auth** | Sign-in state (`isAuthenticated`, `user`, `account`), `signIn`, `signOut` | `useAuthentication` — re-exported from `@anupheaus/nexus/client` in [`src/client/index.ts`](../../src/client/index.ts) |
+| **Invite / registration** | Redeem an invite link: `signIn()` on a page whose URL has `?requestId=` runs WebAuthn registration (no separate hook) | `useAuthentication().signIn` — server flow in [`src/server/auth/AGENTS.md`](../../src/server/auth/AGENTS.md) |
+| **Sign out** | Returns the `signOut` function from `useAuthentication()` | `useMXDBSignOut` — [`src/client/hooks/useMXDBSignOut.ts`](../../src/client/hooks/useMXDBSignOut.ts) |
 
 ### Internal providers (composed under `MXDBSync`)
 

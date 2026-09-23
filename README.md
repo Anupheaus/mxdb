@@ -37,7 +37,7 @@ The library is split into three layers:
 | Layer | Role |
 |-------|------|
 | **Common** | Define collections with `defineCollection(config)`. Config includes `name`, `indexes`, `syncMode`, and `disableAudit`. Shared by client and server. |
-| **Client** | Wrap the app in `<MXDBSync>`, then use `useCollection(collection)` for CRUD and real-time updates. Auth hooks (`useMXDBAuth`, `useMXDBInvite`, `useMXDBSignOut`) manage WebAuthn device registration and sessions. `useRecord()` provides optimistic edit + server-rebase semantics. |
+| **Client** | Wrap the app in `<MXDBSync>`, then use `useCollection(collection)` for CRUD and real-time updates. `useAuthentication()` (re-exported from `@anupheaus/nexus/client`) handles sign-in state, WebAuthn device registration (invite redemption) and sign-out; `useMXDBSignOut()` returns just its `signOut` function. `useRecord()` provides optimistic edit + server-rebase semantics. |
 | **Server** | Call `startServer(config)` with MongoDB connection, collections, and an `onGetUserDetails` callback. Use `extendCollection(collection, hooks)` to add lifecycle hooks and seeding. The returned `ServerInstance` exposes invite-link and device-management helpers. |
 
 The server exposes socket actions (upsert, remove, get, getAll, query, distinct, sync) and subscriptions; the client talks to them over the socket and stores data locally in a per-device SQLite database. Change notifications are driven by the MongoDB change stream.
@@ -199,20 +199,25 @@ function Content() {
 Authentication is device-scoped and uses **WebAuthn with the PRF extension** to derive a per-device encryption key. Devices are registered via an invite-link flow; there is no username/password.
 
 ```tsx
-import { useMXDBAuth, useMXDBInvite, useMXDBSignOut } from '@anupheaus/mxdb/client';
+import { useAuthentication, useMXDBSignOut } from '@anupheaus/mxdb/client';
 
-// Check whether the current device is authenticated
-const { isAuthenticated } = useMXDBAuth();
+// Auth state for the current device
+const { isAuthenticated, user, signIn, signOut } = useAuthentication();
 
-// Redeem an invite link (triggers WebAuthn credential creation)
-const handleInvite = useMXDBInvite();
-await handleInvite(inviteUrl, { appName: 'My App' });
-// → creates WebAuthn credential, registers device on server, stores token locally
+// Sign in. On a page whose URL has `?requestId=` (an invite link) this redeems the invite:
+// creates a WebAuthn passkey, registers the device on the server, sets the session cookie
+// and removes `requestId` from the URL. Without it, it re-authenticates an existing device.
+await signIn();
 
 // Sign out of the current device
-const { signOut } = useMXDBSignOut();
 await signOut();
+
+// Or, when you only need sign-out — useMXDBSignOut() returns the signOut function itself
+const signOutDevice = useMXDBSignOut();
+await signOutDevice();
 ```
+
+There is no dedicated invite hook: invite redemption is triggered by calling `signIn()` while the `?requestId=` query parameter is present.
 
 **Flow:**
 1. Server calls `instance.createInvite({ userId, baseUrl })` and sends the URL to the user.

@@ -42,8 +42,9 @@ Children render **inside** authenticated DB + socket once the bridge has finishe
 
 ## 3. Auth and “ready” state
 
-- **`useMXDBAuth()`** → `{ isAuthenticated }` — `true` when IndexedDB session is loaded and SQLite is open (see `AuthTokenContext`).
-- Registration / invite flows use **`useMXDBInvite`**; sign-out uses **`useMXDBSignOut`**.
+- **`useAuthentication()`** (re-exported from `@anupheaus/nexus/client`) → `{ isAuthenticated, user, account, signIn, signOut, … }` — the single auth hook.
+- **Invite / registration**: there is no separate invite hook. Call **`signIn()`** on the page opened from an invite link; when the URL has `?requestId=`, `signIn()` runs WebAuthn registration instead of re-authentication (server side: [src/server/auth/AGENTS.md](../../src/server/auth/AGENTS.md) → "Invite link flow (WebAuthn)").
+- **Sign-out**: `useAuthentication().signOut()`, or **`useMXDBSignOut()`**, which returns that `signOut` function directly (not an object).
 
 Details of WebAuthn + PRF are documented in [design.md](../plans/design.md) (platform section); the client code paths live under **`src/client/auth/`**.
 
