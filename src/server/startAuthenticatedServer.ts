@@ -280,13 +280,25 @@ export async function startAuthenticatedServer({
           }
         }
         await socketAuthCtx.setUser(socketAuthCtx.user);
-        connectedUsers.set(client, socketAuthCtx.user);
         const currentAccount = socketAuthCtx.account;
         // Re-emit account on every connect. Server auth context can retain account across
         // reconnects (same Connection scope) while the client resets on each new socket —
         // skipping setAccount when account is already set leaves the client with no account.
+        if (currentAccount != null) await socketAuthCtx.setAccount(currentAccount);
+
+        // The socket can drop during the awaits above, in which case onClientDisconnected has
+        // already run. Recording the user now would leak it and fire onConnected with no
+        // matching onDisconnected (the host app would show the user as online forever).
+        if (!clientS2CInstances.has(client)) {
+          logger?.info('[Auth] Client disconnected before its connection was established', {
+            userId: socketAuthCtx.user.id,
+            socketId: client.id,
+          });
+          return;
+        }
+
+        connectedUsers.set(client, socketAuthCtx.user);
         if (currentAccount != null) {
-          await socketAuthCtx.setAccount(currentAccount);
           connectedAccounts.set(client, currentAccount);
           logger?.info('[Auth] Account synced to client on connect', {
             userId: socketAuthCtx.user.id,

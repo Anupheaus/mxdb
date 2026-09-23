@@ -64,11 +64,15 @@ export abstract class AuthCollection<TRecord extends NexusAuthRecord> implements
    *  Subclasses use this for extra queries. */
   protected async getColl(): Promise<Collection<AuthDoc<TRecord>>> {
     const serverDb = this.#getServerDb();
-    let coll = this.#collByServerDb.get(serverDb);
-    if (coll == null) {
-      coll = this.#init(serverDb);
-      this.#collByServerDb.set(serverDb, coll);
-    }
+    const cached = this.#collByServerDb.get(serverDb);
+    if (cached != null) return cached;
+    const coll = this.#init(serverDb);
+    this.#collByServerDb.set(serverDb, coll);
+    // Never cache a failed setup: a transient Mongo error (or another server instance winning the
+    // race to create the collection) would otherwise fail every later auth query until restart.
+    coll.catch(() => {
+      if (this.#collByServerDb.get(serverDb) === coll) this.#collByServerDb.delete(serverDb);
+    });
     return coll;
   }
 

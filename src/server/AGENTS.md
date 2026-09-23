@@ -77,6 +77,7 @@ Implementation lives under `src/server/mcp/`.
 ## Ambiguities and gotchas
 
 - **`onAfterUpsert` / `onAfterDelete` are change-stream driven** — they run on every server instance watching the stream, not just the one that originated the write. Use `onBefore*` for per-request validation.
+- **`onConnected` / `onDisconnected` are always paired** — if a socket drops while `onClientConnected` is still awaiting auth work (account lookup, `setUser`), the connection is abandoned: no `onConnected`, no entry in `listConnectedClients`, and the host's `onClientConnected` is skipped (its `onClientDisconnected` already ran).
 - **`registerDevAuthRoute` is excluded in production** — do not rely on it in prod builds.
 - **`close()` on `ServerInstance`** terminates the MongoDB connection. Required for clean test teardown; neglecting it causes open handle warnings in Vitest.
 
