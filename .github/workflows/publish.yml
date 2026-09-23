@@ -159,6 +159,7 @@ jobs:
     permissions:
       contents: read
       packages: read
+      statuses: write
     steps:
       - name: Setup pnpm, node, and install
         uses: Anupheaus/ci-templates/.github/actions/pnpm-setup@v1
@@ -170,6 +171,14 @@ jobs:
 
       - name: Run unit tests with coverage
         run: pnpm run test:ci -- --coverage
+
+      - name: Publish coverage status
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          PCT="$(node -e "const fs=require('fs');const files=['coverage/coverage-summary.json','coverage/vitest/coverage-summary.json'];const file=files.find(p=>fs.existsSync(p));if(!file)process.exit(1);const pct=Math.round(JSON.parse(fs.readFileSync(file,'utf8')).total.lines.pct);if(!Number.isFinite(pct)||pct<0||pct>100)process.exit(1);process.stdout.write(String(pct));")" || exit 0
+          gh api "repos/${{ github.repository }}/statuses/${{ github.sha }}" -f state=success -f context=coverage -f description="${PCT}%"
 
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v4
