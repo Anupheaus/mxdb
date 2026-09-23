@@ -38,9 +38,13 @@ export function createQuery<RecordType extends Record>(collection: DbCollection<
   function queryWrapper(props?: AddDebugTo<AddDisableTo<QueryProps<RecordType>>>): Promise<QueryResponse<RecordType>>;
   function queryWrapper(props: AddDebugTo<AddDisableTo<QueryProps<RecordType>>>, onResponse: (result: QueryResponse<RecordType>) => void): Promise<void>;
   function queryWrapper(props: AddDebugTo<AddDisableTo<QueryProps<RecordType>>>, onResponse: (result: QueryResponse<RecordType>) => void, onSameResponse: () => void): Promise<void>;
+  /** `onError` receives failures of the reactive re-runs (collection change / subscription update); the initial run still rejects. */
+  function queryWrapper(props: AddDebugTo<AddDisableTo<QueryProps<RecordType>>>, onResponse: (result: QueryResponse<RecordType>) => void, onSameResponse: () => void,
+    onError: (error: unknown) => void): Promise<void>;
   function queryWrapper(props?: AddDebugTo<AddDisableTo<QueryProps<RecordType>>>, onResponse?: (result: QueryResponse<RecordType>) => void,
-    onSameResponse?: () => void): Promise<QueryResponse<RecordType> | void> {
+    onSameResponse?: () => void, onError?: (error: unknown) => void): Promise<QueryResponse<RecordType> | void> {
     props = props ?? {};
+    if (is.function(onResponse) && is.function(onSameResponse) && is.function(onError)) return wrapper(props, onResponse, onSameResponse, onError);
     if (is.function(onResponse) && is.function(onSameResponse)) return wrapper(props, onResponse, onSameResponse);
     if (is.function(onResponse)) return wrapper(props, onResponse);
     return wrapper(props);

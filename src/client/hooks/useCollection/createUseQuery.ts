@@ -21,15 +21,19 @@ export function createUseQuery<RecordType extends Record>(query: Query<RecordTyp
         setState(s => ({ ...s, isLoading: true }));
         const requestId = requestIdRef.current = Math.uniqueId();
         if (props.debug) logger.debug('useQuery send', { requestId, props });
+        // Shared by the initial run (its rejected promise) and the reactive re-runs (collection change /
+        // subscription update), so a failure surfaces identically whichever run hit it: last records kept, error set.
+        const onError = (error: unknown) => {
+          logger.error('useQuery threw', { props, error: error instanceof Error ? error.message : String(error) });
+          if (requestId !== requestIdRef.current) return;
+          setState(s => ({ ...s, isLoading: false, error: error as MXDBError }));
+        };
         query(props, ({ records, total }) => {
           if (props.debug) logger.debug('useQuery response', { requestId, count: records.length, total });
           if (requestId !== requestIdRef.current) return;
           lastResponseRef.current = { records, total }; // store the last response to be used when the query is disabled and then the same props are passed again, the onSameResponse callback will be called
           setState({ records, total, isLoading: false, error: undefined });
-        }, () => setState(s => ({ ...s, ...lastResponseRef.current, isLoading: false }))).catch(error => {
-          logger.error('useQuery threw', { props, error: error instanceof Error ? error.message : String(error) });
-          setState(s => ({ ...s, isLoading: false, error: error as MXDBError }));
-        });
+        }, () => setState(s => ({ ...s, ...lastResponseRef.current, isLoading: false })), onError).catch(onError);
       }
     }, [Object.hash(props)]);
 

@@ -20,6 +20,8 @@ const { nexus } = vi.hoisted(() => ({
     actionCalls: [] as { name: string; request: unknown }[],
     /** Rejections from subscription callbacks; the real subscription layer does not await its callbacks. */
     callbackErrors: [] as unknown[],
+    /** The most recently registered subscription callback, so a test can push a server update through it. */
+    subscriptionCallback: undefined as ((response: unknown) => unknown) | undefined,
   },
 }));
 
@@ -34,7 +36,7 @@ vi.mock('@anupheaus/nexus/client', () => ({
         void Promise.resolve(storedCallback?.(undefined)).catch(error => { nexus.callbackErrors.push(error); });
       },
       unsubscribe: () => undefined,
-      onCallback: (callback: (response: unknown) => unknown) => { storedCallback = callback; },
+      onCallback: (callback: (response: unknown) => unknown) => { storedCallback = nexus.subscriptionCallback = callback; },
     };
   },
   useAction: () => new Proxy({}, {
@@ -144,6 +146,12 @@ async function settle(): Promise<void> {
   await act(async () => { await vi.advanceTimersByTimeAsync(0); });
 }
 
+/** Pushes a server subscription update the way the real subscription layer does: without awaiting the callback. */
+function pushSubscriptionUpdate(): void {
+  const callback = nexus.subscriptionCallback;
+  void Promise.resolve(callback?.(undefined)).catch(error => { nexus.callbackErrors.push(error); });
+}
+
 function api(): CollectionApi {
   return observed.api!;
 }
@@ -154,6 +162,7 @@ beforeEach(() => {
   nexus.actions.clear();
   nexus.actionCalls = [];
   nexus.callbackErrors = [];
+  nexus.subscriptionCallback = undefined;
   observed.api = undefined;
   observed.value = undefined;
   local = new FakeLocalCollection();
@@ -414,6 +423,49 @@ describe('useCollection reactive hooks', () => {
     await settle();
 
     expect(observed.value).toEqual({ record: undefined, isLoading: false, error: undefined });
+  });
+});
+
+// ─── useQuery re-runs ─────────────────────────────────────────────────────────
+
+describe('useCollection useQuery re-runs', () => {
+  const triggers: [string, () => Promise<void>][] = [
+    ['a collection change', async () => {
+      act(() => local.emit({ type: 'upsert', records: [alpha], auditAction: 'default' }));
+      await act(async () => { await vi.advanceTimersByTimeAsync(PAST_CHANGE_DEBOUNCE_MS); });
+    }],
+    ['a subscription update', async () => {
+      await act(async () => {
+        pushSubscriptionUpdate();
+        await vi.advanceTimersByTimeAsync(0);
+      });
+    }],
+  ];
+
+  it.each(triggers)('surfaces a failed re-run triggered by %s as an error, keeping the last records', async (_label, trigger) => {
+    const failure = new Error('sqlite unavailable');
+    local.seed(alpha);
+    render(WIDGETS, ({ useQuery }) => useQuery({}));
+    await settle();
+
+    local.queryError = failure;
+    await trigger();
+
+    expect({ state: observed.value, callbackErrors: nexus.callbackErrors })
+      .toEqual({ state: { records: [alpha], total: 1, isLoading: false, error: failure }, callbackErrors: [] });
+  });
+
+  it.each(triggers)('clears the error once a re-run triggered by %s succeeds again', async (_label, trigger) => {
+    local.seed(alpha);
+    render(WIDGETS, ({ useQuery }) => useQuery({}));
+    await settle();
+    local.queryError = new Error('sqlite unavailable');
+    await trigger();
+
+    local.queryError = undefined;
+    await trigger();
+
+    expect(observed.value).toEqual({ records: [alpha], total: 1, isLoading: false, error: undefined });
   });
 });
 

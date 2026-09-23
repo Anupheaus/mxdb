@@ -65,10 +65,14 @@ export function useSubscriptionWrapper<RecordType extends Record, Request extend
     };
   }, []);
 
+  // `onError` receives failures of the reactive RE-RUNS (triggered by a collection change or a subscription update),
+  // which nothing awaits. A failure of the initial run still rejects the returned promise.
+  async function invoke(props: AddDisableTo<Request>, onResponse: (result: Response) => void, onSameResponse: () => void, onError: (error: unknown) => void): Promise<void>;
   async function invoke(props: AddDisableTo<Request>, onResponse: (result: Response) => void, onSameResponse: () => void): Promise<void>;
   async function invoke(props: AddDisableTo<Request>, onResponse: (result: Response) => void): Promise<void>;
   async function invoke(props: AddDisableTo<Request>): Promise<Response>;
-  async function invoke(props: AddDisableTo<Request>, onResponse?: (result: Response) => void, onSameResponse?: () => void): Promise<void | Response> {
+  async function invoke(props: AddDisableTo<Request>, onResponse?: (result: Response) => void, onSameResponse?: () => void,
+    onError?: (error: unknown) => void): Promise<void | Response> {
     const { disable, ...rest } = props;
     const request = rest as Request;
     const isActionRequired = !is.function(onResponse);
@@ -95,14 +99,32 @@ export function useSubscriptionWrapper<RecordType extends Record, Request extend
       return true;
     };
 
-    // execute and validate and update the result only if it has changed
-    const executeValidateAndUpdate = executeValidateAndUpdateRef.current = async () => {
-      if (!okToExecute()) return;
-      const result = await execute();
-      if (result === RequestCancelled) {
+    // Re-runs are fire-and-forget (debounced collection changes; subscription callbacks the socket layer doesn't
+    // await), so a failure must be reported here or it becomes an unhandled rejection and the consumer keeps
+    // showing its last result as if nothing went wrong.
+    const reportRerunError = (error: unknown) => {
+      // The consumer now shows an error rather than the last result, so the next successful result must be
+      // delivered through onResponse (clearing the error) even when it is identical to the one before the failure.
+      lastResultHashRef.current = undefined;
+      if (onError != null) {
+        onError(error);
         return;
       }
-      validateAndUpdate(result);
+      logger.error(`Re-running the request on collection "${collection.name}" failed`, { error: error instanceof Error ? error.message : String(error) });
+    };
+
+    // execute and validate and update the result only if it has changed
+    const executeValidateAndUpdate = executeValidateAndUpdateRef.current = async () => {
+      try {
+        if (!okToExecute()) return;
+        const result = await execute();
+        if (result === RequestCancelled) {
+          return;
+        }
+        validateAndUpdate(result);
+      } catch (error) {
+        reportRerunError(error);
+      }
     };
 
     // validate and update the result only if it has changed
@@ -123,8 +145,12 @@ export function useSubscriptionWrapper<RecordType extends Record, Request extend
         disable: disable || isActionRequired,
         onEmptyUpdate: onRemoteDefaultResponse,
         onUpdate: async response => {
-          await onRemoteResponse?.(response);
-          await executeValidateAndUpdate();
+          try {
+            await onRemoteResponse?.(response);
+            await executeValidateAndUpdate();
+          } catch (error) {
+            reportRerunError(error);
+          }
           remoteQueryCalledRef.current = false;
         },
       }),

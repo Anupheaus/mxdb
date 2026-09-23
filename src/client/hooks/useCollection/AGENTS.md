@@ -24,12 +24,12 @@ Primary collection API for React components: imperative CRUD operations and reac
 ### Reactive hooks
 - `createUseGet.ts` — `useGet(id)` — subscribes to a single record; re-renders on change
 - `createUseGetAll.ts` — `useGetAll()` — subscribes to all records
-- `createUseQuery.ts` — `useQuery(request)` — subscribes to a query result
+- `createUseQuery.ts` — `useQuery(request)` — subscribes to a query result. A failure of the initial run or of any reactive re-run (collection change / subscription update) produces the same state: last records kept, `isLoading: false`, `error` set. The next successful re-run clears `error`.
 - `createUseDistinct.ts` — `useDistinct(field, filters?)` — subscribes to distinct values
 - `createUseSubscription.ts` — `useSubscription(name, request)` — subscribes to a named server-side subscription
 
 ### Utilities
-- `useSubscriptionWrapper.ts` — shared subscription lifecycle (subscribe, unsubscribe, re-subscribe on dependency change)
+- `useSubscriptionWrapper.ts` — shared subscription lifecycle (subscribe, unsubscribe, re-subscribe on dependency change). Re-runs triggered by a collection change (debounced) or a subscription update are fire-and-forget, so the wrapper catches their failures. It passes each failure to the caller's optional 4th `onError` callback (used by `useQuery`), or logs it when no callback is given (`getAll` / `distinct`). A failure also resets the last-result hash, so the next successful result is delivered even if it is unchanged. Failures of the initial run still reject the returned promise.
 
 ## Architecture
 
