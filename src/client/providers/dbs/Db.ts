@@ -17,11 +17,15 @@ export class Db {
     collections: MXDBCollectionConfig[],
     encryptionKey?: Uint8Array,
     auditorLogger?: Logger,
+    /** A still-running close of a previous instance of this database (see `Dbs.close`) — opening waits for it. */
+    afterPreviousClose?: Promise<void>,
   ) {
     this.#name = name;
     this.#worker = new SqliteWorkerClient({ encryptionKey });
-    // Open the database and ensure all tables exist, then construct collections
-    this.#ready = this.#openDb(collections);
+    // Open the database and ensure all tables exist, then construct collections. A failed previous
+    // close must not block this open — the worker re-checks its own handle/lock state on open.
+    const previousClose = afterPreviousClose?.catch(() => { /* surfaced by the closer */ }) ?? Promise.resolve();
+    this.#ready = previousClose.then(() => this.#openDb(collections));
     this.#collections = new Map(
       collections.map(config => [
         config.name,

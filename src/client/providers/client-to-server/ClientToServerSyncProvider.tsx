@@ -1,4 +1,4 @@
-import { createComponent, useLogger, useOnUnmount } from '@anupheaus/react-ui';
+import { createComponent, useLogger } from '@anupheaus/react-ui';
 import type { ReactNode } from 'react';
 import { useEffect, useMemo, useState } from 'react';
 import { useAction, useNexus } from '@anupheaus/nexus/client';
@@ -90,7 +90,14 @@ export const ClientToServerSyncProvider = createComponent('ClientToServerSyncPro
       onUnauthorized,
     });
     return { cr, c2s };
-  }, []);
+    // Rebuilt per Db instance: DbsProvider swaps the Db whenever the encryption key changes (it can be
+    // applied twice in quick succession on sign-in/registration). An engine kept from the first render
+    // stays bound to the replaced Db — closed mid-open — and start() waits forever on its collections
+    // (sync never starts → "Authenticating, please wait...").
+  }, [db]);
+
+  // Close the engine for a replaced Db (and on unmount).
+  useEffect(() => () => c2s.close(), [c2s]);
 
   // Track dispatching state for consumers (useMXDB)
   const [isDispatching, setIsDispatching] = useState(false);
@@ -106,6 +113,8 @@ export const ClientToServerSyncProvider = createComponent('ClientToServerSyncPro
     else c2s.stop();
   });
 
+  // Start each engine (the first, and any rebuilt for a new Db) if already connected — the
+  // connection-state callback above only fires on transitions.
   useEffect(() => {
     if (getIsConnected()) {
       void c2s.start().catch(error => onError?.({
@@ -115,11 +124,7 @@ export const ClientToServerSyncProvider = createComponent('ClientToServerSyncPro
         originalError: error,
       }));
     }
-  }, []);
-
-  useOnUnmount(() => {
-    c2s.close();
-  });
+  }, [c2s]);
 
   const syncStateValue = useMemo(() => ({
     isSyncing: isDispatching,

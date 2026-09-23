@@ -8,6 +8,7 @@ import { ServerToClientProvider } from '../providers/server-to-client';
 import { deriveKey } from './deriveKey';
 import { saveEncryptionToSession, loadEncryptionFromSession, clearEncryptionFromSession } from './encryptionSessionCache';
 import { createDbReadyWaitHandle } from './dbReadyWait';
+import { keepEncryptionKey } from './keepEncryptionKey';
 import { DB_READY_TIMEOUT_MS, MxdbReadyContext } from './MxdbReadyContext';
 import type { MXDBCollection, MXDBError } from '../../common';
 import type { MXDBAccount, MXDBUser } from '../../common/models';
@@ -109,7 +110,7 @@ export const MXDBSyncInner = createComponent('MXDBSyncInner', ({
         // Cache the derived key so page refreshes can restore it from session without a
         // new WebAuthn ceremony (session cookie handles re-auth; PRF handles encryption).
         saveEncryptionToSession(appName, userId, key, dbName);
-        setEncryptionKey(key);
+        setEncryptionKey(current => keepEncryptionKey(current, key));
         setDbName(dbName);
         reauthInProgressRef.current = false;
       } catch (err) {
@@ -152,7 +153,9 @@ export const MXDBSyncInner = createComponent('MXDBSyncInner', ({
         // refresh doesn't require a new passkey ceremony (session cookie handles re-auth).
         const cached = loadEncryptionFromSession(appName, user.id);
         if (cached != null) {
-          setEncryptionKey(cached.key);
+          // Usually the same key the PRF handler has just applied (it saved it here) — keep that
+          // instance so the database isn't rebuilt mid-sync (see keepEncryptionKey).
+          setEncryptionKey(current => keepEncryptionKey(current, cached.key));
           setDbName(cached.dbName);
         }
         // No cached key → wait for the WebAuthn PRF ceremony via DeviceAuthGate/signIn
