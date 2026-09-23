@@ -23,7 +23,10 @@ export function createUseDistinct<RecordType extends Record>(distinct: Distinct<
         console.error('[MXDB] useDistinct threw', { field, error }); // eslint-disable-line no-console
         setState(s => ({ ...s, isLoading: false, error: error as MXDBError }));
       };
-      distinct({ field }, fields => setState({ values: fields as DistinctField[], isLoading: false, error: undefined }), onError).catch(onError);
+      distinct({ field }, {
+        onResponse: fields => setState({ values: fields as DistinctField[], isLoading: false, error: undefined }),
+        onError,
+      }).catch(onError);
     }, [field]);
 
     return getState();

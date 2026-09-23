@@ -28,12 +28,16 @@ export function createUseQuery<RecordType extends Record>(query: Query<RecordTyp
           if (requestId !== requestIdRef.current) return;
           setState(s => ({ ...s, isLoading: false, error: error as MXDBError }));
         };
-        query(props, ({ records, total }) => {
-          if (props.debug) logger.debug('useQuery response', { requestId, count: records.length, total });
-          if (requestId !== requestIdRef.current) return;
-          lastResponseRef.current = { records, total }; // store the last response to be used when the query is disabled and then the same props are passed again, the onSameResponse callback will be called
-          setState({ records, total, isLoading: false, error: undefined });
-        }, () => setState(s => ({ ...s, ...lastResponseRef.current, isLoading: false })), onError).catch(onError);
+        query(props, {
+          onResponse: ({ records, total }) => {
+            if (props.debug) logger.debug('useQuery response', { requestId, count: records.length, total });
+            if (requestId !== requestIdRef.current) return;
+            lastResponseRef.current = { records, total }; // store the last response to be used when the query is disabled and then the same props are passed again, the onSameResponse callback will be called
+            setState({ records, total, isLoading: false, error: undefined });
+          },
+          onSameResponse: () => setState(s => ({ ...s, ...lastResponseRef.current, isLoading: false })),
+          onError,
+        }).catch(onError);
       }
     }, [Object.hash(props)]);
 

@@ -7,6 +7,7 @@ import { useLayoutEffect, useRef } from 'react';
 import { DateTime } from 'luxon';
 import type { AddDisableTo } from '../../../common/models';
 import { ACTION_TIMEOUT_MS, withTimeout } from '../../utils/actionTimeout';
+import type { LiveRequestCallbacks } from './live-request-models';
 
 const RequestCancelled = Symbol('RequestCancelled');
 
@@ -65,15 +66,12 @@ export function useSubscriptionWrapper<RecordType extends Record, Request extend
     };
   }, []);
 
-  // `onError` receives failures of the reactive RE-RUNS (triggered by a collection change or a subscription update),
-  // which nothing awaits. A failure of the initial run still rejects the returned promise.
-  async function invoke(props: AddDisableTo<Request>, onResponse: (result: Response) => void, onSameResponse: (() => void) | undefined,
-    onError: (error: unknown) => void): Promise<void>;
-  async function invoke(props: AddDisableTo<Request>, onResponse: (result: Response) => void, onSameResponse: () => void): Promise<void>;
-  async function invoke(props: AddDisableTo<Request>, onResponse: (result: Response) => void): Promise<void>;
+  // Passing callbacks makes the request live (re-run on collection change / subscription update); without them it
+  // resolves once with the result. See LiveRequestCallbacks for when onError is used vs. the returned promise rejecting.
+  async function invoke(props: AddDisableTo<Request>, callbacks: LiveRequestCallbacks<Response>): Promise<void>;
   async function invoke(props: AddDisableTo<Request>): Promise<Response>;
-  async function invoke(props: AddDisableTo<Request>, onResponse?: (result: Response) => void, onSameResponse?: () => void,
-    onError?: (error: unknown) => void): Promise<void | Response> {
+  async function invoke(props: AddDisableTo<Request>, callbacks?: LiveRequestCallbacks<Response>): Promise<void | Response> {
+    const { onResponse, onSameResponse, onError } = callbacks ?? {};
     const { disable, ...rest } = props;
     const request = rest as Request;
     const isActionRequired = !is.function(onResponse);

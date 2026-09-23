@@ -575,3 +575,125 @@ describe('useCollection tableRequest', () => {
     expect({ first: onFirst.mock.calls.length, second: onSecond.mock.calls.length > 0 }).toEqual({ first: 0, second: true });
   });
 });
+
+// ─── Live-request callbacks (options object + deprecated positional forms) ────
+
+describe('useCollection live requests', () => {
+  const charlie: Widget = { id: 'c', name: 'Charlie', city: 'Rome' };
+
+  /** Makes the local collection change and lets the debounced re-run happen. */
+  async function changeLocally(): Promise<void> {
+    local.seed(charlie);
+    await act(async () => {
+      local.emit({ type: 'upsert', records: [charlie], auditAction: 'default' });
+      await vi.advanceTimersByTimeAsync(200);
+    });
+  }
+
+  async function touchLocally(): Promise<void> {
+    await act(async () => {
+      local.emit({ type: 'upsert', records: [alpha], auditAction: 'default' });
+      await vi.advanceTimersByTimeAsync(200);
+    });
+  }
+
+  type LiveCall = (callbacks: { onResponse(result: unknown): void; onSameResponse?(): void; onError?(error: unknown): void }) => Promise<void>;
+
+  const liveRequests: [string, LiveCall, (store: FakeLocalCollection, error: Error) => void, unknown, unknown][] = [
+    ['query', callbacks => api().query({}, callbacks), (store, error) => { store.queryError = error; },
+      { records: [alpha], total: 1 }, { records: [alpha, charlie], total: 2 }],
+    ['getAll', callbacks => api().getAll({}, callbacks), (store, error) => { store.getAllError = error; },
+      [alpha], [alpha, charlie]],
+    ['distinct', callbacks => api().distinct({ field: 'city' }, callbacks), (store, error) => { store.distinctError = error; },
+      ['London'], ['London', 'Rome']],
+  ];
+
+  it.each(liveRequests)('%s with a callbacks object delivers the initial result', async (_name, call, _fail, initial) => {
+    local.seed(alpha);
+    render(WIDGETS);
+    const onResponse = vi.fn();
+
+    await act(async () => { await call({ onResponse }); });
+
+    expect(onResponse.mock.calls).toEqual([[initial]]);
+  });
+
+  it.each(liveRequests)('%s with a callbacks object delivers a changed result after a local change', async (_name, call, _fail, _initial, changed) => {
+    local.seed(alpha);
+    render(WIDGETS);
+    const onResponse = vi.fn();
+    await act(async () => { await call({ onResponse }); });
+
+    await changeLocally();
+
+    expect(onResponse.mock.calls.at(-1)).toEqual([changed]);
+  });
+
+  it.each(liveRequests)('%s with a callbacks object reports a failed re-run through onError', async (_name, call, fail) => {
+    local.seed(alpha);
+    render(WIDGETS);
+    const onError = vi.fn();
+    await act(async () => { await call({ onResponse: vi.fn(), onError }); });
+    const error = new Error('local read failed');
+    fail(local, error);
+
+    await touchLocally();
+
+    expect(onError).toHaveBeenCalledWith(error);
+  });
+
+  it.each(liveRequests.filter(([name]) => name !== 'distinct'))('%s with a callbacks object calls onSameResponse when a re-run finds nothing new', async (_name, call) => {
+    local.seed(alpha);
+    render(WIDGETS);
+    const onSameResponse = vi.fn();
+    await act(async () => { await call({ onResponse: vi.fn(), onSameResponse }); });
+
+    await touchLocally();
+
+    expect(onSameResponse).toHaveBeenCalled();
+  });
+
+  describe('deprecated positional forms keep working', () => {
+    it.each([
+      ['query', (onResponse: () => void, onSameResponse: () => void) => api().query({}, onResponse, onSameResponse)],
+      ['getAll', (onResponse: () => void, onSameResponse: () => void) => api().getAll({}, onResponse, onSameResponse)],
+    ])('%s(props, onResponse, onSameResponse) delivers results and same-result notifications', async (_name, call) => {
+      local.seed(alpha);
+      render(WIDGETS);
+      const onResponse = vi.fn();
+      const onSameResponse = vi.fn();
+      await act(async () => { await call(onResponse, onSameResponse); });
+
+      await touchLocally();
+
+      expect({ responses: onResponse.mock.calls.length, same: onSameResponse.mock.calls.length > 0 }).toEqual({ responses: 1, same: true });
+    });
+
+    it('distinct(field, onResponse) delivers results', async () => {
+      local.seed(alpha);
+      render(WIDGETS);
+      const onResponse = vi.fn();
+
+      await act(async () => { await api().distinct('city', onResponse); });
+
+      expect(onResponse.mock.calls).toEqual([[['London']]]);
+    });
+
+    it('distinct(field, onResponse, true) is disabled and never delivers', async () => {
+      local.seed(alpha);
+      render(WIDGETS);
+      const onResponse = vi.fn();
+
+      await act(async () => { await api().distinct('city', onResponse, true); });
+
+      expect(onResponse).not.toHaveBeenCalled();
+    });
+  });
+
+  it('distinct honours disable passed in the props object', async () => {
+    local.seed(alpha);
+    render(WIDGETS);
+
+    await expect(api().distinct({ field: 'city', disable: true })).resolves.toEqual([]);
+  });
+});

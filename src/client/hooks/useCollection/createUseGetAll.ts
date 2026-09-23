@@ -26,12 +26,16 @@ export function createUseGetAll<RecordType extends Record>(getAll: GetAll<Record
           if (requestId !== requestIdRef.current) return;
           setState(s => ({ ...s, isLoading: false, error: error as MXDBError }));
         };
-        getAll(props, records => {
-          if (props.debug) console.log('[MXDB] getAll response', { requestId, count: records.length }); // eslint-disable-line no-console
-          if (requestId !== requestIdRef.current) return;
-          lastResponseRef.current = { records };
-          setState({ records, isLoading: false, error: undefined });
-        }, () => setState(s => ({ ...s, ...lastResponseRef.current, isLoading: false })), onError).catch(onError);
+        getAll(props, {
+          onResponse: records => {
+            if (props.debug) console.log('[MXDB] getAll response', { requestId, count: records.length }); // eslint-disable-line no-console
+            if (requestId !== requestIdRef.current) return;
+            lastResponseRef.current = { records };
+            setState({ records, isLoading: false, error: undefined });
+          },
+          onSameResponse: () => setState(s => ({ ...s, ...lastResponseRef.current, isLoading: false })),
+          onError,
+        }).catch(onError);
       }
     }, [Object.hash(props)]);
 

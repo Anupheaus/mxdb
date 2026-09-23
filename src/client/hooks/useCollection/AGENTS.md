@@ -29,8 +29,13 @@ Primary collection API for React components: imperative CRUD operations and reac
 - **Failure semantics (`useQuery`, `useGetAll`, `useDistinct`):** a failure of the initial run or of any reactive re-run (collection change / subscription update) produces the same state: last data kept, `isLoading: false`, `error` set. The next successful run clears `error`, even if its result is identical to the one before the failure. `useGet` handles its own fetch failure the same way (its change listener only applies event payloads, so it has no re-run to fail).
 - `createUseSubscription.ts` — `useSubscription(name, request)` — subscribes to a named server-side subscription
 
+### Live requests (`query` / `getAll` / `distinct` with callbacks)
+- Passing callbacks makes an imperative request *live*: it re-runs on every local collection change (debounced) and server subscription update. Pass them as a **`LiveRequestCallbacks` object** — `query(props, { onResponse, onSameResponse, onError })` (`live-request-models.ts`); a bare `onResponse` function as the second argument is also fine.
+- **Deprecated** (kept for existing callers, marked `@deprecated`): the 3+-argument positional forms `query(props, onResponse, onSameResponse)`, `getAll(props, onResponse, onSameResponse)` and `distinct(field, onResponse, disable)`. They violate the max-2-parameters standard; new code must use the callbacks object. `toLiveRequestCallbacks.ts` normalises all forms.
+- `distinct({ field, disable: true })` honours `disable` (previously the props-object form silently ignored it).
+
 ### Utilities
-- `useSubscriptionWrapper.ts` — shared subscription lifecycle (subscribe, unsubscribe, re-subscribe on dependency change). Re-runs triggered by a collection change (debounced) or a subscription update are fire-and-forget, so the wrapper catches their failures. It passes each failure to the caller's optional `onError` callback (the reactive hooks pass one through `query` / `getAll` / `distinct`), or logs it when the caller gives none. A failure also resets the last-result hash, so the next successful result is delivered even if it is unchanged. Failures of the initial run still reject the returned promise.
+- `useSubscriptionWrapper.ts` — shared subscription lifecycle (subscribe, unsubscribe, re-subscribe on dependency change). Re-runs triggered by a collection change (debounced) or a subscription update are fire-and-forget, so the wrapper catches their failures. It passes each failure to the caller's optional `onError` callback (`LiveRequestCallbacks.onError`; the reactive hooks pass one through `query` / `getAll` / `distinct`), or logs it when the caller gives none. A failure also resets the last-result hash, so the next successful result is delivered even if it is unchanged. Failures of the initial run still reject the returned promise.
 
 ## Architecture
 
