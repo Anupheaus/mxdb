@@ -812,4 +812,59 @@ describe('ServerToClientSynchronisation — emit failures', () => {
 
     expect(harness.emitted).toHaveLength(1);
   });
+
+  describe('when the emit itself fails (e.g. the client disconnected mid-push)', () => {
+    const failingOnce = (): Responder => {
+      let calls = 0;
+      return async payload => {
+        calls++;
+        if (calls === 1) throw new Error('socket has been disconnected');
+        return acknowledgeAll(payload);
+      };
+    };
+
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown) => { unhandled.push(reason); };
+
+    beforeEach(() => {
+      unhandled.length = 0;
+      process.on('unhandledRejection', onUnhandled);
+    });
+
+    afterEach(() => {
+      process.off('unhandledRejection', onUnhandled);
+    });
+
+    it('does not crash the server with an unhandled rejection', async () => {
+      harness.setResponder(failingOnce());
+
+      await harness.s2c.pushActive(AUDITED, [widget('w1', 'a')]);
+      await flushMicrotasks();
+      await vi.dynamicImportSettled(); // yields a macrotask so Node can report unhandled rejections
+
+      expect(unhandled).toEqual([]);
+    });
+
+    it('re-sends the record after the retry interval if the client is still connected', async () => {
+      harness.setResponder(failingOnce());
+      await harness.s2c.pushActive(AUDITED, [widget('w1', 'a')]);
+      await flushMicrotasks();
+
+      await vi.advanceTimersByTimeAsync(250);
+
+      expect(harness.emitted).toHaveLength(2);
+      expect(harness.emitted[1]).toEqual(harness.emitted[0]);
+    });
+
+    it('stops re-sending once the sync is closed on disconnect', async () => {
+      harness.setResponder(async () => { throw new Error('socket has been disconnected'); });
+      await harness.s2c.pushActive(AUDITED, [widget('w1', 'a')]);
+      await flushMicrotasks();
+
+      harness.s2c.close();
+      await vi.advanceTimersByTimeAsync(60_000);
+
+      expect(harness.emitted).toHaveLength(1);
+    });
+  });
 });
