@@ -542,6 +542,108 @@ describe('ServerDbCollection', () => {
       const result = await col.find({ id: 'c' } as any);
       expect(result?.name).toBe('Charlie');
     });
+
+    // ── sorting ──
+
+    it.each([
+      ['name descending', [['name', 'desc']], ['c', 'b', 'a']],
+      ['name ascending', [['name', 'asc']], ['a', 'b', 'c']],
+      ['a bare field name (ascending by default)', 'name', ['a', 'b', 'c']],
+      ['a bare field name inside an array', ['name'], ['a', 'b', 'c']],
+      ['id descending (id maps to the stored _id)', [['id', 'desc']], ['c', 'b', 'a']],
+      ['id ascending', [['id', 'asc']], ['a', 'b', 'c']],
+      ['category then name descending', [['category', 'asc'], ['name', 'desc']], ['b', 'a', 'c']],
+    ])('returns records in the requested order when sorting by %s', async (_label, sorts, expectedIds) => {
+      const col = await seed();
+      const { data } = await col.query({ sorts: sorts as any });
+      expect(data.ids()).toEqual(expectedIds);
+    });
+
+    it.each([
+      [0, ['c', 'b']],
+      [1, ['b', 'a']],
+      [2, ['a']],
+    ])('returns the correct page of sorted records at offset %i', async (offset, expectedIds) => {
+      const col = await seed();
+      const { data } = await col.query({ sorts: [['name', 'desc']], pagination: { offset, limit: 2 } });
+      expect(data.ids()).toEqual(expectedIds);
+    });
+
+    it('pages through records with equal sort keys without repeating or skipping any, ordered by id', async () => {
+      const col = await seed();
+      const pages = await Promise.all([0, 1, 2].map(offset => col.query({ sorts: [['category', 'asc']], pagination: { offset, limit: 1 } })));
+      expect(pages.flatMap(({ data }) => data.ids())).toEqual(['a', 'b', 'c']);
+    });
+
+    it('does not alter the filters passed by the caller', async () => {
+      const col = await seed();
+      const filters = { $or: [{ id: 'a' }, { id: { $in: ['c'] } }] };
+      await col.query({ filters: filters as any });
+      expect(filters).toEqual({ $or: [{ id: 'a' }, { id: { $in: ['c'] } }] });
+    });
+
+    it('returns records in insertion order when no sort is requested', async () => {
+      const col = await seed();
+      const { data } = await col.query({ filters: { category: { $in: ['x', 'y'] } } as any });
+      expect(data.ids()).toEqual(['b', 'c', 'a']);
+    });
+
+    it('pages through records in insertion order when no sort is requested', async () => {
+      const col = await seed();
+      const { data } = await col.query({ pagination: { offset: 1, limit: 2 } });
+      expect(data.ids()).toEqual(['c', 'a']);
+    });
+
+    // ── filter translation inside logical / array operators ──
+
+    it.each([
+      ['$or of ids', { $or: [{ id: 'a' }, { id: 'c' }] }, ['a', 'c']],
+      ['$and of ids', { $and: [{ id: 'b' }, { category: 'x' }] }, ['b']],
+      ['$nor of ids', { $nor: [{ id: 'a' }, { id: 'c' }] }, ['b']],
+      ['$or nested inside $and', { $and: [{ category: 'x' }, { $or: [{ id: 'a' }, { id: 'c' }] }] }, ['a']],
+      ['id with $in', { id: { $in: ['a', 'c'] } }, ['a', 'c']],
+      ['id with $nin', { id: { $nin: ['a', 'c'] } }, ['b']],
+    ])('matches the expected records for a filter using %s', async (_label, filters, expectedIds) => {
+      const col = await seed();
+      const { data } = await col.query({ filters: filters as any });
+      expect(data.ids().sort()).toEqual(expectedIds);
+    });
+
+    it('counts matching records for an accurate total when the filter uses $or on id', async () => {
+      const col = await seed();
+      const { total } = await col.query({ filters: { $or: [{ id: 'a' }, { id: 'c' }] } as any, pagination: { limit: 1 }, getAccurateTotal: true });
+      expect(total).toBe(2);
+    });
+
+    it('find translates id filters inside $or', async () => {
+      const col = await seed();
+      const result = await col.find({ $or: [{ id: 'zzz' }, { id: 'c' }] } as any);
+      expect(result?.name).toBe('Charlie');
+    });
+
+    describe('Luxon DateTimes inside array operators', () => {
+      const base = DateTime.fromISO('2024-01-10T00:00:00.000Z');
+      const seedDated = async () => {
+        const col = await makeCol();
+        await col.upsert([
+          makeItem({ id: 'old', name: 'Old', createdAt: base.minus({ days: 5 }) }),
+          makeItem({ id: 'mid', name: 'Mid', createdAt: base }),
+          makeItem({ id: 'new', name: 'New', createdAt: base.plus({ days: 5 }) }),
+        ]);
+        return col;
+      };
+
+      it.each([
+        ['$in', () => ({ createdAt: { $in: [base.minus({ days: 5 }), base.plus({ days: 5 })] } }), ['new', 'old']],
+        ['$nin', () => ({ createdAt: { $nin: [base.minus({ days: 5 }), base.plus({ days: 5 })] } }), ['mid']],
+        ['$or', () => ({ $or: [{ createdAt: { $lt: base } }, { createdAt: { $gt: base } }] }), ['new', 'old']],
+        ['$and', () => ({ $and: [{ createdAt: { $gte: base } }, { createdAt: { $lte: base } }] }), ['mid']],
+      ])('matches records when DateTimes are used within %s', async (_label, makeFilters, expectedIds) => {
+        const col = await seedDated();
+        const { data } = await col.query({ filters: makeFilters() as any });
+        expect(data.ids().sort()).toEqual(expectedIds);
+      });
+    });
   });
 
   describe('distinct options', () => {
@@ -554,6 +656,32 @@ describe('ServerDbCollection', () => {
       ]);
       const results = await col.distinct({ field: 'category', filters: { value: 1 } as any });
       expect(results.map(record => record.category).sort()).toEqual(['cat-a', 'cat-b']);
+    });
+
+    it.each([
+      ['desc', ['cat-c', 'cat-b', 'cat-a']],
+      ['asc', ['cat-a', 'cat-b', 'cat-c']],
+    ] as const)('returns distinct records sorted %s by the requested field', async (direction, expectedCategories) => {
+      const col = await makeCol();
+      await col.upsert([
+        makeItem({ id: 'd1', name: 'One', category: 'cat-a' }),
+        makeItem({ id: 'd2', name: 'Two', category: 'cat-c' }),
+        makeItem({ id: 'd3', name: 'Three', category: 'cat-b' }),
+        makeItem({ id: 'd4', name: 'Four', category: 'cat-a' }),
+      ]);
+      const results = await col.distinct({ field: 'category', sorts: [['category', direction]] });
+      expect(results.map(record => record.category)).toEqual(expectedCategories);
+    });
+
+    it('translates id filters inside $or', async () => {
+      const col = await makeCol();
+      await col.upsert([
+        makeItem({ id: 'd1', name: 'One', category: 'cat-a' }),
+        makeItem({ id: 'd2', name: 'Two', category: 'cat-b' }),
+        makeItem({ id: 'd3', name: 'Three', category: 'cat-c' }),
+      ]);
+      const results = await col.distinct({ field: 'category', filters: { $or: [{ id: 'd1' }, { id: 'd3' }] } as any, sorts: [['category', 'asc']] });
+      expect(results.map(record => record.category)).toEqual(['cat-a', 'cat-c']);
     });
   });
 
