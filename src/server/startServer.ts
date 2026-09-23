@@ -1,4 +1,4 @@
-import { provideDb, ServerDb, createConnectionDbPool } from './providers';
+import { provideDb, ServerDb, createConnectionDbPool, setConnectionDbPool } from './providers';
 import { Logger } from '@anupheaus/common';
 import { startAuthenticatedServer } from './startAuthenticatedServer';
 import { getDevices, enableDevice, disableDevice, deleteDevice, expireStalePendingInvites } from './auth/deviceManagement';
@@ -32,6 +32,9 @@ export async function startServer(config: ServerConfig): Promise<ServerInstance>
     logger: logger!,
     watch: true,
   }));
+  // Lets server-side work with no connection of its own (e.g. scheduled jobs) run against a routed
+  // database through the same watched ServerDb — see `withConnectionDb`.
+  setConnectionDbPool(dbPool);
 
   return logger.provide(() =>
     provideDb(mongoDbName, mongoDbUrl, collections, async db => {

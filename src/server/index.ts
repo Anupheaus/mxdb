@@ -1,7 +1,7 @@
 export * from './startServer';
 export * from './collections';
 export * from './hooks';
-export { provideDb, ServerDb, useDb, withDb, runInDbScope } from './providers';
+export { provideDb, ServerDb, useDb, withDb, withConnectionDb, runInDbScope } from './providers';
 export type { DbCollectionSyncProps, UpsertProps, DeleteProps } from './providers/db/ServerDbCollection';
 export type { MXDBAccount, MXDBDeviceInfo } from '../common/models';
 export { useAuthentication } from '@anupheaus/nexus/server';
