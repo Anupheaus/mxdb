@@ -889,4 +889,51 @@ describe('ServerDbCollection', () => {
       expect(deleted).toMatchObject({ record: item });
     });
   });
+
+  // ── brand-new database (collections do not exist yet) ─────────────────────
+  //
+  // A freshly provisioned database has no collections, so the first write and the constructor's
+  // background configuration (collection creation + collMod for change-stream images + indexes)
+  // race to create the same namespaces. Every caller must share one creation, and the background
+  // configuration must succeed rather than fail (and be logged). The race itself is pinned down
+  // deterministically in ServerDbCollection.failures.tests.ts; this checks the real Mongo behaviour.
+
+  describe('on a brand-new database', () => {
+    const CONCURRENT_WRITE_COUNT = 5;
+    let freshDbCounter = 0;
+
+    const makeFreshCol = () => {
+      freshDbCounter += 1;
+      const db = client.db(`fresh_db_${freshDbCounter}`);
+      const col = new ServerDbCollection<TestItem>({
+        getDb: () => Promise.resolve(db),
+        collection: auditedCollection,
+        collectionNames: Promise.resolve(new Set<string>()),
+        logger: mockLogger,
+      });
+      return { db, col };
+    };
+
+    const isChangeStreamImagesEnabled = async (db: ReturnType<typeof client.db>, name: string) => {
+      const [info] = await db.listCollections({ name }).toArray();
+      return (info as { options?: { changeStreamPreAndPostImages?: { enabled?: boolean } } } | undefined)
+        ?.options?.changeStreamPreAndPostImages?.enabled === true;
+    };
+
+    it('completes concurrent first writes and enables change-stream images on the live and audit collections without logging a failure', async () => {
+      vi.mocked(mockLogger.error).mockClear();
+      const { db, col } = makeFreshCol();
+      const items = Array.from({ length: CONCURRENT_WRITE_COUNT }, (_, index) => makeItem({ id: `fresh-${index}`, name: `Fresh ${index}` }));
+
+      await Promise.all(items.map(item => col.upsert(item)));
+
+      await vi.waitFor(async () => {
+        expect(await isChangeStreamImagesEnabled(db, auditedCollection.name)).toBe(true);
+        expect(await isChangeStreamImagesEnabled(db, AUDIT_COLLECTION_NAME)).toBe(true);
+      }, AUDIT_WAIT);
+      await vi.waitFor(async () => expect((await col.getAudit(items.ids())).length).toBe(CONCURRENT_WRITE_COUNT), AUDIT_WAIT);
+      expect({ ids: (await col.getAll()).ids().sort(), errors: vi.mocked(mockLogger.error).mock.calls })
+        .toEqual({ ids: items.ids().sort(), errors: [] });
+    });
+  });
 });

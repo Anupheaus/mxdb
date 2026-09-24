@@ -1,8 +1,8 @@
 import type { DataFilters, DataResponse, Logger } from '@anupheaus/common';
-import { bind, DataSorts, InternalError, is, type Record } from '@anupheaus/common';
+import { bind, DataSorts, Error as CommonError, InternalError, is, type Record } from '@anupheaus/common';
 import type { MXDBCollectionConfig, MXDBCollectionIndex } from '../../../common';
 import { configRegistry, type MongoDocOf, type MXDBCollection, type QueryProps, type DistinctProps } from '../../../common';
-import type { ClientSession, Collection, Db, IndexDescriptionInfo, Sort, WithId } from 'mongodb';
+import type { ClientSession, Collection, Db, Document, IndexDescriptionInfo, Sort, WithId } from 'mongodb';
 import { dbUtils } from './db-transforms';
 import { useAuthentication } from '@anupheaus/nexus/server';
 import { DateTime } from 'luxon';
@@ -49,6 +49,31 @@ function toMongoFilterValue(value: unknown): unknown {
   ]));
 }
 
+/** MongoDB error code returned by `createCollection` when the namespace already exists. */
+const NAMESPACE_EXISTS_ERROR_CODE = 48;
+
+interface MongoErrorDetails {
+  name?: string;
+  message: string;
+  code?: unknown;
+  codeName?: unknown;
+}
+
+/**
+ * Extracts the useful fields of a (usually MongoDB driver) error. Native errors serialise to `{}` in
+ * log meta because their fields are not enumerable, which would hide the real cause.
+ */
+function describeMongoError(error: unknown): MongoErrorDetails {
+  if (!(error instanceof globalThis.Error)) return { message: String(error) };
+  const { code, codeName } = error as { code?: unknown; codeName?: unknown };
+  return { name: error.name, message: error.message, code, codeName };
+}
+
+/** Common errors are serialised (with their meta) by the logger; anything else is reduced to its details. */
+function toLoggableError(error: unknown): CommonError | MongoErrorDetails {
+  return error instanceof CommonError ? error : describeMongoError(error);
+}
+
 // Transient failure retry config (per-record)
 const SYNC_RETRY_BASE_DELAY_MS = 100;
 const SYNC_RETRY_MAX_DELAY_MS = 2_000;
@@ -93,12 +118,23 @@ export class ServerDbCollection<RecordType extends Record = Record> {
     this.#config = configRegistry.getOrError(collection);
     this.#logger = logger.createSubLogger(collection.name);
     this.#registerSession = registerSession;
-    this.#configure();
+    this.#collectionCreations = new Map();
+    // Configuration runs in the background and nothing awaits it, so a failure must be logged here or it
+    // would escape as an unhandled rejection. Writes do not depend on it succeeding.
+    void this.#configure().catch(error => {
+      this.#logger.error('Failed to configure collection', { collectionName: this.#collection.name, error: toLoggableError(error) });
+    });
   }
 
   #getDb: () => Promise<Db>;
   #registerSession?: (session: ClientSession) => () => void;
   #collectionNames: Promise<Set<string>>;
+  /**
+   * In-flight `createCollection` calls by name. On a brand-new database the background configuration and
+   * the first writes all ask for the same missing collections at once; they must all await the one
+   * creation, otherwise a caller can use (e.g. `collMod`) a collection that does not exist yet.
+   */
+  #collectionCreations: Map<string, Promise<Collection<Document>>>;
   #collection: MXDBCollection<RecordType>;
   #config: MXDBCollectionConfig;
   #logger: Logger;
@@ -482,12 +518,40 @@ export class ServerDbCollection<RecordType extends Record = Record> {
     ]));
   }
 
-  async #getCollectionByName<R extends Record = RecordType>(name: string) {
+  async #getCollectionByName<R extends Record = RecordType>(name: string): Promise<Collection<MongoDocOf<R>>> {
     const db = await this.#getDb();
     const names = await this.#collectionNames;
     if (names.has(name)) return db.collection<MongoDocOf<R>>(name);
-    names.add(name);
-    return db.createCollection<MongoDocOf<R>>(name);
+    const creation = this.#collectionCreations.get(name) ?? this.#createCollection(db, names, name);
+    return await creation as unknown as Collection<MongoDocOf<R>>;
+  }
+
+  /**
+   * Starts the single shared creation of a collection. The name is only recorded as existing once creation
+   * succeeds; on failure the in-flight entry is dropped so a later caller retries rather than reusing the failure.
+   */
+  #createCollection(db: Db, names: Set<string>, name: string): Promise<Collection<Document>> {
+    const creation = (async () => {
+      try {
+        const collection = await this.#createOrGetExistingCollection(db, name);
+        names.add(name);
+        return collection;
+      } finally {
+        this.#collectionCreations.delete(name);
+      }
+    })();
+    this.#collectionCreations.set(name, creation);
+    return creation;
+  }
+
+  /** The start-up list of collection names is a snapshot, so another process may have created it since. */
+  async #createOrGetExistingCollection(db: Db, name: string): Promise<Collection<Document>> {
+    try {
+      return await db.createCollection(name);
+    } catch (error) {
+      if ((error as { code?: unknown }).code !== NAMESPACE_EXISTS_ERROR_CODE) throw error;
+      return db.collection(name);
+    }
   }
 
   async #getCollection() {
@@ -644,8 +708,11 @@ export class ServerDbCollection<RecordType extends Record = Record> {
   async #enableChangeStreamPreAndPostImages(db: Db, collection: Collection<any>) {
     try {
       await db.command({ collMod: collection.collectionName, changeStreamPreAndPostImages: { enabled: true } });
-    } catch {
-      throw new InternalError(`Unable to update change stream settings for "${collection.collectionName}" — ensure the user has Atlas Admin privileges.`);
+    } catch (error) {
+      throw new InternalError({
+        message: `Unable to update change stream settings for "${collection.collectionName}" — ensure the user has Atlas Admin privileges.`,
+        meta: { collectionName: collection.collectionName, cause: describeMongoError(error) },
+      });
     }
   }
 

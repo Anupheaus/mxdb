@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import type { Logger, Record as MXDBRecord } from '@anupheaus/common';
+import type { InternalError, Logger, Record as MXDBRecord } from '@anupheaus/common';
 import type { ClientSession, Db } from 'mongodb';
 import { defineCollection } from '../../../common/defineCollection';
 import { auditor } from '../../../common/auditor';
@@ -25,6 +25,17 @@ const MAX_SYNC_ATTEMPTS = 20;
 
 interface WriteOp {
   replaceOne: { filter: { _id: string } };
+}
+
+interface MongoCommand {
+  collMod?: string;
+}
+
+const NAMESPACE_NOT_FOUND = { code: 26, codeName: 'NamespaceNotFound' };
+const NAMESPACE_EXISTS = { code: 48, codeName: 'NamespaceExists' };
+
+function mongoError(message: string, { code, codeName }: { code: number; codeName: string }) {
+  return Object.assign(new Error(message), { code, codeName });
 }
 
 function bulkWriteResult({ isOk = true, writtenCount }: { isOk?: boolean; writtenCount: number }) {
@@ -60,7 +71,7 @@ function createFakeDb() {
   const db = {
     collection: pick,
     createCollection: async (name: string) => pick(name),
-    command: async () => ({ ok: 1 }),
+    command: async (_command: MongoCommand) => ({ ok: 1 }),
     client: { startSession: () => { const session = createFakeSession(); sessions.push(session); return session; } },
   };
   return { db, live, audit, sessions };
@@ -85,6 +96,54 @@ function setup({ registerSession }: { registerSession?: (session: ClientSession)
   return { ...fake, col, logger };
 }
 
+/**
+ * A database with no collections yet, as when a tenant is first provisioned. Like real Mongo,
+ * `createCollection` completes on a later I/O turn and fails if the collection already exists, and
+ * `collMod` fails with NamespaceNotFound on a collection that has not been created.
+ */
+function setupFreshDb() {
+  const fake = createFakeDb();
+  const logger = createLogger();
+  const createdCollections = new Set<string>();
+  const collModCollections: string[] = [];
+  let nextCreationError: Error | undefined;
+  fake.db.createCollection = async (name: string) => {
+    await yieldToRealIo();
+    const creationError = nextCreationError;
+    nextCreationError = undefined;
+    if (creationError != null) throw creationError;
+    if (createdCollections.has(name)) throw mongoError(`Collection testdb.${name} already exists.`, NAMESPACE_EXISTS);
+    createdCollections.add(name);
+    return fake.db.collection(name);
+  };
+  fake.db.command = async ({ collMod }: MongoCommand) => {
+    if (collMod == null || !createdCollections.has(collMod)) throw mongoError(`ns does not exist: testdb.${collMod}`, NAMESPACE_NOT_FOUND);
+    collModCollections.push(collMod);
+    return { ok: 1 };
+  };
+  const col = new ServerDbCollection<Item>({
+    getDb: async () => fake.db as unknown as Db,
+    collection,
+    collectionNames: Promise.resolve(new Set<string>()),
+    logger: logger as unknown as Logger,
+  });
+  return {
+    col,
+    logger,
+    createdCollections,
+    collModCollections,
+    failNextCreation: (error: Error) => { nextCreationError = error; },
+    markCreatedElsewhere: (name: string) => { createdCollections.add(name); },
+  };
+}
+
+function captureUnhandledRejections() {
+  const rejections: unknown[] = [];
+  const onRejection = (reason: unknown) => { rejections.push(reason); };
+  process.on('unhandledRejection', onRejection);
+  return { rejections, stop: () => { process.off('unhandledRejection', onRejection); } };
+}
+
 const makeItem = (id: string): Item => ({ id, name: `name-${id}` });
 const noAudits = { updatedAudits: [] };
 
@@ -107,6 +166,16 @@ async function settle<T>(operation: Promise<T>): Promise<T> {
     if (vi.getTimerCount() > 0) await vi.advanceTimersToNextTimerAsync();
   }
   return operation;
+}
+
+/** Lets background (un-awaited) work run until `condition` holds, advancing fake time only for parked timers. */
+async function settleUntil(condition: () => boolean): Promise<void> {
+  for (let iteration = 0; iteration < MAX_SETTLE_ITERATIONS; iteration++) {
+    if (condition()) return;
+    await yieldToRealIo();
+    if (vi.getTimerCount() > 0) await vi.advanceTimersToNextTimerAsync();
+  }
+  throw new Error('settleUntil: condition was never met');
 }
 
 beforeEach(() => {
@@ -305,6 +374,84 @@ describe('ServerDbCollection under failure', () => {
       live.deleteMany.mockResolvedValueOnce({ acknowledged: false, deletedCount: 0 });
 
       await expect(col.remove('r1')).rejects.toThrow('Delete failed');
+    });
+  });
+
+  // ── brand-new database ──────────────────────────────────────────────────────
+
+  describe('on a brand-new database', () => {
+    it('shares one creation per collection between the first writes and the background configuration, with no unhandled rejection', async () => {
+      const captured = captureUnhandledRejections();
+      try {
+        const { col, logger, createdCollections, collModCollections } = setupFreshDb();
+
+        await settle(Promise.all([col.upsert(makeItem('r1')), col.upsert(makeItem('r2'))]));
+        await settleUntil(() => collModCollections.length === 2);
+
+        expect({
+          created: [...createdCollections].sort(),
+          collMod: [...collModCollections].sort(),
+          errors: logger.error.mock.calls,
+          rejections: captured.rejections,
+        }).toEqual({
+          created: [COLLECTION_NAME, AUDIT_COLLECTION_NAME],
+          collMod: [COLLECTION_NAME, AUDIT_COLLECTION_NAME],
+          errors: [],
+          rejections: [],
+        });
+      } finally {
+        captured.stop();
+      }
+    });
+
+    it('lets a later caller retry creating a collection after the first creation failed', async () => {
+      const { col, logger, failNextCreation } = setupFreshDb();
+      failNextCreation(new Error('network blip during createCollection'));
+      await settleUntil(() => logger.error.mock.calls.length > 0);
+
+      await expect(settle(col.getAll())).resolves.toEqual([]);
+    });
+
+    it('uses a collection created elsewhere since start-up instead of failing', async () => {
+      const { col, logger, markCreatedElsewhere, collModCollections } = setupFreshDb();
+      markCreatedElsewhere(COLLECTION_NAME);
+
+      await settle(col.getAll());
+      await settleUntil(() => collModCollections.length === 2);
+
+      expect(logger.error.mock.calls).toEqual([]);
+    });
+  });
+
+  // ── background configuration ────────────────────────────────────────────────
+
+  describe('background configuration', () => {
+    it('logs a failed configuration with the original Mongo error attached instead of leaving an unhandled rejection', async () => {
+      const captured = captureUnhandledRejections();
+      try {
+        const unauthorized = mongoError('not authorized on testdb to execute command { collMod: "failure_items" }', { code: 13, codeName: 'Unauthorized' });
+        const { db, logger } = setup();
+        db.command = async () => { throw unauthorized; };
+
+        await settleUntil(() => logger.error.mock.calls.length > 0);
+
+        const [[message, meta]] = logger.error.mock.calls as unknown as [[string, { collectionName: string; error: InternalError }]];
+        expect({
+          message,
+          collectionName: meta.collectionName,
+          errorMessage: meta.error.message,
+          cause: meta.error.meta?.cause,
+          rejections: captured.rejections,
+        }).toEqual({
+          message: 'Failed to configure collection',
+          collectionName: COLLECTION_NAME,
+          errorMessage: `Unable to update change stream settings for "${COLLECTION_NAME}" — ensure the user has Atlas Admin privileges.`,
+          cause: { name: 'Error', message: unauthorized.message, code: 13, codeName: 'Unauthorized' },
+          rejections: [],
+        });
+      } finally {
+        captured.stop();
+      }
     });
   });
 });
