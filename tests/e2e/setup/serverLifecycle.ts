@@ -131,8 +131,16 @@ export async function startMongo(): Promise<{ getUri: () => string; stop: () => 
         // numeric code, so we ALSO match on the message. All of these are transient — stop the partial
         // instance (preserving dbPath) and retry with backoff.
         const message = String((err as any)?.message ?? err);
-        const isTransientReplSetConfig = code === 109
-          || /currently updating its configuration|replSetReconfig|ConfigurationInProgress/iu.test(message);
+        // Transient replSetReconfig races on a hard-kill restart, all resolved by re-creating the
+        // instance (which re-inits/re-applies the replset config) after a short backoff:
+        //  - code 109 / "currently updating its configuration" / "ConfigurationInProgress": the node is
+        //    still replaying the wiredTiger journal when the library runs replSetReconfig.
+        //  - code 103 / "No host described in new configuration ... maps to this node"
+        //    (NewReplicaSetConfigurationIncompatible): the reconfig briefly races the node's own view of
+        //    its host after the port is re-pinned. Seen intermittently in CI ("update is preserved after
+        //    restart") and NOT previously retried, so the restart failed outright.
+        const isTransientReplSetConfig = code === 109 || code === 103
+          || /currently updating its configuration|replSetReconfig|ConfigurationInProgress|no host described in new configuration|maps to this node/iu.test(message);
         if (isTransientReplSetConfig && attempt < MAX_START_ATTEMPTS - 1) {
           lifecycleLog('startMongo.replSetConfigInProgress.retry', { attempt, code, message });
           try { await instance.stop({ doCleanup: false }); } catch { /* ignore */ }
