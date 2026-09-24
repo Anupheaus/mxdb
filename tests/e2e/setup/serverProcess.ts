@@ -8,7 +8,7 @@
 import https from 'https';
 import fs from 'fs';
 import path from 'path';
-import { fileURLToPath } from 'url';
+import { fileURLToPath, pathToFileURL } from 'url';
 import { Logger } from '@anupheaus/common';
 import { startServer } from '../../../src/server/index.js';
 import { e2eTestCollection } from './types.js';
@@ -77,6 +77,12 @@ async function main() {
     cert: fs.readFileSync(certPath),
   });
   bootLog('tls.readFiles.done');
+
+  const extensionsModule = process.env[E2E_SERVER_PROCESS_ENV.EXTENSIONS_MODULE];
+  if (extensionsModule != null && extensionsModule.length > 0) {
+    bootLog('extensions.import', { extensionsModule });
+    await import(pathToFileURL(extensionsModule).href);
+  }
 
   bootLog('startServer.call');
   const serverInstance = await startServer({

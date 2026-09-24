@@ -79,6 +79,8 @@ export type MXDBErrorSeverity = 'warning' | 'error' | 'fatal';
 
 export type MXDBErrorCode =
   | 'SYNC_FAILED'
+  /** A local change has failed to reach the server several times in a row; it is still being retried with backoff. */
+  | 'SYNC_STALLED'
   | 'AUTH_MISSING'
   | 'AUTH_REJECTED'
   | 'ENCRYPTION_FAILED'
@@ -104,6 +106,19 @@ export interface MXDBError {
   collection?: string;
   recordId?: string;
   originalError?: unknown;
+}
+
+/**
+ * A local change the server refused to keep because one of the collection's before-write hooks
+ * (`onBeforeUpsert` / `onBeforeDelete`) threw. The device has already been brought back in line: a
+ * rejected create or update is reverted to the server's version; a rejected delete stays deleted on the
+ * device (restoring is not supported) while the server keeps the record.
+ */
+export interface MXDBSyncRejection {
+  collectionName: string;
+  recordId: string;
+  /** The throwing hook's message — suitable for showing to the user. */
+  reason: string;
 }
 
 // ─── Unified collection change event ────────────────────────────────────────

@@ -14,6 +14,7 @@ import { createSyncClient, type SyncClient } from './syncClient';
 import { e2eTestCollection, type E2eTestRecord } from './types';
 import { installBrowserEnvironment } from './browserEnvironment';
 import { clearE2eTestCollections } from './mongoData';
+import { E2E_SERVER_PROCESS_ENV } from './mongoConstants';
 import {
   createRunLogger,
   e2eForwardingRunLogger,
@@ -28,6 +29,11 @@ export interface SetupE2EOptions {
   skipInitialMongoClear?: boolean;
   /** Override log file directory, prefix, or retention count for the run logger. */
   runLoggerOptions?: CreateRunLoggerOptions;
+  /**
+   * Absolute path of a module the forked server imports before starting (and on every restart), for a
+   * suite's own server-only collection extensions. Kept next to the suite that needs it, not in setup.
+   */
+  serverExtensionsModule?: string;
 }
 
 /** Named client handle: same as {@link SyncClient} with optional host on `connect()`. */
@@ -115,6 +121,8 @@ export async function setupE2E(options?: SetupE2EOptions): Promise<void> {
   installBrowserEnvironment();
 
   const port = options?.port ?? 0;
+  // The forked server inherits this worker's env (restarts included); teardownE2E removes it again.
+  if (options?.serverExtensionsModule != null) process.env[E2E_SERVER_PROCESS_ENV.EXTENSIONS_MODULE] = options.serverExtensionsModule;
   const win = (globalThis as unknown as { window?: unknown }).window;
   const doc = (globalThis as unknown as { document?: Document }).document;
   delete (globalThis as unknown as { window?: unknown }).window;
@@ -226,6 +234,7 @@ export async function resetE2E(): Promise<void> {
  */
 export async function teardownE2E(): Promise<void> {
   if (ctx == null) return;
+  delete process.env[E2E_SERVER_PROCESS_ENV.EXTENSIONS_MODULE];
   const { runLogger, processErrorHandlers } = ctx;
   for (const { dbName, raw } of ctx.clients.values()) {
     raw.unmount();

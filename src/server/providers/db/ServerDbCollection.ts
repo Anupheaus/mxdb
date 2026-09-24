@@ -9,6 +9,9 @@ import { DateTime } from 'luxon';
 import { auditor } from '../../../common';
 import type { AnyAuditOf, ServerAuditOf } from '../../../common';
 import { toServerAuditOf } from '../../audit/toServerAuditOf';
+import { runBeforeUpsertHook } from '../../collections/runBeforeUpsertHook';
+import { runBeforeDeleteHook } from '../../collections/runBeforeDeleteHook';
+import { getCollectionExtensions } from '../../collections/extendCollection';
 
 const slowFilterParseThreshold = 1000;
 const slowQueryThreshold = 3000;
@@ -265,6 +268,8 @@ export class ServerDbCollection<RecordType extends Record = Record> {
       });
       if (records.length === 0) return;
     }
+    // Only records that are actually changing reach the hook; it may amend them before they are written.
+    records = await runBeforeUpsertHook({ collection: this.#collection, records, existingRecords });
     const docs = await Promise.all(records.map(record => dbUtils.serializeWithMeta(record)));
     const result = await collection.bulkWrite(records.map((record, index) => ({ replaceOne: { replacement: docs[index]!, filter: { _id: record.id as any }, upsert: true } })));
     if (!result.isOk()) throw new InternalError('Bulk write failed - result is not as expected');
@@ -283,6 +288,8 @@ export class ServerDbCollection<RecordType extends Record = Record> {
   public async remove(ids: string | string[], { clearAudit = false, deleteSnapshots: passedSnapshots }: DeleteProps<RecordType> = {}): Promise<void> {
     const collection = await this.#getCollection();
     ids = Array.isArray(ids) ? ids : [ids];
+    // Runs while the records are still stored, so the hook can read what is about to be deleted.
+    await runBeforeDeleteHook({ collection: this.#collection, recordIds: ids, getStoredIds: async idsToCheck => (await this.get(idsToCheck)).ids() });
 
     let deleteSnapshots: { [recordId: string]: RecordType } | undefined = passedSnapshots;
     if (this.#config.disableAudit !== true && !clearAudit && deleteSnapshots == null) {
@@ -318,8 +325,11 @@ export class ServerDbCollection<RecordType extends Record = Record> {
   @bind
   public async clear() {
     const collection = await this.#getCollection();
+    const extensions = getCollectionExtensions(this.#collection);
+    await extensions?.onBeforeClear?.({ collectionName: this.name });
     await collection.deleteMany();
     if (this.#config.disableAudit !== true) this.#clearAudit();
+    await extensions?.onAfterClear?.({ collectionName: this.name });
   }
 
   /**

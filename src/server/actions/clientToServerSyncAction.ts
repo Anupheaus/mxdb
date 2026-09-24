@@ -17,6 +17,7 @@ import { auditor, AuditEntryType } from '../../common';
 import type { AnyAuditOf, AuditOf } from '../../common';
 import { isActiveRecordState } from '../../common/sync-engine';
 import { isTransientMongoCloseError } from '../utils/isTransientMongoCloseError';
+import { runBeforeWriteHooksOnSyncStates } from './runBeforeWriteHooksOnSyncStates';
 
 /**
  * Per-record promise chain — serialises concurrent C2S syncs for the same record across clients.
@@ -180,24 +181,34 @@ export async function handleClientToServerSync(request: ClientDispatcherRequest)
           continue;
         }
 
-        const updated: MXDBRecord[] = [];
-        const removedIds: string[] = [];
-        const updatedAudits: AnyAuditOf<MXDBRecord>[] = [];
-        const attempted: string[] = [];
-
-        for (const state of col.records) {
-          if (isActiveRecordState(state)) {
-            updated.push(state.record);
-            updatedAudits.push({ id: state.record.id, entries: state.audit } as AuditOf<MXDBRecord>);
-            attempted.push(state.record.id);
-          } else {
-            removedIds.push(state.recordId);
-            updatedAudits.push({ id: state.recordId, entries: state.audit } as AuditOf<MXDBRecord>);
-            attempted.push(state.recordId);
-          }
-        }
-
         try {
+          // Before-write hooks may amend or revert the states in place; the receiver reads them back to push
+          // what was persisted to the client. A rejected record is still acknowledged (so the client stops
+          // resending it) and reported back with the hook's reason.
+          const { rejectedRecords, unpersistedIds } = await runBeforeWriteHooksOnSyncStates({ collection, states: col.records });
+          for (const { id, reason } of rejectedRecords) {
+            logger.warn('C2S write rejected by a before-write hook — reverting it on the client', { collectionName: col.collectionName, recordId: id, reason });
+          }
+          const unpersisted = new Set(unpersistedIds);
+
+          const updated: MXDBRecord[] = [];
+          const removedIds: string[] = [];
+          const updatedAudits: AnyAuditOf<MXDBRecord>[] = [];
+          const attempted: string[] = [];
+
+          for (const state of col.records) {
+            if (unpersisted.has(isActiveRecordState(state) ? state.record.id : state.recordId)) continue;
+            if (isActiveRecordState(state)) {
+              updated.push(state.record);
+              updatedAudits.push({ id: state.record.id, entries: state.audit } as AuditOf<MXDBRecord>);
+              attempted.push(state.record.id);
+            } else {
+              removedIds.push(state.recordId);
+              updatedAudits.push({ id: state.recordId, entries: state.audit } as AuditOf<MXDBRecord>);
+              attempted.push(state.recordId);
+            }
+          }
+
           const writeResults = await collection.sync({ updated, updatedAudits, removedIds });
           const failedIds = new Set<string>();
           for (const wr of writeResults) {
@@ -210,8 +221,8 @@ export async function handleClientToServerSync(request: ClientDispatcherRequest)
               failedIds.add(wr.id);
             }
           }
-          const successfulRecordIds = attempted.filter(id => !failedIds.has(id));
-          response.push({ collectionName: col.collectionName, successfulRecordIds });
+          const successfulRecordIds = [...attempted.filter(id => !failedIds.has(id)), ...unpersistedIds];
+          response.push({ collectionName: col.collectionName, successfulRecordIds, ...(rejectedRecords.length > 0 ? { rejectedRecords } : {}) });
         } catch (error) {
           if (isTransientMongoCloseError(error)) {
             logger.warn(`C2S onUpdate aborted by client close (shutdown race) for "${col.collectionName}"`, { error });

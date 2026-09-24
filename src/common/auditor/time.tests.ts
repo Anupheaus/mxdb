@@ -1,6 +1,6 @@
 import { describe, it, expect, afterEach } from 'vitest';
 import { decodeTime, isValid as isValidUlid, monotonicFactory } from 'ulidx';
-import { generateUlid, setClockDrift } from './time';
+import { generateUlid, generateUlidAfter, setClockDrift } from './time';
 
 // Reset clock drift after each test so tests don't interfere with each other
 afterEach(() => {
@@ -95,5 +95,42 @@ describe('setClockDrift', () => {
     for (let i = 1; i < ids.length; i++) {
       expect(ids[i]! >= ids[i - 1]!).toBe(true);
     }
+  });
+});
+
+describe('generateUlidAfter', () => {
+  const HOUR_MS = 3_600_000;
+  const ulidAt = (timeMs: number): string => monotonicFactory()(timeMs);
+
+  const latestIds: Array<[string, () => string | undefined]> = [
+    ['there is no latest id', () => undefined],
+    ['the latest id is in the past', () => ulidAt(Date.now() - HOUR_MS)],
+    ['the latest id is from a clock an hour ahead', () => ulidAt(Date.now() + HOUR_MS)],
+    ['the latest id is from a clock a year ahead', () => ulidAt(Date.now() + 365 * 24 * HOUR_MS)],
+  ];
+
+  it.each(latestIds)('returns a valid ULID when %s', (_label, latestId) => {
+    expect(isValidUlid(generateUlidAfter(latestId()))).toBe(true);
+  });
+
+  it.each(latestIds.slice(1))('sorts after the latest id when %s', (_label, latestId) => {
+    const latest = latestId()!;
+
+    expect(generateUlidAfter(latest) > latest).toBe(true);
+  });
+
+  it('sorts after a latest id from a skewed clock even while this clock is also skewed', () => {
+    setClockDrift(HOUR_MS);
+    const latest = ulidAt(Date.now() + HOUR_MS);
+
+    expect(generateUlidAfter(latest) > latest).toBe(true);
+  });
+
+  it('uses the current time when the latest id is in the past', () => {
+    const before = Date.now();
+
+    const ts = decodeTime(generateUlidAfter(ulidAt(before - HOUR_MS)));
+
+    expect(ts).toBeGreaterThanOrEqual(before);
   });
 });

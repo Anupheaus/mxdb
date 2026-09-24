@@ -17,6 +17,11 @@ export const E2E_SERVER_PROCESS_ENV = {
   PORT: 'MXDB_E2E_SERVER_PORT',
   MONGO_URI: 'MXDB_E2E_MONGO_URI',
   MONGO_DB_NAME: 'MXDB_E2E_MONGO_DB_NAME',
+  /**
+   * Optional absolute path of a module the server imports before `startServer` — the place a suite
+   * registers server-only collection extensions (`extendCollection` hooks) for its own scenarios.
+   */
+  EXTENSIONS_MODULE: 'MXDB_E2E_SERVER_EXTENSIONS_MODULE',
 } as const;
 
 /** Default IndexedDB / SQLite DB name prefix when `createSyncClient` is used without `dbName`. */

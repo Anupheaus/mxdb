@@ -1,5 +1,5 @@
 import type { Logger } from '@anupheaus/common';
-import type { MXDBCollection } from '../../../common';
+import type { MXDBCollection, MXDBSyncRejection } from '../../../common';
 import { auditor } from '../../../common';
 import {
   ClientDispatcher,
@@ -8,6 +8,7 @@ import {
   type MXDBRecordStates,
   type MXDBRecordStatesRequest,
   type MXDBSyncEngineResponse,
+  type MXDBSyncStall,
   type MXDBUpdateRequest,
 } from '../../../common/sync-engine';
 import type { Db } from '../dbs';
@@ -29,6 +30,10 @@ export interface ClientToServerSynchronisationProps {
   /** Called when the server rejects a dispatch with an AuthenticationError.
    *  Typically triggers a sign-out so the user is prompted to re-authenticate. */
   onUnauthorized?(): void;
+  /** Called with local changes the server refused (a collection before-write hook threw); see {@link MXDBSyncRejection}. */
+  onRejected?(rejections: MXDBSyncRejection[]): void;
+  /** Called once when a change keeps failing to reach the server (it keeps retrying with backoff). */
+  onStalled?(stall: MXDBSyncStall): void;
 }
 
 export class ClientToServerSynchronisation {
@@ -57,6 +62,8 @@ export class ClientToServerSynchronisation {
       onUpdate: updates => this.#applyCdUpdate(updates),
       timerInterval: props.timerInterval,
       onUnauthorized: props.onUnauthorized,
+      onRejected: props.onRejected,
+      onStalled: props.onStalled,
     });
   }
 

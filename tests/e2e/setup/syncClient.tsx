@@ -11,7 +11,7 @@ import {
   useClientToServerSyncInstance,
   useDb,
 } from '../../../src/client/providers';
-import type { AuditOf, QueryProps } from '../../../src/common';
+import type { AuditOf, MXDBError, MXDBSyncRejection, QueryProps } from '../../../src/common';
 import { E2E_DEFAULT_CLIENT_DB_PREFIX, E2E_SOCKET_API_NAME } from './mongoConstants';
 import type { E2eTestRecord } from './types';
 import { e2eTestCollection, type RunLogDetail, type RunLogEvent } from './types';
@@ -250,6 +250,10 @@ export interface SyncClient {
   getQuerySnapshot(): { records: E2eTestRecord[]; total: number };
   subscribeDistinct(field: keyof E2eTestRecord): Promise<void>;
   getDistinctSnapshot(): unknown[];
+  /** Every rejection the server reported to this client (`onSyncRejected`), oldest first. */
+  getSyncRejections(): MXDBSyncRejection[];
+  /** Every error the sync engine reported to this client (`onError`), oldest first. */
+  getSyncErrors(): MXDBError[];
   unmount(): void;
 }
 
@@ -287,6 +291,10 @@ export function createSyncClient(
     resolveDriverReady = resolve;
   });
   let sessionToken: string | undefined;
+  const syncRejections: MXDBSyncRejection[] = [];
+  const recordSyncRejections = (rejections: MXDBSyncRejection[]) => { syncRejections.push(...rejections); };
+  const syncErrors: MXDBError[] = [];
+  const recordSyncError = (error: MXDBError) => { syncErrors.push(error); };
 
   function resetDriverReadyPromise(): void {
     driverReadyPromise = new Promise<void>(resolve => {
@@ -315,7 +323,7 @@ export function createSyncClient(
       <LoggerProvider logger={reactTreeLogger} loggerName="MXDB">
         <Nexus host={serverUrl} name={socketName} auth={sessionToken != null ? { sessionToken } : undefined}>
           <DbsProvider name={dbName} collections={[e2eTestCollection]} encryptionKey={encryptionKey} logger={reactTreeLogger.createSubLogger('db')}>
-            <ClientToServerSyncProvider collections={[e2eTestCollection]}>
+            <ClientToServerSyncProvider collections={[e2eTestCollection]} onSyncRejected={recordSyncRejections} onError={recordSyncError}>
               <ClientToServerProvider />
               <ServerToClientProvider />
               <SyncClientDriverInner ref={saveDriver} clientId={clientId} log={runLogger.log} />
@@ -421,6 +429,14 @@ export function createSyncClient(
     return driver ? driver.getDistinctSnapshot() : [];
   }
 
+  function getSyncRejections(): MXDBSyncRejection[] {
+    return [...syncRejections];
+  }
+
+  function getSyncErrors(): MXDBError[] {
+    return [...syncErrors];
+  }
+
   function unmount() {
     if (root != null && container != null) {
       root.unmount();
@@ -450,6 +466,8 @@ export function createSyncClient(
     getQuerySnapshot,
     subscribeDistinct,
     getDistinctSnapshot,
+    getSyncRejections,
+    getSyncErrors,
     unmount,
   };
 }

@@ -44,8 +44,9 @@ export interface OnQueryPayload {
 
 export interface CollectionExtensionHooks<RecordType extends Record = Record> {
   /**
-   * Runs only when this server instance performs the delete (in the action), before the write.
-   * Use for validation or side effects that must run on the instance that handles the request.
+   * Runs on the server instance performing the delete — a server-side `remove` or a client delete
+   * arriving via sync — before anything is deleted, so the records can still be read. Only receives
+   * ids that are currently stored. Throw to reject the delete.
    */
   onBeforeDelete?(payload: OnDeletePayload): Promise<void> | void;
   /**
@@ -55,8 +56,10 @@ export interface CollectionExtensionHooks<RecordType extends Record = Record> {
    */
   onAfterDelete?(payload: OnDeletePayload): Promise<void> | void;
   /**
-   * Runs only when this server instance performs the upsert (in the action), before the write.
-   * Use for validation or side effects that must run on the instance that handles the request.
+   * Runs on the server instance performing the upsert — a server-side `upsert` or a client write
+   * arriving via sync — before anything is persisted, once per write and only for records that are new
+   * or changed. The records may be amended in place; the amended records are what gets written (and
+   * synced back to the client). Throw to reject the write.
    */
   onBeforeUpsert?(payload: OnUpsertPayload<RecordType>): Promise<void> | void;
   /**
@@ -66,11 +69,12 @@ export interface CollectionExtensionHooks<RecordType extends Record = Record> {
    */
   onAfterUpsert?(payload: OnUpsertPayload<RecordType>): Promise<void> | void;
   /**
-   * Runs only when this server instance performs the clear. Use for validation or pre-clear side effects.
+   * Runs only when this server instance performs the clear, before anything is removed. Throw to reject it.
    */
   onBeforeClear?(payload: OnClearPayload): Promise<void> | void;
   /**
-   * Runs only when this server instance performs the clear (not currently driven by the change stream).
+   * Runs only when this server instance performs the clear, after the records are removed (not driven by
+   * the change stream).
    */
   onAfterClear?(payload: OnClearPayload): Promise<void> | void;
   /** Run when seeding. Receives seedWith for this collection only; use the server's useCollection() for other collections. */

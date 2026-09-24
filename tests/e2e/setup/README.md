@@ -95,6 +95,8 @@ Installs browser-like globals in Node: `fake-indexeddb`, JSDOM (`window` / `docu
 
 `useClient` wires `createSyncClient` to `e2eForwardingRunLogger` so client/socket events go to the same log.
 
+`options.serverExtensionsModule` — absolute path of a module the forked server imports before `startServer` (and on every restart), passed via the `MXDB_E2E_SERVER_EXTENSIONS_MODULE` env var and cleared by `teardownE2E()`. Use it to register a suite's own server-only `extendCollection` hooks; keep that module next to the suite (e.g. `crud-operations/beforeHooks.serverExtensions.ts`), not in `setup/`.
+
 Throws if `setupE2E` was already called in this worker without `teardownE2E()`.
 
 ---

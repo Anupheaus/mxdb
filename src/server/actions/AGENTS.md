@@ -16,6 +16,7 @@ Each file registers one socket action using `createServerActionHandler`. Actions
 
 ### Sync actions
 - `clientToServerSyncAction.ts` — `mxdbClientToServerSyncAction` — receives a `ClientDispatcherRequest`, delegates to `ServerReceiver.process()`, returns `MXDBSyncEngineResponse`. The most critical action — serialises concurrent syncs per record id to prevent lost-write races.
+- `runBeforeWriteHooksOnSyncStates.ts` — runs the collections' `onBeforeDelete` / `onBeforeUpsert` hooks on a C2S batch before it is persisted (see [../collections/AGENTS.md](../collections/AGENTS.md)); an amendment replaces the state's record and appends an `Updated` audit entry, in place, so the `ServerReceiver` pushes the amended record back to the client
 - `reconcileAction.ts` — `mxdbReconcileAction` — reconciles a client's claimed state against the server; used on reconnect to detect divergence
 
 ### Internal

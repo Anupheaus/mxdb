@@ -11,7 +11,7 @@ Local state lives in a per-device SQLite database (OPFS shared worker in browser
 ## Contents
 
 ### Root exports
-- `MXDBSync.tsx` — root React provider; mount once at app root. Accepts `collections`, `host`, auth callbacks, error handlers.
+- `MXDBSync.tsx` — root React provider; mount once at app root. Accepts `collections`, `host`, auth callbacks, error handlers, and `onSyncRejected(rejections: MXDBSyncRejection[])` — called when the server refuses local changes because a collection before-write hook threw (`{ collectionName, recordId, reason }`); by then the device has already been reverted (a rejected delete stays deleted locally), so use it to tell the user why their change did not stick. A change that keeps failing to reach the server for any other reason is retried with backoff and, after a few attempts, reported through `onError` with code `SYNC_STALLED` (severity `warning`, with `collection` / `recordId` when it is one record); it is never dropped and syncs as soon as the server accepts it.
 - `useMXDB.ts` — `useMXDB()` — connection state: `isConnected`, `clientId`, `isSynchronising`, `isDbReady`, `waitForDbReady()`, test disconnect helpers
 - `useRecord.ts` — `useRecord(id | localCopy, collection)` — optimistic form-edit hook with server-rebase semantics
 - `internalModels.ts` — client-private types

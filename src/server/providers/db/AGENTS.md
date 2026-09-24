@@ -10,7 +10,7 @@ MongoDB persistence layer: connection, collection CRUD with audit, change stream
 
 ### Database
 - `ServerDb.ts` — `ServerDb` — `MongoClient` wrapper; creates `ServerDbCollection` per config, opens change stream, fans out change events per collection. Constructor takes a `watch?: boolean` prop (default **true**); when `false`, the change-stream watcher is never started (`#startWatching` is skipped after connect) — for write-only callers such as a controller writing into a tenant DB whose owning server already watches it
-- `ServerDbCollection.ts` — per-collection CRUD with audit: `get`, `getAll`, `find`, `query`, `upsert`, `remove`, `sync` (sync-engine write path), `distinct`, `clear`
+- `ServerDbCollection.ts` — per-collection CRUD with audit: `get`, `getAll`, `find`, `query`, `upsert`, `remove`, `sync` (sync-engine write path), `distinct`, `clear`. `upsert` / `remove` / `clear` run the collection's `onBefore*` hooks (and `clear` its `onAfterClear`) before persisting; `sync` does not — the C2S action runs them on the batch first (see [../../collections/AGENTS.md](../../collections/AGENTS.md))
 - `ServerDbCollectionEvents.ts` — debounced change-stream fan-out; accumulates events within `changeStreamDebounceMs`, runs `onAfter*` hooks, then notifies the socket layer via registered callbacks
 
 ### Context

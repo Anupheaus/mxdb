@@ -32,6 +32,19 @@ export interface MXDBSyncEngineResponseItem {
    * transit) without treating them as the "stuck client" anomaly. Absent ⇒ no declines.
    */
   declinedRecordIds?: string[];
+  /**
+   * C2S only: records the server refused because a collection before-write hook threw. They are ALSO
+   * in `successfulRecordIds` (the client must stop resending them): a rejected create or update has been
+   * reverted on the server and the reverted state is pushed back to the client; a rejected delete was
+   * not applied on the server (the device keeps its delete). Absent ⇒ nothing rejected.
+   */
+  rejectedRecords?: MXDBSyncRejectedRecord[];
+}
+
+/** A synced record the server refused, and why (the throwing hook's message). */
+export interface MXDBSyncRejectedRecord {
+  id: string;
+  reason: string;
 }
 export type MXDBSyncEngineResponse = MXDBSyncEngineResponseItem[];
 
@@ -55,4 +68,17 @@ export interface ServerDispatcherFilter { collectionName: string; records: Serve
 // Error
 export class SyncPausedError extends Error {
   constructor() { super('ClientReceiver is paused'); this.name = 'SyncPausedError'; }
+}
+
+/**
+ * Reported by the ClientDispatcher when a change has failed to reach the server this many times in a row.
+ * `collectionName` / `recordId` are set for a single record; absent when the whole start-up sweep is failing.
+ * The change is NOT dropped — it keeps retrying with backoff.
+ */
+export interface MXDBSyncStall {
+  attempts: number;
+  /** The last failure: the thrown error's message, or that the server did not accept the change. */
+  reason: string;
+  collectionName?: string;
+  recordId?: string;
 }
