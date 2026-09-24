@@ -25,9 +25,11 @@ interface ServerReceiverProps {
    *  receiver always takes the full-retrieve path (current behaviour). */
   onRetrieveMeta?(request: MXDBRecordStatesRequest): Promise<MXDBRecordMetas>;
   /**
-   * Persists the merged states. It may amend an active state in place before persisting it (replace
-   * `record` and extend `audit` to match, e.g. for server before-write hooks); the receiver reads the
-   * states back afterwards so disparity pushes carry what was actually persisted.
+   * Persists the merged states. Before persisting it may amend a state in place (replace `record` and
+   * extend `audit` to match) or replace it in its collection's `records` array with a state for the same
+   * record (e.g. an active state reverted to deleted) — server before-write hooks do both. The receiver
+   * reads the states back afterwards so disparity pushes carry what was actually persisted, and passes
+   * any `rejectedRecords` in the response through to the client.
    */
   onUpdate(records: MXDBRecordStates): Promise<MXDBSyncEngineResponse>;
   serverDispatcher: ServerDispatcher;
@@ -270,14 +272,16 @@ export class ServerReceiver {
       // Step 5: Persist merged results via onUpdate.
       const persistT0 = performance.now();
       const persistByCollection = new Map<string, (MXDBActiveRecordState | MXDBDeletedRecordState)[]>();
-      const persistStateByItem = new Map<PendingPersistItem, MXDBActiveRecordState | MXDBDeletedRecordState>();
+      // Where each item's state sits, so it can be read back after `onUpdate` (which may replace it).
+      const persistPositions: { item: PendingPersistItem; states: (MXDBActiveRecordState | MXDBDeletedRecordState)[]; index: number }[] = [];
       for (const item of pendingPersist) {
         if (!persistByCollection.has(item.collectionName)) persistByCollection.set(item.collectionName, []);
+        const states = persistByCollection.get(item.collectionName)!;
         const state = item.liveRecord != null
           ? { record: item.liveRecord, audit: item.mergedEntries } as MXDBActiveRecordState
           : { recordId: item.recordId, audit: item.mergedEntries } as MXDBDeletedRecordState;
-        persistByCollection.get(item.collectionName)!.push(state);
-        persistStateByItem.set(item, state);
+        persistPositions.push({ item, states, index: states.length });
+        states.push(state);
       }
       const persistStates: MXDBRecordStates = [];
       for (const [colName, records] of persistByCollection) persistStates.push({ collectionName: colName, records });
@@ -286,11 +290,12 @@ export class ServerReceiver {
       if (persistStates.length > 0) updateResponse = await this.#props.onUpdate(persistStates);
       const persistMs = Math.round(performance.now() - persistT0);
 
-      // `onUpdate` may amend an active state before persisting it (server before-upsert hooks): what it
-      // persisted — not what was merged — is what the client must converge to, so read the states back.
-      for (const [item, state] of persistStateByItem) {
-        if (!isActiveRecordState(state)) continue;
-        item.liveRecord = state.record;
+      // `onUpdate` may amend or replace a state before persisting it (server before-write hooks amending
+      // a record, or reverting a rejected one): what it persisted — not what was merged — is what the
+      // client must converge to, so read the states back.
+      for (const { item, states, index } of persistPositions) {
+        const state = states[index]!;
+        item.liveRecord = isActiveRecordState(state) ? state.record : undefined;
         item.mergedEntries = state.audit;
       }
 
@@ -301,6 +306,12 @@ export class ServerReceiver {
       const successResponse: MXDBSyncEngineResponse = [];
       for (const [colName, ids] of persistSuccessMap) {
         successResponse.push({ collectionName: colName, successfulRecordIds: [...ids] });
+      }
+      // Pass through the records `onUpdate` reports as rejected, so the client can tell the app why.
+      for (const { collectionName, rejectedRecords } of updateResponse) {
+        if (rejectedRecords == null || rejectedRecords.length === 0) continue;
+        const existing = successResponse.find(r => r.collectionName === collectionName);
+        if (existing != null) existing.rejectedRecords = [...(existing.rejectedRecords ?? []), ...rejectedRecords];
       }
       for (const [colName, ids] of branchOnlySuccessIds) {
         const existing = successResponse.find(r => r.collectionName === colName);

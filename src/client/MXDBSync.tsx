@@ -8,7 +8,7 @@ import { Nexus } from '@anupheaus/nexus/client';
 import { ConflictResolutionContext } from './providers';
 import { MXDBSyncInner } from './auth/MXDBSyncInner';
 import { setupBrowserTools } from './utils/setupBrowserTools';
-import type { MXDBCollection, MXDBError } from '../common';
+import type { MXDBCollection, MXDBError, MXDBSyncRejection } from '../common';
 import type { MXDBUser } from '../common/models';
 import type { MXDBRemoteAssistanceConfig } from './remote-assistance/models';
 
@@ -25,6 +25,12 @@ interface Props {
   onSignedIn?(user: MXDBUser): void;
   onSignedOut?(): void;
   onError?(error: MXDBError): void;
+  /**
+   * Called when the server refuses local changes because a collection before-write hook threw. The
+   * device has already been brought back in line (see {@link MXDBSyncRejection}); use this to tell the
+   * user why their change did not stick.
+   */
+  onSyncRejected?(rejections: MXDBSyncRejection[]): void;
   onConflictResolution?(message: string): Promise<boolean>;
   tokenStorage?: TokenStorage;
   children?: ReactNode;
@@ -42,6 +48,7 @@ export const MXDBSync = createComponent('MXDBSync', ({
   onSignedIn,
   onSignedOut,
   onError,
+  onSyncRejected,
   onConflictResolution,
   tokenStorage,
   children,
@@ -86,6 +93,7 @@ export const MXDBSync = createComponent('MXDBSync', ({
             remoteAssistance={remoteAssistance}
             onPrfRef={onPrfRef}
             onError={onError}
+            onSyncRejected={onSyncRejected}
             onSignedIn={onSignedIn}
             onSignedOut={onSignedOut}
           >

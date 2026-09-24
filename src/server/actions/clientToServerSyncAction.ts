@@ -182,9 +182,14 @@ export async function handleClientToServerSync(request: ClientDispatcherRequest)
         }
 
         try {
-          // Before-write hooks may amend the states in place; the receiver reads them back to push the
-          // amended records to the client. A hook that throws rejects this collection's batch (caught below).
-          await runBeforeWriteHooksOnSyncStates({ collection, states: col.records });
+          // Before-write hooks may amend or revert the states in place; the receiver reads them back to push
+          // what was persisted to the client. A rejected record is still acknowledged (so the client stops
+          // resending it) and reported back with the hook's reason.
+          const { rejectedRecords, unpersistedIds } = await runBeforeWriteHooksOnSyncStates({ collection, states: col.records });
+          for (const { id, reason } of rejectedRecords) {
+            logger.warn('C2S write rejected by a before-write hook — reverting it on the client', { collectionName: col.collectionName, recordId: id, reason });
+          }
+          const unpersisted = new Set(unpersistedIds);
 
           const updated: MXDBRecord[] = [];
           const removedIds: string[] = [];
@@ -192,6 +197,7 @@ export async function handleClientToServerSync(request: ClientDispatcherRequest)
           const attempted: string[] = [];
 
           for (const state of col.records) {
+            if (unpersisted.has(isActiveRecordState(state) ? state.record.id : state.recordId)) continue;
             if (isActiveRecordState(state)) {
               updated.push(state.record);
               updatedAudits.push({ id: state.record.id, entries: state.audit } as AuditOf<MXDBRecord>);
@@ -215,8 +221,8 @@ export async function handleClientToServerSync(request: ClientDispatcherRequest)
               failedIds.add(wr.id);
             }
           }
-          const successfulRecordIds = attempted.filter(id => !failedIds.has(id));
-          response.push({ collectionName: col.collectionName, successfulRecordIds });
+          const successfulRecordIds = [...attempted.filter(id => !failedIds.has(id)), ...unpersistedIds];
+          response.push({ collectionName: col.collectionName, successfulRecordIds, ...(rejectedRecords.length > 0 ? { rejectedRecords } : {}) });
         } catch (error) {
           if (isTransientMongoCloseError(error)) {
             logger.warn(`C2S onUpdate aborted by client close (shutdown race) for "${col.collectionName}"`, { error });

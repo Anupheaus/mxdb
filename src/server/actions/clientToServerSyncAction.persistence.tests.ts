@@ -382,17 +382,6 @@ describe('handleClientToServerSync — collection before-write hooks', () => {
     expect(hooks.onBeforeUpsert).not.toHaveBeenCalled();
   });
 
-  it('persists nothing and acknowledges nothing when onBeforeUpsert rejects, so the client retries', async () => {
-    hooks.onBeforeUpsert.mockRejectedValue(new Error('rename not allowed'));
-
-    const response = await syncClientRename();
-
-    expect([response, harness.collection.records.get('i1')]).toEqual([
-      [{ collectionName: HOOKED, successfulRecordIds: [] }],
-      { id: 'i1', name: 'old', colour: 'red' },
-    ]);
-  });
-
   it('runs onBeforeDelete for a record the client deleted, while it is still stored', async () => {
     harness.seed({ id: 'i1', name: 'old' }, [createdEntry({ id: 'i1', name: 'old' }, 1)]);
     let wasStoredWhileHookRan: boolean | undefined;
@@ -411,16 +400,178 @@ describe('handleClientToServerSync — collection before-write hooks', () => {
     expect(hooks.onBeforeDelete).not.toHaveBeenCalled();
   });
 
-  it('keeps the record and acknowledges nothing when onBeforeDelete rejects', async () => {
-    harness.seed({ id: 'i1', name: 'old' }, [createdEntry({ id: 'i1', name: 'old' }, 1)]);
+  it('runs onBeforeUpsert separately for each record in a client batch', async () => {
+    await handleClientToServerSync([{
+      collectionName: HOOKED,
+      records: [
+        { id: 'i1', hash: 'h1', entries: [createdEntry({ id: 'i1', name: 'a' }, 1)] },
+        { id: 'i2', hash: 'h2', entries: [createdEntry({ id: 'i2', name: 'b' }, 2)] },
+      ],
+    }]);
+
+    expect(hooks.onBeforeUpsert.mock.calls.map(([payload]) => payload.records.ids())).toEqual([['i1'], ['i2']]);
+  });
+});
+
+// ─── Before-write hook rejections (reject and revert) ─────────────────────────
+
+describe('handleClientToServerSync — a before-write hook rejects a synced record', () => {
+  let harness: Harness;
+  const REJECTION = 'the name "forbidden" is not allowed';
+  const stored: Item = { id: 'i1', name: 'old', colour: 'red' };
+  const forbiddenRename: Item = { ...stored, name: 'forbidden' };
+  const forbiddenCreate: Item = { id: 'n1', name: 'forbidden' };
+
+  beforeEach(() => {
+    harness = installHarness({ definition: hookedItemsCollection });
+    hooks.onBeforeUpsert.mockReset().mockImplementation(async ({ records }) => {
+      if (records.some(record => record.name === 'forbidden')) throw new Error(REJECTION);
+    });
+    hooks.onBeforeDelete.mockReset().mockResolvedValue(undefined);
+  });
+
+  /** Seeds {@link stored} and syncs the client's rename of it to "forbidden". */
+  const syncRejectedUpdate = async (renameEntry: AuditEntry = replaceEntry(2, 'name', 'forbidden')): Promise<MXDBSyncEngineResponse> => {
+    harness.seed(stored, [createdEntry(stored, 1)]);
+    return handleClientToServerSync(request(HOOKED, 'i1', [branchedEntry(1), renameEntry], await hashRecord(forbiddenRename)));
+  };
+
+  const syncRejectedCreate = async (): Promise<MXDBSyncEngineResponse> =>
+    handleClientToServerSync(request(HOOKED, 'n1', [createdEntry(forbiddenCreate, 5)], await hashRecord(forbiddenCreate)));
+
+  const syncRejectedDelete = async (): Promise<MXDBSyncEngineResponse> => {
+    harness.seed(stored, [createdEntry(stored, 1)]);
     hooks.onBeforeDelete.mockRejectedValue(new Error('still referenced'));
+    return handleClientToServerSync(request(HOOKED, 'i1', [branchedEntry(1), deletedEntry(2)]));
+  };
 
-    const response = await handleClientToServerSync(request(HOOKED, 'i1', [branchedEntry(1), deletedEntry(2)]));
+  describe('an update', () => {
+    it('is acknowledged and reported as rejected with the hook\'s reason, so the client stops resending it', async () => {
+      const response = await syncRejectedUpdate();
 
-    expect([response, harness.collection.records.get('i1')]).toEqual([
-      [{ collectionName: HOOKED, successfulRecordIds: [] }],
-      { id: 'i1', name: 'old' },
+      expect(response).toEqual([{ collectionName: HOOKED, successfulRecordIds: ['i1'], rejectedRecords: [{ id: 'i1', reason: REJECTION }] }]);
+    });
+
+    it('leaves the stored record as it was', async () => {
+      await syncRejectedUpdate();
+
+      expect(harness.collection.records.get('i1')).toEqual(stored);
+    });
+
+    it('keeps the client\'s entry in the audit and reverts it, so the audit replays to the stored record', async () => {
+      await syncRejectedUpdate();
+
+      const audit = harness.collection.audits.get('i1')!;
+      expect([audit.entries.map(entry => entry.id).slice(0, 2), audit.entries.length, auditor.createRecordFrom(audit)])
+        .toEqual([[entryId(1), entryId(2)], 3, stored]);
+    });
+
+    it('sends the stored record back to the client so it reverts its change', async () => {
+      await syncRejectedUpdate();
+
+      const lastAuditEntryId = harness.collection.audits.get('i1')!.entries.at(-1)!.id;
+      expect(harness.emitted).toEqual([[{ collectionName: HOOKED, records: [{ record: stored, lastAuditEntryId, hash: await hashRecord(stored) }] }]]);
+    });
+
+    it('orders the revert after the client\'s change even when the client\'s clock runs ahead', async () => {
+      const aheadOfServerClock = monotonicFactory()(Date.now() + CLIENT_CLOCK_AHEAD_MS);
+
+      await syncRejectedUpdate({ type: AuditEntryType.Updated, id: aheadOfServerClock, ops: [{ type: OperationType.Replace, path: 'name', value: 'forbidden' }] } as AuditEntry);
+
+      const audit = harness.collection.audits.get('i1')!;
+      expect([audit.entries.at(-1)!.id > aheadOfServerClock, auditor.createRecordFrom(audit)]).toEqual([true, stored]);
+    });
+
+    it('does not reject again once the client has reverted', async () => {
+      await syncRejectedUpdate();
+      const revertId = harness.collection.audits.get('i1')!.entries.at(-1)!.id;
+      hooks.onBeforeUpsert.mockClear();
+
+      const response = await handleClientToServerSync(request(HOOKED, 'i1', [branchedEntry(1)], await hashRecord(stored)));
+
+      expect([response, hooks.onBeforeUpsert.mock.calls.length, harness.collection.audits.get('i1')!.entries.at(-1)!.id])
+        .toEqual([[{ collectionName: HOOKED, successfulRecordIds: ['i1'] }], 0, revertId]);
+    });
+  });
+
+  describe('a create', () => {
+    it('is acknowledged and reported as rejected', async () => {
+      const response = await syncRejectedCreate();
+
+      expect(response).toEqual([{ collectionName: HOOKED, successfulRecordIds: ['n1'], rejectedRecords: [{ id: 'n1', reason: REJECTION }] }]);
+    });
+
+    it('is recorded as deleted, keeping the client\'s entry, and never stored live', async () => {
+      await syncRejectedCreate();
+
+      expect([harness.collection.records.has('n1'), harness.collection.audits.get('n1')!.entries.map(entry => entry.type)])
+        .toEqual([false, [AuditEntryType.Created, AuditEntryType.Deleted]]);
+    });
+
+    it('tells the client to delete the record it created', async () => {
+      await syncRejectedCreate();
+
+      const lastAuditEntryId = harness.collection.audits.get('n1')!.entries.at(-1)!.id;
+      expect(harness.emitted).toEqual([[{ collectionName: HOOKED, records: [{ recordId: 'n1', lastAuditEntryId }] }]]);
+    });
+  });
+
+  describe('a delete', () => {
+    it('is acknowledged and reported as rejected', async () => {
+      const response = await syncRejectedDelete();
+
+      expect(response).toEqual([{ collectionName: HOOKED, successfulRecordIds: ['i1'], rejectedRecords: [{ id: 'i1', reason: 'still referenced' }] }]);
+    });
+
+    it('leaves the record and its audit on the server untouched', async () => {
+      await syncRejectedDelete();
+
+      expect([harness.collection.records.get('i1'), harness.collection.audits.get('i1')!.entries.map(entry => entry.id)])
+        .toEqual([stored, [entryId(1)]]);
+    });
+
+    it('sends nothing back (the device keeps its delete)', async () => {
+      await syncRejectedDelete();
+
+      expect(harness.emitted).toEqual([]);
+    });
+  });
+
+  it('persists and acknowledges the rest of the batch', async () => {
+    const accepted: Item = { id: 'ok', name: 'fine' };
+
+    const response = await handleClientToServerSync([{
+      collectionName: HOOKED,
+      records: [
+        { id: 'n1', hash: 'h1', entries: [createdEntry({ id: 'n1', name: 'forbidden' }, 1)] },
+        { id: 'ok', hash: await hashRecord(accepted), entries: [createdEntry(accepted, 2)] },
+      ],
+    }]);
+
+    expect([response, harness.collection.records.get('ok')]).toEqual([
+      [{ collectionName: HOOKED, successfulRecordIds: ['n1', 'ok'], rejectedRecords: [{ id: 'n1', reason: REJECTION }] }],
+      accepted,
     ]);
+  });
+
+  const thrownValues: Array<[string, unknown, string]> = [
+    ['an Error', new Error('nope'), 'nope'],
+    ['a string', 'plain refusal', 'plain refusal'],
+    ['an object', { code: 42 }, '{"code":42}'],
+  ];
+
+  it.each(thrownValues)('reports %s thrown by the hook as the reason', async (_label, thrown, reason) => {
+    hooks.onBeforeUpsert.mockRejectedValue(thrown);
+
+    const response = await syncRejectedCreate();
+
+    expect(response[0]!.rejectedRecords).toEqual([{ id: 'n1', reason }]);
+  });
+
+  it('logs the rejection', async () => {
+    await syncRejectedCreate();
+
+    expect(harness.logger.warn).toHaveBeenCalledWith(expect.stringContaining('rejected'), expect.objectContaining({ collectionName: HOOKED, recordId: 'n1', reason: REJECTION }));
   });
 });
 

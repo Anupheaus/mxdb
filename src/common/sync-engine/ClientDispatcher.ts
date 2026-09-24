@@ -10,6 +10,7 @@ import {
   type MXDBUpdateRequest,
 } from './models';
 import type { ClientReceiver } from './ClientReceiver';
+import type { MXDBSyncRejection } from '../models';
 import { isActiveRecordState, getStateId } from './utils';
 
 interface ClientDispatcherProps {
@@ -23,6 +24,9 @@ interface ClientDispatcherProps {
   /** Called when the server rejects a dispatch with an {@link AuthenticationError}.
    *  Typically triggers a sign-out so the user is prompted to re-authenticate. */
   onUnauthorized?(): void;
+  /** Called with the dispatched records the server refused (a collection before-write hook threw). They
+   *  are settled like acknowledged records — the server has already pushed their reverted state. */
+  onRejected?(rejections: MXDBSyncRejection[]): void;
 }
 
 export class ClientDispatcher {
@@ -324,6 +328,21 @@ export class ClientDispatcher {
     return result;
   }
 
+  /** Hands the app the server's rejections for records in this dispatch (a response never names others). */
+  #reportRejections(response: MXDBSyncEngineResponse, states: MXDBRecordStates): void {
+    const rejections: MXDBSyncRejection[] = [];
+    for (const { collectionName, rejectedRecords } of response) {
+      if (rejectedRecords == null || rejectedRecords.length === 0) continue;
+      const dispatchedIds = new Set(states.find(col => col.collectionName === collectionName)?.records.map(getStateId) ?? []);
+      for (const { id, reason } of rejectedRecords) {
+        if (dispatchedIds.has(id)) rejections.push({ collectionName, recordId: id, reason });
+      }
+    }
+    if (rejections.length === 0) return;
+    this.#logger.warn('[CD] the server rejected local changes; they have been reverted', { rejections });
+    this.#props.onRejected?.(rejections);
+  }
+
   #processSuccessResponse(response: MXDBSyncEngineResponse, states: MXDBRecordStates): void {
     const updateRequest: MXDBUpdateRequest = [];
 
@@ -363,6 +382,8 @@ export class ClientDispatcher {
         updateRequest.push(item);
       }
     }
+
+    this.#reportRejections(response, states);
 
     if (updateRequest.length > 0) {
       this.#props.onUpdate(updateRequest);

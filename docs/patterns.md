@@ -100,6 +100,24 @@ export const useOrders = createUseRecords('orders', ordersCollection, {
 - **Pure helpers (no `useCollection`) are kept separate from impure ones** so they unit-test in isolation (§5).
 - All server-side data access goes **through these hooks**, never `useCollection` directly, so domain rules live in one place.
 
+### 3a. Before-write hooks — derive, validate, reject
+
+`onBeforeUpsert` / `onBeforeDelete` (registered with `extendCollection` in the entity's server extension) run on the server **before anything is persisted**, for server-side writes and synced client writes alike, and only for real changes (unchanged or re-sent records, and deletes of records that are not stored, don't fire them).
+
+```ts
+extendCollection(addressesCollection, {
+  // Derive: amend the records in place — the amendment is audited and synced back to the writing client.
+  async onBeforeUpsert({ records }) { await clearStaleCoordinates(records); },
+  // Validate: throw to reject. Use a message you'd show the user.
+  async onBeforeDelete({ recordIds }) { await assertNotReferenced(recordIds); },
+});
+```
+
+- **Prefer amending to throwing** for client-writable data: an amendment keeps the user's change; a rejection discards it.
+- **Throwing on a server write** rejects the whole call (all-or-nothing, like any failed write).
+- **Throwing on a synced client write rejects only that record** (hooks are called per record on the sync path) and reverts it on the device: an update goes back to the server's version, a create is dropped, a delete stays deleted locally while the server keeps the record. The app hears about it through `MXDBSync`'s `onSyncRejected(rejections)` (`{ collectionName, recordId, reason }`, `reason` = the thrown message) — show the user why.
+- Hooks run in the writer's context, so `useCollection` inside them hits the same database; never upsert the same collection from its own `onBeforeUpsert`.
+
 ---
 
 ## 4. Records: Interface + Namespace
