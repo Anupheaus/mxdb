@@ -1,11 +1,12 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import '@anupheaus/common'; // installs array extensions (.ids()) and Object.clone used by the sync engine
 import type { Logger, Record as MXDBRecord } from '@anupheaus/common';
-import { AuditEntryType, OperationType, defineCollection } from '../../common';
+import { AuditEntryType, OperationType, auditor, defineCollection, type MXDBCollection } from '../../common';
 import type { AuditEntry, AuditOf } from '../../common/auditor';
 import { hashRecord } from '../../common/auditor/hash';
 import type { ClientDispatcherRequest, MXDBRecordCursors, MXDBSyncEngineResponse } from '../../common/sync-engine';
 import { ServerToClientSynchronisation } from '../ServerToClientSynchronisation';
+import { extendCollection, type OnDeletePayload, type OnUpsertPayload } from '../collections/extendCollection';
 
 /**
  * End-to-end contract of the C2S sync handler with the REAL ServerReceiver, ServerDispatcher and
@@ -91,6 +92,7 @@ interface SyncWriteResult { id: string; error?: unknown }
 interface SyncProps { updated: Item[]; updatedAudits: AuditOf<Item>[]; removedIds: string[] }
 
 interface FakeCollection {
+  collection: MXDBCollection<Item>;
   records: Map<string, Item>;
   audits: Map<string, AuditOf<Item>>;
   /** Stored `_meta.hash` per id (what `getMeta` projects). */
@@ -101,7 +103,7 @@ interface FakeCollection {
   sync: ReturnType<typeof vi.fn<(props: SyncProps) => Promise<SyncWriteResult[]>>>;
 }
 
-function createFakeCollection(): FakeCollection {
+function createFakeCollection(definition: MXDBCollection<Item>): FakeCollection {
   const records = new Map<string, Item>();
   const audits = new Map<string, AuditOf<Item>>();
   const metaHashes = new Map<string, string>();
@@ -110,7 +112,7 @@ function createFakeCollection(): FakeCollection {
     return audit == null ? undefined : { id, entries: [...audit.entries] } as AuditOf<Item>;
   };
   return {
-    records, audits, metaHashes,
+    collection: definition, records, audits, metaHashes,
     get: vi.fn(async (ids: string[]) => ids.map(id => records.get(id)).filter((r): r is Item => r != null).map(r => ({ ...r }))),
     getAudit: vi.fn(async (ids: string | string[]) => (Array.isArray(ids)
       ? ids.map(readAudit).filter((a): a is AuditOf<Item> => a != null)
@@ -138,14 +140,21 @@ interface Harness {
   seed(record: Item, entries: AuditEntry[]): void;
 }
 
-function installHarness({ useThrows = false }: { useThrows?: boolean } = {}): Harness {
-  const collection = createFakeCollection();
+interface HarnessOptions {
+  /** Make `db.use` throw instead of returning undefined for an unknown collection. */
+  useThrows?: boolean;
+  /** The collection the fake db serves (default: the un-hooked items collection). */
+  definition?: MXDBCollection<Item>;
+}
+
+function installHarness({ useThrows = false, definition = itemsCollection }: HarnessOptions = {}): Harness {
+  const collection = createFakeCollection(definition);
   const logger = createMockLogger();
   const emitted: MXDBRecordCursors[] = [];
   const db = {
     use: (name: string) => {
       if (useThrows) throw new Error(`collection "${name}" not registered`);
-      return name === ITEMS ? collection : undefined;
+      return name === definition.name ? collection : undefined;
     },
   };
   ctx.db = db;
@@ -159,7 +168,7 @@ function installHarness({ useThrows = false }: { useThrows?: boolean } = {}): Ha
       }));
     },
     getDb: () => db as never,
-    collections: [itemsCollection],
+    collections: [definition],
     logger: logger as unknown as Logger,
     clientId: 'client-1',
   });
@@ -244,6 +253,159 @@ describe('handleClientToServerSync — persisting client changes', () => {
     await handleClientToServerSync(request(ITEMS, 'i1', [branchedEntry(1)], await hashRecord(record)));
 
     expect(harness.emitted).toEqual([]);
+  });
+});
+
+// ─── Collection before-write hooks ────────────────────────────────────────────
+
+const hookedItemsCollection = defineCollection<Item>({ name: 'c2sHookedItems', indexes: [] });
+const HOOKED = hookedItemsCollection.name;
+
+// The extension registry cannot be cleared, so the collection's hooks delegate to per-test implementations.
+const hooks = {
+  onBeforeUpsert: vi.fn<(payload: OnUpsertPayload<Item>) => Promise<void>>(),
+  onBeforeDelete: vi.fn<(payload: OnDeletePayload) => Promise<void>>(),
+};
+extendCollection(hookedItemsCollection, {
+  onBeforeUpsert: payload => hooks.onBeforeUpsert(payload),
+  onBeforeDelete: payload => hooks.onBeforeDelete(payload),
+});
+
+describe('handleClientToServerSync — collection before-write hooks', () => {
+  let harness: Harness;
+
+  beforeEach(() => {
+    harness = installHarness({ definition: hookedItemsCollection });
+    hooks.onBeforeUpsert.mockReset().mockResolvedValue(undefined);
+    hooks.onBeforeDelete.mockReset().mockResolvedValue(undefined);
+  });
+
+  /** A hook in the shape consumers write: amend the changing records in place (a rename resets the colour). */
+  const resetColourOnRename = (): void => {
+    hooks.onBeforeUpsert.mockImplementation(async ({ records }) => {
+      for (const record of records) {
+        if (harness.collection.records.get(record.id)?.name !== record.name) record.colour = 'unset';
+      }
+    });
+  };
+
+  const renamedByClient: Item = { id: 'i1', name: 'renamed', colour: 'red' };
+  const amendedByHook: Item = { id: 'i1', name: 'renamed', colour: 'unset' };
+
+  /** Seeds `{ name: 'old', colour: 'red' }` and syncs the client's rename of it, claiming the client's own hash. */
+  const syncClientRename = async (): Promise<MXDBSyncEngineResponse> => {
+    harness.seed({ id: 'i1', name: 'old', colour: 'red' }, [createdEntry({ id: 'i1', name: 'old', colour: 'red' }, 1)]);
+    return handleClientToServerSync(request(HOOKED, 'i1', [branchedEntry(1), replaceEntry(2, 'name', 'renamed')], await hashRecord(renamedByClient)));
+  };
+
+  it('runs onBeforeUpsert for a record the client created, before it is persisted', async () => {
+    let wasStoredWhileHookRan: boolean | undefined;
+    hooks.onBeforeUpsert.mockImplementation(async () => { wasStoredWhileHookRan = harness.collection.records.has('i1'); });
+
+    await handleClientToServerSync(request(HOOKED, 'i1', [createdEntry({ id: 'i1', name: 'new' }, 1)], 'client-hash'));
+
+    expect([wasStoredWhileHookRan, hooks.onBeforeUpsert.mock.calls]).toEqual([
+      false,
+      [[{ records: [{ id: 'i1', name: 'new' }], insertedIds: ['i1'], updatedIds: [] }]],
+    ]);
+  });
+
+  it('runs onBeforeUpsert once with the merged record for a client update', async () => {
+    await syncClientRename();
+
+    expect(hooks.onBeforeUpsert.mock.calls).toEqual([[{ records: [renamedByClient], insertedIds: [], updatedIds: ['i1'] }]]);
+  });
+
+  it('persists the record as amended by onBeforeUpsert', async () => {
+    resetColourOnRename();
+
+    await syncClientRename();
+
+    expect(harness.collection.records.get('i1')).toEqual(amendedByHook);
+  });
+
+  it('records the amendment in the audit, so the audit replays to the persisted record', async () => {
+    resetColourOnRename();
+
+    await syncClientRename();
+
+    expect(auditor.createRecordFrom(harness.collection.audits.get('i1')!)).toEqual(amendedByHook);
+  });
+
+  it('keeps the client\'s audit entries when the hook amends the record', async () => {
+    resetColourOnRename();
+
+    await syncClientRename();
+
+    expect(harness.collection.audits.get('i1')!.entries.map(entry => entry.type))
+      .toEqual([AuditEntryType.Created, AuditEntryType.Updated, AuditEntryType.Updated]);
+  });
+
+  it('sends the amended record back to the client that made the change', async () => {
+    resetColourOnRename();
+
+    await syncClientRename();
+
+    const lastAuditEntryId = harness.collection.audits.get('i1')!.entries.at(-1)!.id;
+    expect(harness.emitted).toEqual([[{
+      collectionName: HOOKED,
+      records: [{ record: amendedByHook, lastAuditEntryId, hash: await hashRecord(amendedByHook) }],
+    }]]);
+  });
+
+  it('acknowledges the change as usual when the hook leaves the record alone', async () => {
+    const response = await syncClientRename();
+
+    expect([response, harness.emitted]).toEqual([[{ collectionName: HOOKED, successfulRecordIds: ['i1'] }], []]);
+  });
+
+  it('does not run onBeforeUpsert again when the client re-sends a change the server already has', async () => {
+    harness.seed(renamedByClient, [createdEntry({ id: 'i1', name: 'old', colour: 'red' }, 1), replaceEntry(2, 'name', 'renamed')]);
+
+    await handleClientToServerSync(request(HOOKED, 'i1', [branchedEntry(1), replaceEntry(2, 'name', 'renamed')], await hashRecord(renamedByClient)));
+
+    expect(hooks.onBeforeUpsert).not.toHaveBeenCalled();
+  });
+
+  it('persists nothing and acknowledges nothing when onBeforeUpsert rejects, so the client retries', async () => {
+    hooks.onBeforeUpsert.mockRejectedValue(new Error('rename not allowed'));
+
+    const response = await syncClientRename();
+
+    expect([response, harness.collection.records.get('i1')]).toEqual([
+      [{ collectionName: HOOKED, successfulRecordIds: [] }],
+      { id: 'i1', name: 'old', colour: 'red' },
+    ]);
+  });
+
+  it('runs onBeforeDelete for a record the client deleted, while it is still stored', async () => {
+    harness.seed({ id: 'i1', name: 'old' }, [createdEntry({ id: 'i1', name: 'old' }, 1)]);
+    let wasStoredWhileHookRan: boolean | undefined;
+    hooks.onBeforeDelete.mockImplementation(async () => { wasStoredWhileHookRan = harness.collection.records.has('i1'); });
+
+    await handleClientToServerSync(request(HOOKED, 'i1', [branchedEntry(1), deletedEntry(2)]));
+
+    expect([wasStoredWhileHookRan, hooks.onBeforeDelete.mock.calls]).toEqual([true, [[{ recordIds: ['i1'] }]]]);
+  });
+
+  it('does not run onBeforeDelete for a record the server has already deleted', async () => {
+    harness.collection.audits.set('i1', { id: 'i1', entries: [createdEntry({ id: 'i1', name: 'old' }, 1), deletedEntry(2)] } as AuditOf<Item>);
+
+    await handleClientToServerSync(request(HOOKED, 'i1', [branchedEntry(1), replaceEntry(3, 'name', 'late edit')], 'client-hash'));
+
+    expect(hooks.onBeforeDelete).not.toHaveBeenCalled();
+  });
+
+  it('keeps the record and acknowledges nothing when onBeforeDelete rejects', async () => {
+    harness.seed({ id: 'i1', name: 'old' }, [createdEntry({ id: 'i1', name: 'old' }, 1)]);
+    hooks.onBeforeDelete.mockRejectedValue(new Error('still referenced'));
+
+    const response = await handleClientToServerSync(request(HOOKED, 'i1', [branchedEntry(1), deletedEntry(2)]));
+
+    expect([response, harness.collection.records.get('i1')]).toEqual([
+      [{ collectionName: HOOKED, successfulRecordIds: [] }],
+      { id: 'i1', name: 'old' },
+    ]);
   });
 });
 

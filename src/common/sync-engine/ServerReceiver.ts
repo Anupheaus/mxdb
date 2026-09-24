@@ -24,6 +24,11 @@ interface ServerReceiverProps {
   /** Optional cheap projection of stored `_meta` (hash only) for the meta fast-path. When absent the
    *  receiver always takes the full-retrieve path (current behaviour). */
   onRetrieveMeta?(request: MXDBRecordStatesRequest): Promise<MXDBRecordMetas>;
+  /**
+   * Persists the merged states. It may amend an active state in place before persisting it (replace
+   * `record` and extend `audit` to match, e.g. for server before-write hooks); the receiver reads the
+   * states back afterwards so disparity pushes carry what was actually persisted.
+   */
   onUpdate(records: MXDBRecordStates): Promise<MXDBSyncEngineResponse>;
   serverDispatcher: ServerDispatcher;
 }
@@ -265,13 +270,14 @@ export class ServerReceiver {
       // Step 5: Persist merged results via onUpdate.
       const persistT0 = performance.now();
       const persistByCollection = new Map<string, (MXDBActiveRecordState | MXDBDeletedRecordState)[]>();
+      const persistStateByItem = new Map<PendingPersistItem, MXDBActiveRecordState | MXDBDeletedRecordState>();
       for (const item of pendingPersist) {
         if (!persistByCollection.has(item.collectionName)) persistByCollection.set(item.collectionName, []);
-        if (item.liveRecord != null) {
-          persistByCollection.get(item.collectionName)!.push({ record: item.liveRecord, audit: item.mergedEntries } as MXDBActiveRecordState);
-        } else {
-          persistByCollection.get(item.collectionName)!.push({ recordId: item.recordId, audit: item.mergedEntries } as MXDBDeletedRecordState);
-        }
+        const state = item.liveRecord != null
+          ? { record: item.liveRecord, audit: item.mergedEntries } as MXDBActiveRecordState
+          : { recordId: item.recordId, audit: item.mergedEntries } as MXDBDeletedRecordState;
+        persistByCollection.get(item.collectionName)!.push(state);
+        persistStateByItem.set(item, state);
       }
       const persistStates: MXDBRecordStates = [];
       for (const [colName, records] of persistByCollection) persistStates.push({ collectionName: colName, records });
@@ -279,6 +285,14 @@ export class ServerReceiver {
       let updateResponse: MXDBSyncEngineResponse = [];
       if (persistStates.length > 0) updateResponse = await this.#props.onUpdate(persistStates);
       const persistMs = Math.round(performance.now() - persistT0);
+
+      // `onUpdate` may amend an active state before persisting it (server before-upsert hooks): what it
+      // persisted — not what was merged — is what the client must converge to, so read the states back.
+      for (const [item, state] of persistStateByItem) {
+        if (!isActiveRecordState(state)) continue;
+        item.liveRecord = state.record;
+        item.mergedEntries = state.audit;
+      }
 
       const persistSuccessMap = new Map<string, Set<string>>();
       for (const item of updateResponse) persistSuccessMap.set(item.collectionName, new Set(item.successfulRecordIds));

@@ -265,7 +265,7 @@ extendCollection(products, {
 
 | Hook | When it runs |
 |------|-------------|
-| `onBefore*` | Runs on the server instance that handles the request, **before** the write. Use for validation or pre-write side effects. |
+| `onBefore*` | Runs on the server instance performing the write, **before** anything is persisted — for server-side writes (`useCollection`, record hooks) and for client writes arriving via sync alike, once per write and only for records that actually change. Throw to reject the write; `onBeforeUpsert` may also amend the records in place (the amendment is audited and synced back to the client). |
 | `onAfter*` (upsert/delete) | Driven by the **MongoDB change stream** — runs on every instance watching the stream, including when another instance performed the write. Use for cross-collection cascades. |
 | `onAfterClear` | Runs only on the instance that performed the clear (not currently change-stream driven). |
 | `onSeed` | Runs at startup when `shouldSeedCollections: true`. |

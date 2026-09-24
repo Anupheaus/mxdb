@@ -17,6 +17,7 @@ import { auditor, AuditEntryType } from '../../common';
 import type { AnyAuditOf, AuditOf } from '../../common';
 import { isActiveRecordState } from '../../common/sync-engine';
 import { isTransientMongoCloseError } from '../utils/isTransientMongoCloseError';
+import { runBeforeWriteHooksOnSyncStates } from './runBeforeWriteHooksOnSyncStates';
 
 /**
  * Per-record promise chain — serialises concurrent C2S syncs for the same record across clients.
@@ -180,24 +181,28 @@ export async function handleClientToServerSync(request: ClientDispatcherRequest)
           continue;
         }
 
-        const updated: MXDBRecord[] = [];
-        const removedIds: string[] = [];
-        const updatedAudits: AnyAuditOf<MXDBRecord>[] = [];
-        const attempted: string[] = [];
-
-        for (const state of col.records) {
-          if (isActiveRecordState(state)) {
-            updated.push(state.record);
-            updatedAudits.push({ id: state.record.id, entries: state.audit } as AuditOf<MXDBRecord>);
-            attempted.push(state.record.id);
-          } else {
-            removedIds.push(state.recordId);
-            updatedAudits.push({ id: state.recordId, entries: state.audit } as AuditOf<MXDBRecord>);
-            attempted.push(state.recordId);
-          }
-        }
-
         try {
+          // Before-write hooks may amend the states in place; the receiver reads them back to push the
+          // amended records to the client. A hook that throws rejects this collection's batch (caught below).
+          await runBeforeWriteHooksOnSyncStates({ collection, states: col.records });
+
+          const updated: MXDBRecord[] = [];
+          const removedIds: string[] = [];
+          const updatedAudits: AnyAuditOf<MXDBRecord>[] = [];
+          const attempted: string[] = [];
+
+          for (const state of col.records) {
+            if (isActiveRecordState(state)) {
+              updated.push(state.record);
+              updatedAudits.push({ id: state.record.id, entries: state.audit } as AuditOf<MXDBRecord>);
+              attempted.push(state.record.id);
+            } else {
+              removedIds.push(state.recordId);
+              updatedAudits.push({ id: state.recordId, entries: state.audit } as AuditOf<MXDBRecord>);
+              attempted.push(state.recordId);
+            }
+          }
+
           const writeResults = await collection.sync({ updated, updatedAudits, removedIds });
           const failedIds = new Set<string>();
           for (const wr of writeResults) {
