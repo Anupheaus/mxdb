@@ -10,6 +10,7 @@ import {
   type MXDBRecordStates,
   type MXDBRecordStatesRequest,
   type MXDBSyncEngineResponse,
+  type MXDBSyncStall,
   type MXDBUpdateRequest,
 } from '../../../common/sync-engine';
 import { ClientToServerSynchronisation } from './ClientToServerSynchronisation';
@@ -28,6 +29,18 @@ interface Props {
   /** Called with local changes the server refused (a collection before-write hook threw); see {@link MXDBSyncRejection}. */
   onSyncRejected?(rejections: MXDBSyncRejection[]): void;
   children?: ReactNode;
+}
+
+/** A change that keeps failing to sync, as the `SYNC_STALLED` error the app's `onError` receives. */
+function toSyncStalledError({ attempts, reason, collectionName, recordId }: MXDBSyncStall): MXDBError {
+  const subject = recordId != null ? `A change to "${recordId}" in "${collectionName}"` : 'Local changes';
+  return {
+    code: 'SYNC_STALLED',
+    message: `${subject} failed to sync ${attempts} times in a row (${reason}); still retrying.`,
+    severity: 'warning',
+    collection: collectionName,
+    recordId,
+  };
 }
 
 /**
@@ -53,6 +66,8 @@ export const ClientToServerSyncProvider = createComponent('ClientToServerSyncPro
   // The engine is built once per Db, so it reads the latest callback through a ref rather than capturing one.
   const onSyncRejectedRef = useRef(onSyncRejected);
   onSyncRejectedRef.current = onSyncRejected;
+  const onErrorRef = useRef(onError);
+  onErrorRef.current = onError;
 
   const { cr, c2s } = useMemo(() => {
     const crLogger = logger.createSubLogger('cr');
@@ -119,6 +134,7 @@ export const ClientToServerSyncProvider = createComponent('ClientToServerSyncPro
       logger: logger.createSubLogger('c2s'),
       onUnauthorized,
       onRejected: rejections => onSyncRejectedRef.current?.(rejections),
+      onStalled: stall => onErrorRef.current?.(toSyncStalledError(stall)),
     });
     return { cr, c2s };
     // Rebuilt per Db instance: DbsProvider swaps the Db whenever the encryption key changes (it can be

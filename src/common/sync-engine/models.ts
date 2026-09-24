@@ -69,3 +69,16 @@ export interface ServerDispatcherFilter { collectionName: string; records: Serve
 export class SyncPausedError extends Error {
   constructor() { super('ClientReceiver is paused'); this.name = 'SyncPausedError'; }
 }
+
+/**
+ * Reported by the ClientDispatcher when a change has failed to reach the server this many times in a row.
+ * `collectionName` / `recordId` are set for a single record; absent when the whole start-up sweep is failing.
+ * The change is NOT dropped — it keeps retrying with backoff.
+ */
+export interface MXDBSyncStall {
+  attempts: number;
+  /** The last failure: the thrown error's message, or that the server did not accept the change. */
+  reason: string;
+  collectionName?: string;
+  recordId?: string;
+}

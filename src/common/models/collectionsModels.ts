@@ -79,6 +79,8 @@ export type MXDBErrorSeverity = 'warning' | 'error' | 'fatal';
 
 export type MXDBErrorCode =
   | 'SYNC_FAILED'
+  /** A local change has failed to reach the server several times in a row; it is still being retried with backoff. */
+  | 'SYNC_STALLED'
   | 'AUTH_MISSING'
   | 'AUTH_REJECTED'
   | 'ENCRYPTION_FAILED'

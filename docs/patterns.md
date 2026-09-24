@@ -117,6 +117,7 @@ extendCollection(addressesCollection, {
 - **Throwing on a server write** rejects the whole call (all-or-nothing, like any failed write).
 - **Throwing on a synced client write rejects only that record** (hooks are called per record on the sync path) and reverts it on the device: an update goes back to the server's version, a create is dropped, a delete stays deleted locally while the server keeps the record. The app hears about it through `MXDBSync`'s `onSyncRejected(rejections)` (`{ collectionName, recordId, reason }`, `reason` = the thrown message) — show the user why.
 - Hooks run in the writer's context, so `useCollection` inside them hits the same database; never upsert the same collection from its own `onBeforeUpsert`.
+- **Other sync failures are not rejections.** A change the server keeps failing to write for any other reason stays on the device and is retried with backoff; after a few attempts `MXDBSync`'s `onError` receives a `SYNC_STALLED` error (worth a non-blocking "changes not saved yet" indicator). It syncs as soon as the server accepts it.
 
 ---
 

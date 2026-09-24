@@ -7,8 +7,10 @@ import {
   type MXDBRecordStates,
   type MXDBRecordStatesRequest,
   type MXDBSyncEngineResponse,
+  type MXDBSyncStall,
   type MXDBUpdateRequest,
 } from './models';
+import { SYNC_ATTEMPTS_BEFORE_STALLED, syncRetryDelayMs } from './syncRetryPolicy';
 import type { ClientReceiver } from './ClientReceiver';
 import type { MXDBSyncRejection } from '../models';
 import { isActiveRecordState, getStateId } from './utils';
@@ -27,6 +29,25 @@ interface ClientDispatcherProps {
   /** Called with the dispatched records the server refused (a collection before-write hook threw). They
    *  are settled like acknowledged records — the server has already pushed their reverted state. */
   onRejected?(rejections: MXDBSyncRejection[]): void;
+  /** Called once when a change has failed {@link SYNC_ATTEMPTS_BEFORE_STALLED} times in a row. It keeps
+   *  retrying with backoff (see `syncRetryPolicy.ts`); this only lets the app tell the user. */
+  onStalled?(stall: MXDBSyncStall): void;
+}
+
+/** Why a record the server answered for, but did not acknowledge, is being retried. */
+const SERVER_DID_NOT_ACCEPT = 'the server did not accept the change';
+
+/** Backoff bookkeeping for a queued record that has failed at least once. */
+interface RecordRetryState {
+  attempts: number;
+  /** Earliest time (ms since epoch) the record may be dispatched again. */
+  nextAttemptAt: number;
+  hasBeenReported: boolean;
+}
+
+/** The "collectionName:recordId" key the dispatcher tracks queued records by. */
+function queueKeyOf(collectionName: string, recordId: string): string {
+  return `${collectionName}:${recordId}`;
 }
 
 export class ClientDispatcher {
@@ -40,6 +61,9 @@ export class ClientDispatcher {
   // Shadow Set<"collectionName:recordId"> for O(1) existence checks on #queue.
   #queueSet = new Set<string>();
   #pendingReEnqueue = new Set<string>(); // "collectionName:recordId" keys
+  #retries = new Map<string, RecordRetryState>(); // "collectionName:recordId" keys
+  /** When the pending #timer fires (ms since epoch), so an enqueue can bring a long backoff wait forward. */
+  #timerDueAt: number | undefined = undefined;
   #epoch = 0;
 
   constructor(logger: Logger, props: ClientDispatcherProps) {
@@ -72,8 +96,16 @@ export class ClientDispatcher {
     }
     this.#queue.push(item);
     this.#queueSet.add(key);
-    if (!this.#timer && !this.#inFlight) {
-      this.#startTimer();
+    if (this.#inFlight) return;
+    if (!this.#timer) {
+      this.#startTimer(this.#nextTickDelay());
+      return;
+    }
+    // The pending tick may be a long backoff wait for another record — don't make this one wait for it.
+    const interval = this.#props.timerInterval ?? 250;
+    if (this.#isDue(key, Date.now()) && (this.#timerDueAt ?? 0) > Date.now() + interval) {
+      clearTimeout(this.#timer);
+      this.#startTimer(interval);
     }
   }
 
@@ -97,9 +129,12 @@ export class ClientDispatcher {
     }
     this.#timerResolve?.();
     this.#timerResolve = undefined;
+    this.#timerDueAt = undefined;
     this.#queue = [];
     this.#queueSet.clear();
     this.#pendingReEnqueue.clear();
+    // A fresh session re-sweeps everything, so it starts from fast retries again.
+    this.#retries.clear();
     // Reset in-flight / dispatching state here since the stale coroutine's
     // finally block will skip the reset (epoch mismatch guard).
     if (this.#inFlight) {
@@ -114,6 +149,7 @@ export class ClientDispatcher {
   async #doStart(): Promise<void> {
     const startEpoch = this.#epoch;
     const interval = this.#props.timerInterval ?? 250;
+    let sweepFailures = 0;
 
     // eslint-disable-next-line no-constant-condition
     while (true) {
@@ -161,7 +197,7 @@ export class ClientDispatcher {
 
         // Start timer if queue has items
         if (this.#queue.length > 0 && this.#epoch === startEpoch) {
-          this.#startTimer();
+          this.#startTimer(this.#nextTickDelay());
         }
         return; // Success — exit loop
 
@@ -176,7 +212,9 @@ export class ClientDispatcher {
           this.#props.onUnauthorized?.();
           return;
         }
-        this.#logger.warn('[CD] onStart dispatch failed, retrying', { error: err });
+        sweepFailures += 1;
+        this.#logger.warn('[CD] onStart dispatch failed, retrying', { error: err, attempts: sweepFailures });
+        if (sweepFailures === SYNC_ATTEMPTS_BEFORE_STALLED) this.#reportStall({ attempts: sweepFailures, reason: describeError(err) });
         // Fall through to retry delay
       } finally {
         // Only mutate shared state if this coroutine still owns the current epoch.
@@ -196,17 +234,18 @@ export class ClientDispatcher {
           this.#timer = undefined;
           this.#timerResolve = undefined;
           resolve();
-        }, interval);
+        }, syncRetryDelayMs({ attempts: sweepFailures, intervalMs: interval }));
       });
 
       if (this.#epoch !== startEpoch) return;
     }
   }
 
-  #startTimer(): void {
-    const interval = this.#props.timerInterval ?? 250;
+  #startTimer(delayMs: number = this.#props.timerInterval ?? 250): void {
+    this.#timerDueAt = Date.now() + delayMs;
     this.#timer = setTimeout(() => {
       this.#timer = undefined;
+      this.#timerDueAt = undefined;
       // #timerTick is async but called from setTimeout. Attach a .catch() so
       // that any rejection that escapes #timerTick's internal try/catch (e.g.
       // socket.io _clearAcks firing a rejection after the transport closes)
@@ -216,15 +255,64 @@ export class ClientDispatcher {
           error: (err as any)?.message ?? String(err),
         });
       });
-    }, interval);
+    }, delayMs);
+  }
+
+  /** How long until the earliest queued record may be dispatched (never sooner than the normal interval). */
+  #nextTickDelay(): number {
+    const interval = this.#props.timerInterval ?? 250;
+    let earliest = Number.POSITIVE_INFINITY;
+    for (const item of this.#queue) {
+      earliest = Math.min(earliest, this.#retries.get(queueKeyOf(item.collectionName, item.recordId))?.nextAttemptAt ?? 0);
+    }
+    return Math.max(interval, earliest - Date.now());
+  }
+
+  #isDue(key: string, now: number): boolean {
+    return (this.#retries.get(key)?.nextAttemptAt ?? 0) <= now;
+  }
+
+  /** Records another failed attempt for each dispatched record, backing it off and reporting it once stalled. */
+  #recordFailures(states: MXDBRecordStates, reason: string): void {
+    const interval = this.#props.timerInterval ?? 250;
+    for (const col of states) {
+      for (const state of col.records) {
+        const recordId = getStateId(state);
+        const key = queueKeyOf(col.collectionName, recordId);
+        const previous = this.#retries.get(key);
+        const attempts = (previous?.attempts ?? 0) + 1;
+        const retry: RecordRetryState = {
+          attempts,
+          nextAttemptAt: Date.now() + syncRetryDelayMs({ attempts, intervalMs: interval }),
+          hasBeenReported: previous?.hasBeenReported ?? false,
+        };
+        this.#retries.set(key, retry);
+        if (attempts < SYNC_ATTEMPTS_BEFORE_STALLED || retry.hasBeenReported) continue;
+        retry.hasBeenReported = true;
+        this.#reportStall({ collectionName: col.collectionName, recordId, attempts, reason });
+      }
+    }
+  }
+
+  #reportStall(stall: MXDBSyncStall): void {
+    this.#logger.warn('[CD] a change keeps failing to sync; still retrying with backoff', { ...stall });
+    this.#props.onStalled?.(stall);
   }
 
   async #timerTick(): Promise<void> {
     if (!this.#started) return;
 
-    // Step 1: Group queued items into MXDBRecordStatesRequest
+    // Records still backing off wait for their own retry time; the rest go now.
+    const now = Date.now();
+    const dueItems = this.#queue.filter(item => this.#isDue(queueKeyOf(item.collectionName, item.recordId), now));
+    if (dueItems.length === 0) {
+      if (this.#queue.length > 0) this.#startTimer(this.#nextTickDelay());
+      return;
+    }
+
+    // Step 1: Group due queued items into MXDBRecordStatesRequest
     const grouped = new Map<string, string[]>();
-    for (const item of this.#queue) {
+    for (const item of dueItems) {
       if (!grouped.has(item.collectionName)) grouped.set(item.collectionName, []);
       grouped.get(item.collectionName)!.push(item.recordId);
     }
@@ -246,7 +334,13 @@ export class ClientDispatcher {
         stateKeys.add(`${col.collectionName}:${getStateId(s)}`);
       }
     }
-    this.#queue = this.#queue.filter(q => stateKeys.has(`${q.collectionName}:${q.recordId}`));
+    const requestedKeys = new Set(dueItems.map(item => queueKeyOf(item.collectionName, item.recordId)));
+    this.#queue = this.#queue.filter(q => {
+      const key = queueKeyOf(q.collectionName, q.recordId);
+      if (!requestedKeys.has(key) || stateKeys.has(key)) return true;
+      this.#retries.delete(key);
+      return false;
+    });
     // Rebuild the shadow set to match the filtered queue.
     this.#queueSet = new Set(this.#queue.map(q => `${q.collectionName}:${q.recordId}`));
 
@@ -260,7 +354,6 @@ export class ClientDispatcher {
     this.#props.onDispatching(true);
     this.#props.clientReceiver.pause();
 
-    let success = false;
     try {
       const response = await this.#props.onDispatch(dispatchRequest);
 
@@ -270,7 +363,6 @@ export class ClientDispatcher {
       }
 
       this.#processSuccessResponse(response, states);
-      success = true;
 
     } catch (err) {
       const msg = (err as any)?.message ?? String(err);
@@ -283,6 +375,7 @@ export class ClientDispatcher {
         return;
       }
       this.#logger.warn(`[CD] timer dispatch failed: ${name ?? 'Error'}: ${msg}`, { error: msg, stack });
+      if (epoch === this.#epoch) this.#recordFailures(states, describeError(err));
     } finally {
       // Only mutate shared state if this tick still owns the current epoch.
       // A stop() → start() cycle may have launched a new #doStart whose
@@ -294,11 +387,10 @@ export class ClientDispatcher {
       }
     }
 
-    // Post-finally
-    if (success && epoch === this.#epoch && this.#queue.length > 0) {
-      this.#startTimer();
-    } else if (!success && epoch === this.#epoch) {
-      this.#startTimer(); // Retry
+    // Post-finally: schedule the next tick for whatever is still queued (a failed record stays queued,
+    // backed off by its retry state).
+    if (epoch === this.#epoch && this.#queue.length > 0) {
+      this.#startTimer(this.#nextTickDelay());
     }
   }
 
@@ -326,6 +418,22 @@ export class ClientDispatcher {
     }
 
     return result;
+  }
+
+  /** Acknowledged records start afresh; dispatched records the server did not acknowledge back off. */
+  #settleRetries(response: MXDBSyncEngineResponse, states: MXDBRecordStates): void {
+    const failed: MXDBRecordStates = [];
+    for (const col of states) {
+      const successIds = new Set(response.find(r => r.collectionName === col.collectionName)?.successfulRecordIds ?? []);
+      const failedRecords = col.records.filter(state => {
+        const id = getStateId(state);
+        if (!successIds.has(id)) return true;
+        this.#retries.delete(queueKeyOf(col.collectionName, id));
+        return false;
+      });
+      if (failedRecords.length > 0) failed.push({ collectionName: col.collectionName, records: failedRecords });
+    }
+    if (failed.length > 0) this.#recordFailures(failed, SERVER_DID_NOT_ACCEPT);
   }
 
   /** Hands the app the server's rejections for records in this dispatch (a response never names others). */
@@ -384,6 +492,7 @@ export class ClientDispatcher {
     }
 
     this.#reportRejections(response, states);
+    this.#settleRetries(response, states);
 
     if (updateRequest.length > 0) {
       this.#props.onUpdate(updateRequest);
@@ -419,4 +528,11 @@ export class ClientDispatcher {
       }
     }
   }
+}
+
+/** A thrown value's message, for reporting why a change keeps failing. */
+function describeError(error: unknown): string {
+  if (error instanceof Error) return error.message;
+  const message = (error as { message?: unknown } | undefined)?.message;
+  return message != null ? String(message) : String(error);
 }

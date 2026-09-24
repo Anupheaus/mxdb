@@ -8,6 +8,7 @@ import {
   type MXDBRecordStates,
   type MXDBRecordStatesRequest,
   type MXDBSyncEngineResponse,
+  type MXDBSyncStall,
   type MXDBUpdateRequest,
 } from '../../../common/sync-engine';
 import type { Db } from '../dbs';
@@ -31,6 +32,8 @@ export interface ClientToServerSynchronisationProps {
   onUnauthorized?(): void;
   /** Called with local changes the server refused (a collection before-write hook threw); see {@link MXDBSyncRejection}. */
   onRejected?(rejections: MXDBSyncRejection[]): void;
+  /** Called once when a change keeps failing to reach the server (it keeps retrying with backoff). */
+  onStalled?(stall: MXDBSyncStall): void;
 }
 
 export class ClientToServerSynchronisation {
@@ -60,6 +63,7 @@ export class ClientToServerSynchronisation {
       timerInterval: props.timerInterval,
       onUnauthorized: props.onUnauthorized,
       onRejected: props.onRejected,
+      onStalled: props.onStalled,
     });
   }
 
