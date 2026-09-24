@@ -1,6 +1,6 @@
 import type { Logger, Record as MXDBRecord } from '@anupheaus/common';
 import { hashRecord } from './hash';
-import { generateUlid, setClockDrift } from './time';
+import { generateUlid, generateUlidAfter, setClockDrift } from './time';
 import type { AnyAuditOf, AuditOf } from './auditor-models';
 import {
   collapseToAnchor,
@@ -46,6 +46,21 @@ export const auditor = {
       baseRecord,
       logger,
     ),
+  /**
+   * {@link updateAuditWith}, but the new entry is guaranteed to sort after every existing entry — for
+   * server-authored entries appended to a client-supplied audit, whose ids may come from a clock that
+   * runs ahead (see {@link generateUlidAfter}).
+   */
+  updateAuditWithAfterLatest: <T extends MXDBRecord>(
+    currentRecord: T | undefined,
+    audit: AuditOf<T>,
+    baseRecord?: T,
+    logger?: Logger,
+  ) =>
+    updateAuditWith(currentRecord, audit, () => generateUlidAfter(getLastEntryId(audit)), baseRecord, logger),
+  /** Appends a Deleted entry guaranteed to sort after every existing entry (see {@link generateUlidAfter}). */
+  deleteAfterLatest: <T extends MXDBRecord>(audit: AnyAuditOf<T>) =>
+    deleteRecord(audit, () => generateUlidAfter(getLastEntryId(audit))),
   createRecordFrom,
   filterValidEntries,
   entriesOf,
@@ -69,5 +84,6 @@ export const auditor = {
   getLastEntryTimestamp,
   hashRecord,
   generateUlid,
+  generateUlidAfter,
   setClockDrift,
 };

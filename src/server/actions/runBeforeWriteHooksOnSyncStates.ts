@@ -64,7 +64,7 @@ async function amendStatesWithBeforeUpsertHook({ definition, get, activeStates }
   changingStates.forEach((state, index) => {
     const recordToWrite = recordsToWrite[index]!;
     if (is.deepEqual(recordToWrite, state.record)) return;
-    const amendedAudit = auditor.updateAuditWith(recordToWrite, { id: state.record.id, entries: state.audit } as AuditOf<MXDBRecord>, state.record);
+    const amendedAudit = auditor.updateAuditWithAfterLatest(recordToWrite, { id: state.record.id, entries: state.audit } as AuditOf<MXDBRecord>, state.record);
     state.record = recordToWrite;
     state.audit = auditor.entriesOf(amendedAudit);
   });

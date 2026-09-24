@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { monotonicFactory } from 'ulidx';
 import '@anupheaus/common'; // installs array extensions (.ids()) and Object.clone used by the sync engine
 import type { Logger, Record as MXDBRecord } from '@anupheaus/common';
 import { AuditEntryType, OperationType, auditor, defineCollection, type MXDBCollection } from '../../common';
@@ -259,6 +260,8 @@ describe('handleClientToServerSync — persisting client changes', () => {
 // ─── Collection before-write hooks ────────────────────────────────────────────
 
 const hookedItemsCollection = defineCollection<Item>({ name: 'c2sHookedItems', indexes: [] });
+/** How far ahead of the server a skewed client's clock runs in the clock-skew scenarios. */
+const CLIENT_CLOCK_AHEAD_MS = 3_600_000;
 const HOOKED = hookedItemsCollection.name;
 
 // The extension registry cannot be cleared, so the collection's hooks delegate to per-test implementations.
@@ -351,6 +354,18 @@ describe('handleClientToServerSync — collection before-write hooks', () => {
       collectionName: HOOKED,
       records: [{ record: amendedByHook, lastAuditEntryId, hash: await hashRecord(amendedByHook) }],
     }]]);
+  });
+
+  it('orders the amendment after the client\'s change even when the client\'s clock runs ahead', async () => {
+    resetColourOnRename();
+    harness.seed({ id: 'i1', name: 'old', colour: 'red' }, [createdEntry({ id: 'i1', name: 'old', colour: 'red' }, 1)]);
+    const aheadOfServerClock = monotonicFactory()(Date.now() + CLIENT_CLOCK_AHEAD_MS);
+    const clientRename = { type: AuditEntryType.Updated, id: aheadOfServerClock, ops: [{ type: OperationType.Replace, path: 'name', value: 'renamed' }] } as AuditEntry;
+
+    await handleClientToServerSync(request(HOOKED, 'i1', [branchedEntry(1), clientRename], await hashRecord(renamedByClient)));
+
+    const storedAudit = harness.collection.audits.get('i1')!;
+    expect([storedAudit.entries.at(-1)!.id > aheadOfServerClock, auditor.createRecordFrom(storedAudit)]).toEqual([true, amendedByHook]);
   });
 
   it('acknowledges the change as usual when the hook leaves the record alone', async () => {
