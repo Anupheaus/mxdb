@@ -7,3 +7,5 @@ export type { MXDBCollectionEvent } from './providers/dbs/models';
 export type { RemoteSqlMutatingRequestInfo, MXDBRemoteAssistanceConfig } from './remote-assistance/models';
 export type { MXDBUser, MXDBAccount } from '../common/models';
 export { useAuthentication } from '@anupheaus/nexus/client';
+export { DbsContext } from './providers';
+export type { DbsContextProps } from './providers';
