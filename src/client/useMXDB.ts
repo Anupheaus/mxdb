@@ -1,7 +1,8 @@
-import { useContext, useMemo, useRef, useState } from 'react';
+import { useCallback, useContext, useMemo, useRef, useState } from 'react';
 import { is } from '@anupheaus/common';
 import { useNexus } from '@anupheaus/nexus/client';
 import { useSyncState } from './providers/client-to-server/SyncStateContext';
+import { waitForPendingChanges } from './providers/client-to-server/waitForPendingChanges';
 import { DbsContext } from './providers/dbs/DbContext';
 import { MxdbReadyContext } from './auth/MxdbReadyContext';
 
@@ -14,6 +15,15 @@ type UseMXDBResult = Pick<ReturnType<typeof useNexus>, 'onConnectionStateChanged
   readonly clientId: string | undefined;
   readonly isDbReady: boolean;
   waitForDbReady(): Promise<boolean>;
+  /**
+   * Resolves once every local change has reached the server, or false if it has not within ten seconds (a client that
+   * is offline, or whose change the server keeps refusing, must not hang its caller).
+   *
+   * Await this before asking the server to read something just written locally: an upsert resolves as soon as it is in
+   * memory, so without it the server reads the version before the edit. `isSynchronising` cannot be used for this --
+   * it is false both before the dispatcher picks a change up and after it has sent one.
+   */
+  whenSynchronised(): Promise<boolean>;
 };
 
 export function useMXDB(): UseMXDBResult {
@@ -26,6 +36,18 @@ export function useMXDB(): UseMXDBResult {
   const [isSyncingState, setIsSyncingState] = useState(isSyncing);
   const { dbs, lastDb } = useContext(DbsContext);
   const { waitForDbReady, getIsDbReady } = useContext(MxdbReadyContext);
+
+  const hasPendingChanges = useCallback(async () => {
+    for (const { db } of dbs.values()) {
+      if (await db.hasPendingAudits()) return true;
+    }
+    return false;
+  }, [dbs]);
+
+  const whenSynchronised = useCallback(
+    () => waitForPendingChanges({ hasPendingChanges, onSyncStateChanged }),
+    [hasPendingChanges, onSyncStateChanged],
+  );
 
   onConnectionStateChanged((newIsConnected, socket) => {
     if (!updateWhenChangedRef.current) return;
@@ -47,6 +69,7 @@ export function useMXDB(): UseMXDBResult {
       return getIsDbReady() || (!is.empty(lastDb) && dbs.has(lastDb));
     },
     waitForDbReady,
+    whenSynchronised,
     onConnectionStateChanged,
     disconnect,
     connect,
