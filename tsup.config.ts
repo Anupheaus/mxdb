@@ -34,7 +34,11 @@ export default defineConfig({
   sourcemap: true,
   clean: true,
   treeshake: true,
-  splitting: false,
+  // Shared modules must be emitted ONCE and imported by every entry. With splitting off, each entry got
+  // its own copy of `common/registries`, so `defineCollection` (via `@anupheaus/mxdb/common`) registered a
+  // collection in one WeakMap while `useCollection` (via `@anupheaus/mxdb/client`) looked in another and
+  // threw "Configuration for collection … could not be found" for every consumer of the published dist.
+  splitting: true,
   target: 'es2022',
   // Runs after a successful build (dist already written by then); copies the worker sources in.
   async onSuccess() {
