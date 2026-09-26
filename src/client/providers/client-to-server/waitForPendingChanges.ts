@@ -24,14 +24,13 @@ export interface WaitForPendingChangesProps {
 export function waitForPendingChanges({ hasPendingChanges, onSyncStateChanged, timeoutMs = PENDING_CHANGES_TIMEOUT_MS }: WaitForPendingChangesProps): Promise<boolean> {
   return new Promise<boolean>(resolve => {
     let isSettled = false;
-    let unsubscribe: (() => void) | undefined;
-    let timer: ReturnType<typeof setTimeout> | undefined;
+    // Collected rather than referenced directly, so `settle` needs no forward reference to them.
+    const cleanups: Array<() => void> = [];
 
     const settle = (isSynchronised: boolean) => {
       if (isSettled) return;
       isSettled = true;
-      if (timer != null) clearTimeout(timer);
-      unsubscribe?.();
+      cleanups.forEach(cleanup => cleanup());
       resolve(isSynchronised);
     };
 
@@ -44,8 +43,10 @@ export function waitForPendingChanges({ hasPendingChanges, onSyncStateChanged, t
       }
     };
 
-    unsubscribe = onSyncStateChanged(() => { void check(); });
-    timer = setTimeout(() => settle(false), timeoutMs);
+    const unsubscribe = onSyncStateChanged(() => { void check(); });
+    cleanups.push(unsubscribe);
+    const timer = setTimeout(() => settle(false), timeoutMs);
+    cleanups.push(() => clearTimeout(timer));
     void check();
   });
 }
