@@ -12,7 +12,8 @@ Primary collection API for React components: imperative CRUD operations and reac
 - `useCollection.ts` / `index.ts` — composes all `create*` factories into the return value of `useCollection()`
 
 ### Imperative operations
-- `createGet.ts` — `get(id)` — fetch a single record by id
+- `createGet.ts` — `get(id)` — fetch a single record by id: the local store first, then the server for only the ids still missing
+- `sharedServerGets.ts` — `fetchSharingInFlight` — concurrent `get`s of the same id in the same collection share one server request. Each `useCollection` has its own `get`, so the sharing is keyed per `DbCollection` instance, not per hook. Only in-flight requests are shared, never answers: a settled request releases its ids, and a failed one fails every waiter and then lets the next `get` retry. Pinned by `createGet.tests.ts`.
 - `createGetAll.ts` — `getAll()` — fetch all records
 - `createFind.ts` — `find(filters)` — filtered fetch without pagination
 - `createQuery.ts` — `query(request)` — paginated, sorted, filtered fetch
@@ -49,7 +50,7 @@ Reactive hooks subscribe to the in-memory change-notification bus inside `DbColl
 
 - **`useSubscription` is server-side** — calls a named subscription defined via `extendCollection` on the server. Completely separate from the local reactive hooks.
 - **`tableRequest` vs `useQuery`** — `tableRequest` is imperative (for library grid integrations); `useQuery` is the reactive equivalent.
-- **`createFind.tests.ts`** — the only hook file with its own unit tests; covers filter-to-SQL edge cases.
+- **Unit tests** sit beside their factories (`createFind`, `createGet`, `createRemove`, `createUpsert`, `toLiveRequestCallbacks`, `useCollection`); `createFind.tests.ts` covers the filter-to-SQL edge cases.
 - **`serverHints` on `query` / `useQuery` is server-only** — the optional `serverHints` field on a query request is *not* applied to the local SQLite query; it is passed through to the server's `onQuery` collection hook to interpret. It has no effect unless that hook reads it. See [../../../server/collections/AGENTS.md](../../../server/collections/AGENTS.md#server-query-hints-serverhints).
 
 ## Related
