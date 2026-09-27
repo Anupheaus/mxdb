@@ -1,7 +1,11 @@
 export * from './startServer';
 export * from './collections';
 export * from './hooks';
-export { provideDb, ServerDb, useDb, withDb, withConnectionDb, runInDbScope } from './providers';
+// whenAllServerDbsConfigured is for a caller tearing databases down from outside mxdb - see its
+// doc comment. Named on this line rather than imported straight from './providers/db/ServerDb':
+// a second import path for the same module changes this barrel's initialisation order, which the
+// auth-collection suites are sensitive to (their hooks then time out).
+export { provideDb, ServerDb, useDb, withDb, withConnectionDb, runInDbScope, whenAllServerDbsConfigured } from './providers';
 export type { DbCollectionSyncProps, UpsertProps, DeleteProps } from './providers/db/ServerDbCollection';
 export type { MXDBAccount, MXDBDeviceInfo } from '../common/models';
 // The types in `startServer`'s own signature. `startServer` is public but these were not,

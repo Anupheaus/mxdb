@@ -20,6 +20,33 @@ interface Props {
   watch?: boolean;
 }
 
+/**
+ * Every live ServerDb, so {@link whenAllServerDbsConfigured} can wait for all of them.
+ *
+ * WeakRefs: the registry must never be the reason an instance stays alive. Entries whose target
+ * has been collected are pruned when they are next walked.
+ */
+const liveServerDbs = new Set<WeakRef<ServerDb>>();
+
+/**
+ * Resolves once every ServerDb currently alive has finished configuring its collections.
+ *
+ * `ServerDb.whenConfigured()` only helps for an instance you hold, and the ones that race a
+ * teardown generally are not reachable — consumers cache them in module-level maps, and the
+ * per-connection pool holds others. Await this before dropping databases from outside mxdb, or the
+ * drop cuts across DDL still in flight and Mongo refuses it with `DatabaseDropPending` or
+ * `NamespaceNotFound`. Never rejects.
+ */
+export async function whenAllServerDbsConfigured(): Promise<void> {
+  const pending: Promise<void>[] = [];
+  for (const ref of [...liveServerDbs]) {
+    const db = ref.deref();
+    if (db == null) { liveServerDbs.delete(ref); continue; }
+    pending.push(db.whenConfigured());
+  }
+  await Promise.all(pending);
+}
+
 export class ServerDb {
   constructor(props: Props) {
     this.#mongoDbName = props.mongoDbName;
@@ -31,6 +58,7 @@ export class ServerDb {
     this.#setupEvents();
     this.#db = this.#connect();
     this.#collections = this.#setupCollections(props.collections);
+    liveServerDbs.add(new WeakRef(this));
     this.#changeCallbacks = new Set();
   }
 
