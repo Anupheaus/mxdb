@@ -1,6 +1,6 @@
 {
   "name": "@anupheaus/mxdb",
-  "version": "0.1.22",
+  "version": "0.1.23",
   "type": "module",
   "main": "./dist/server.js",
   "exports": {
