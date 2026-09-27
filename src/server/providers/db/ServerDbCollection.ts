@@ -113,6 +113,20 @@ interface Props<RecordType extends Record> {
   registerSession?(session: ClientSession): () => void;
 }
 
+/**
+ * Mongo codes that mean the target is being removed, not that configuration went wrong.
+ *
+ * `DatabaseDropPending` is returned while a drop is in progress; `NamespaceNotFound` once the
+ * database or collection has gone. Configuration runs in the background, so a caller dropping the
+ * database is entitled to cut across it — the schema still being built is about to cease existing.
+ */
+const TEARDOWN_ERROR_CODES = new Set([215, 26]);
+
+function isTeardownError(error: unknown): boolean {
+  const code = (error as { code?: unknown } | null)?.code;
+  return typeof code === 'number' && TEARDOWN_ERROR_CODES.has(code);
+}
+
 export class ServerDbCollection<RecordType extends Record = Record> {
   constructor({ getDb, collection, collectionNames, logger, registerSession }: Props<RecordType>) {
     this.#getDb = getDb;
@@ -127,7 +141,9 @@ export class ServerDbCollection<RecordType extends Record = Record> {
     // unhandled rejection. It is retained (rather than discarded with `void`) so a caller tearing the
     // database down can wait for it — see `whenConfigured`.
     this.#configured = this.#configure().catch(error => {
-      this.#logger.error('Failed to configure collection', { collectionName: this.#collection.name, error: toLoggableError(error) });
+      // A drop that lands mid-configuration is normal teardown, not a fault — see isTeardownError.
+      const level = isTeardownError(error) ? 'debug' : 'error';
+      this.#logger[level]('Failed to configure collection', { collectionName: this.#collection.name, error: toLoggableError(error) });
     });
   }
 
