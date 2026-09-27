@@ -122,14 +122,18 @@ export class ServerDbCollection<RecordType extends Record = Record> {
     this.#logger = logger.createSubLogger(collection.name);
     this.#registerSession = registerSession;
     this.#collectionCreations = new Map();
-    // Configuration runs in the background and nothing awaits it, so a failure must be logged here or it
-    // would escape as an unhandled rejection. Writes do not depend on it succeeding.
-    void this.#configure().catch(error => {
+    // Configuration runs in the background: writes do not depend on it succeeding, so a failure is
+    // logged rather than thrown, and the settled promise is kept so it can never surface as an
+    // unhandled rejection. It is retained (rather than discarded with `void`) so a caller tearing the
+    // database down can wait for it — see `whenConfigured`.
+    this.#configured = this.#configure().catch(error => {
       this.#logger.error('Failed to configure collection', { collectionName: this.#collection.name, error: toLoggableError(error) });
     });
   }
 
   #getDb: () => Promise<Db>;
+  /** Resolves when this collection's background configuration has settled, successfully or not. */
+  #configured: Promise<void>;
   #registerSession?: (session: ClientSession) => () => void;
   #collectionNames: Promise<Set<string>>;
   /**
@@ -252,6 +256,16 @@ export class ServerDbCollection<RecordType extends Record = Record> {
     const collection = await this.#getCollection();
     return (await collection.find().toArray()).mapWithoutNull(dbUtils.deserialize);
   }
+
+  /**
+   * Resolves once this collection's background configuration (collection + audit twin creation,
+   * `collMod` for change-stream pre/post images, index builds) has settled.
+   *
+   * Never rejects: a configuration failure is logged, because writes do not depend on it. Await this
+   * before dropping or closing the database, or the outstanding DDL is refused mid-flight with
+   * `DatabaseDropPending` / `NamespaceNotFound`.
+   */
+  public get whenConfigured(): Promise<void> { return this.#configured; }
 
   public async upsert(record: RecordType, props?: UpsertProps): Promise<void>;
   public async upsert(records: RecordType[], props?: UpsertProps): Promise<void>;

@@ -86,9 +86,24 @@ export class ServerDb {
    *  4. `MongoClient.close(true)` to terminate the TCP pool. Force=true so it does not
    *     wait on operations.
    */
+  /**
+   * Resolves once every collection's background configuration has settled (see
+   * `ServerDbCollection.whenConfigured`). Never rejects.
+   *
+   * Await this before dropping the underlying database from outside this instance — otherwise the
+   * drop races DDL that is still in flight and Mongo refuses it with `DatabaseDropPending` or
+   * `NamespaceNotFound`, leaving the collections half-configured.
+   */
+  public async whenConfigured(): Promise<void> {
+    await Promise.all([...this.#collections.values()].map(collection => collection.whenConfigured));
+  }
+
   public async close(): Promise<void> {
     if (this.#isClosing) return;
     this.#isClosing = true;
+    // Let the background configuration finish first: force-closing the client underneath it threw
+    // MongoClientClosedError from work nothing was awaiting, which is why callers avoided close().
+    await this.whenConfigured();
     const sessionCount = this.#activeSessions.size;
     this.#logger.info(`[ServerDb] close.begin activeSessions=${sessionCount}`);
     // Snapshot + clear sessions before aborting so any concurrent unregister() is a no-op.
