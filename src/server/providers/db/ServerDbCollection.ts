@@ -116,15 +116,25 @@ interface Props<RecordType extends Record> {
 /**
  * Mongo codes that mean the target is being removed, not that configuration went wrong.
  *
- * `DatabaseDropPending` is returned while a drop is in progress; `NamespaceNotFound` once the
- * database or collection has gone. Configuration runs in the background, so a caller dropping the
- * database is entitled to cut across it — the schema still being built is about to cease existing.
+ * `DatabaseDropPending` (215) comes back while a drop is in progress, `NamespaceNotFound` (26) once
+ * the database or collection has gone, and `IndexBuildAborted` (276) when a drop cancels an index
+ * build. Configuration runs in the background, so a caller dropping the database is entitled to cut
+ * across it — the schema still being built is about to cease existing.
  */
-const TEARDOWN_ERROR_CODES = new Set([215, 26]);
+const TEARDOWN_ERROR_CODES = new Set([215, 26, 276]);
 
-function isTeardownError(error: unknown): boolean {
-  const code = (error as { code?: unknown } | null)?.code;
-  return typeof code === 'number' && TEARDOWN_ERROR_CODES.has(code);
+/**
+ * Whether `error` is Mongo reporting that the target is going away, at any depth.
+ *
+ * The chain has to be walked: these surface wrapped, as an InternalError carrying the driver's error
+ * under `meta.cause` ("Unable to update change stream settings for X" with a MongoServerError
+ * inside), so reading only `error.code` misses nearly all of them.
+ */
+function isTeardownError(error: unknown, depth = 0): boolean {
+  if (error == null || typeof error !== 'object' || depth > 5) return false;
+  const { code, cause, meta } = error as { code?: unknown; cause?: unknown; meta?: { cause?: unknown } };
+  if (typeof code === 'number' && TEARDOWN_ERROR_CODES.has(code)) return true;
+  return isTeardownError(cause, depth + 1) || isTeardownError(meta?.cause, depth + 1);
 }
 
 export class ServerDbCollection<RecordType extends Record = Record> {
