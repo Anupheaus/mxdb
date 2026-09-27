@@ -631,26 +631,19 @@ export class ServerDbCollection<RecordType extends Record = Record> {
   }
 
   /** Maps auditor diagnostics to structured error logs for a record. */
-  #auditLoggerAsStructuredError(recordId: string, label: string): Logger {
-    const emit = (msg: string) => {
-      this.#logger.error(label, { recordId, msg });
-    };
-    const nest = (): Logger =>
-      ({
-        warn: emit,
-        info: emit,
-        debug: emit,
-        error: emit,
-        silly: () => {},
-        createSubLogger: nest,
-      }) as unknown as Logger;
-    return nest();
-  }
-
-  /** Forwards auditor warn/error/debug/info to the collection logger (replay, isAudit, merge diagnostics). */
-  #auditLoggerForwarding(recordId: string): Logger {
+  /**
+   * Forwards the auditor's own warn/error/debug/info to the collection logger (replay, isAudit and
+   * merge diagnostics), AT THE LEVEL THE AUDITOR CHOSE. `label` says which operation it came from.
+   *
+   * Deliberately level-preserving. An earlier variant funnelled every level into `logger.error`
+   * under a "... failed" label, so an ordinary replay emitted three errors — 72 per run of one
+   * integration suite, all of them "[auditor] replay start/done" and none an actual failure. That
+   * buried the log and made a real audit error indistinguishable from a trace. The auditor calls
+   * `error()`/`warn()` itself when something is genuinely wrong, so those still surface.
+   */
+  #auditLogger(recordId: string, label = 'auditor'): Logger {
     const emit = (level: 'warn' | 'error' | 'debug' | 'info') => (msg: string) => {
-      this.#logger[level]('auditor', { recordId, msg });
+      this.#logger[level](label, { recordId, msg });
     };
     const nest = (): Logger =>
       ({
@@ -694,7 +687,7 @@ export class ServerDbCollection<RecordType extends Record = Record> {
             existingRecord,
             existingAuditRecord,
             existingRecordFromAudit ?? undefined,
-            this.#auditLoggerAsStructuredError(record.id, 'Audit reconcile failed'),
+            this.#auditLogger(record.id, 'audit reconcile'),
           );
         }
 
@@ -705,13 +698,13 @@ export class ServerDbCollection<RecordType extends Record = Record> {
       const currentRecord = auditor.createRecordFrom(
         existingAuditRecord,
         existingRecords.findById(record.id) ?? undefined,
-        this.#auditLoggerForwarding(record.id),
+        this.#auditLogger(record.id),
       );
       return auditor.updateAuditWith(
         record,
         existingAuditRecord,
         currentRecord ?? undefined,
-        this.#auditLoggerAsStructuredError(record.id, 'Audit update failed'),
+        this.#auditLogger(record.id, 'audit update'),
       );
     });
     await this.#writeAuditRecords(newAuditRecords);
