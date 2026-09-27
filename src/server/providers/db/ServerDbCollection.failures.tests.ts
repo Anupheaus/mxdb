@@ -364,7 +364,16 @@ describe('ServerDbCollection under failure', () => {
 
       await col.upsert(makeItem('r1'));
 
-      await vi.waitFor(() => expect(logger.error).toHaveBeenCalledWith('Audit upsert failed', { error: 'audit collection unavailable' }));
+      // Both un-awaited audit writes now log through one handler, so the meta carries the collection and the
+      // structured error (an InternalError from the write retry wrapper) rather than a bare message string.
+      await vi.waitFor(() => {
+        const [[message, meta]] = logger.error.mock.calls as unknown as [[string, { collectionName: string; error: Error }]];
+        expect({ message, collectionName: meta.collectionName, errorMessage: meta.error.message }).toEqual({
+          message: 'Audit upsert failed',
+          collectionName: COLLECTION_NAME,
+          errorMessage: 'audit collection unavailable',
+        });
+      });
     });
   });
 
@@ -420,6 +429,67 @@ describe('ServerDbCollection under failure', () => {
       await settleUntil(() => collModCollections.length === 2);
 
       expect(logger.error.mock.calls).toEqual([]);
+    });
+  });
+
+  // ── un-awaited audit writes ───────────────────────────────
+
+  /**
+   * `upsert`/`remove` deliberately do not await their audit bookkeeping, so each must handle its own rejection.
+   * When one escapes, it becomes an *unhandled* rejection, which fails a whole vitest run even though every test
+   * passed — exactly how one code-215 killed Vision's integration job at 1322/1322 green. The teardown codes are
+   * logged at debug because a database dropping mid-write is normal teardown, not a fault.
+   */
+  describe('audit writes that are not awaited', () => {
+    const droppingError = () => mongoError(
+      `Cannot create collection testdb.${AUDIT_COLLECTION_NAME} - database is in the process of being dropped.`,
+      { code: 215, codeName: 'DatabaseDropPending' },
+    );
+
+    it('handles a delete audit that fails because the database is dropping, leaving no unhandled rejection', async () => {
+      const captured = captureUnhandledRejections();
+      try {
+        const { col, audit, logger } = setup();
+        audit.find = vi.fn(() => ({ toArray: async () => { throw droppingError(); } })) as typeof audit.find;
+
+        await settle(col.remove('r1'));
+        await settleUntil(() => logger.debug.mock.calls.some(([message]) => message === 'Audit delete failed'));
+
+        expect({ errors: logger.error.mock.calls, rejections: captured.rejections }).toEqual({ errors: [], rejections: [] });
+      } finally {
+        captured.stop();
+      }
+    });
+
+    it('handles an upsert audit that fails the same way', async () => {
+      const captured = captureUnhandledRejections();
+      try {
+        const { col, audit, logger } = setup();
+        audit.find = vi.fn(() => ({ toArray: async () => { throw droppingError(); } })) as typeof audit.find;
+
+        await settle(col.upsert(makeItem('r1')));
+        await settleUntil(() => logger.debug.mock.calls.some(([message]) => message === 'Audit upsert failed'));
+
+        expect({ errors: logger.error.mock.calls, rejections: captured.rejections }).toEqual({ errors: [], rejections: [] });
+      } finally {
+        captured.stop();
+      }
+    });
+
+    it('still reports a genuine audit failure as an error, not swallowed at debug', async () => {
+      const captured = captureUnhandledRejections();
+      try {
+        const { col, audit, logger } = setup();
+        const unauthorized = mongoError('not authorized on testdb to execute command', { code: 13, codeName: 'Unauthorized' });
+        audit.find = vi.fn(() => ({ toArray: async () => { throw unauthorized; } })) as typeof audit.find;
+
+        await settle(col.remove('r1'));
+        await settleUntil(() => logger.error.mock.calls.some(([message]) => message === 'Audit delete failed'));
+
+        expect(captured.rejections).toEqual([]);
+      } finally {
+        captured.stop();
+      }
     });
   });
 

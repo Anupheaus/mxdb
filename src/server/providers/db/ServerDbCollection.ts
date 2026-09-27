@@ -316,9 +316,7 @@ export class ServerDbCollection<RecordType extends Record = Record> {
     const upsertedCount = result.matchedCount + result.upsertedCount;
     if (upsertedCount !== records.length) throw new InternalError(`Upsert failed - expected ${records.length}, got ${upsertedCount}`);
     if (this.#config.disableAudit !== true) {
-      void this.#upsertAudit(existingRecords, records, { resetAudit }).catch(err => {
-        this.#logger.error('Audit upsert failed', { error: String((err as any)?.message ?? err) });
-      });
+      void this.#upsertAudit(existingRecords, records, { resetAudit }).catch(this.#onAuditWriteFailed('Audit upsert failed'));
     }
   }
 
@@ -339,7 +337,9 @@ export class ServerDbCollection<RecordType extends Record = Record> {
 
     const result = await collection.deleteMany({ _id: { $in: ids as any[] } });
     if (!result.acknowledged) throw new InternalError('Delete failed');
-    if (this.#config.disableAudit !== true) this.#deleteAudit(ids, { clearAudit, deleteSnapshots });
+    if (this.#config.disableAudit !== true) {
+      void this.#deleteAudit(ids, { clearAudit, deleteSnapshots }).catch(this.#onAuditWriteFailed('Audit delete failed'));
+    }
   }
 
   @bind
@@ -708,6 +708,20 @@ export class ServerDbCollection<RecordType extends Record = Record> {
       );
     });
     await this.#writeAuditRecords(newAuditRecords);
+  }
+
+  /**
+   * The rejection handler for an audit write that is deliberately NOT awaited, so the caller's upsert/delete is
+   * not held up by audit bookkeeping. Such a write must handle its own failure: an unawaited rejection escapes as
+   * an *unhandled* rejection, which fails an entire vitest run even when every test passed — one code-215 here
+   * killed Vision's integration job at 1322/1322 green. A drop landing mid-write is normal teardown rather than a
+   * fault, so it is logged at debug; see `isTeardownError`.
+   */
+  #onAuditWriteFailed(message: string): (error: unknown) => void {
+    return error => {
+      const level = isTeardownError(error) ? 'debug' : 'error';
+      this.#logger[level](message, { collectionName: this.#collection.name, error: toLoggableError(error) });
+    };
   }
 
   async #deleteAudit(ids: string[], { clearAudit = false, deleteSnapshots }: DeleteProps<RecordType> = {}) {
