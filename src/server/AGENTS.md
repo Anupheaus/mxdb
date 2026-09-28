@@ -46,7 +46,7 @@ JSON-RPC 2.0 server at `POST /mcp` exposing `mxdb_clients_list` and `mxdb_client
 
 ### Seeding (`seeding/`)
 - `seedCollections.ts` — called at startup when `shouldSeedCollections: true`; runs `onSeed` hooks
-- `seededData.ts` — tracks seeded record ids to prevent duplicate seeding across restarts
+- `seedState.ts` — the fixed-record hash each collection last applied, kept per database in `mxdb_seeds` so unchanged seeds are skipped across restarts and deploys. See [seeding/AGENTS.md](seeding/AGENTS.md)
 
 ### Utilities / internal
 - `subscriptionDataStore.ts` — per-client key-value store used by subscriptions to track prior data (e.g. previous record ids for getAll diffs)
