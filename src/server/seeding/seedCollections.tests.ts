@@ -5,15 +5,14 @@ import { defineCollection } from '../../common/defineCollection';
 import { extendCollection, type SeedWithFn, type SeedWithProps } from '../collections/extendCollection';
 import type { MXDBCollection } from '../../common';
 
-const mockLoadSeededData = vi.fn();
-const mockSaveSeededData = vi.fn();
+/** The database's seed hashes (`mxdb_seeds`), in memory: what a test starts with, and every save seeding makes. */
+let storedHashes = new Map<string, string>();
+const mockSaveSeedHash = vi.fn(async (collectionName: string, hash: string) => { storedHashes.set(collectionName, hash); });
+const mockUseSeedState = vi.fn(async () => ({ hashes: new Map(storedHashes), save: mockSaveSeedHash }));
 const mockUseCollection = vi.fn();
 const mockUseLogger = vi.fn();
 
-vi.mock('./seededData', () => ({
-  loadSeededData: () => mockLoadSeededData(),
-  saveSeededData: (data: Record<string, string>) => mockSaveSeededData(data),
-}));
+vi.mock('./seedState', () => ({ useSeedState: () => mockUseSeedState() }));
 vi.mock('../collections', () => ({ useCollection: (c: unknown) => mockUseCollection(c) }));
 vi.mock('@anupheaus/common', async importOriginal => {
   const actual = await importOriginal() as object;
@@ -62,7 +61,7 @@ describe('seedCollections', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockCreateSubLogger.mockReturnValue(mockLogger);
-    mockLoadSeededData.mockReturnValue({});
+    storedHashes = new Map();
     mockUseLogger.mockReturnValue(mockLogger);
   });
 
@@ -78,15 +77,26 @@ describe('seedCollections', () => {
 
   // ─── Orchestration ──────────────────────────────────────────────────────────
 
-  it('saves the seeded-data hashes after seeding completes', async () => {
+  it('records no hash for a collection whose onSeed seeds nothing', async () => {
     const collection = makeCollection();
     extendCollection(collection, { onSeed: async () => { /* nothing to seed */ } });
-    mockLoadSeededData.mockReturnValue({ other: 'hash-other' });
     mockUseCollection.mockReturnValue(createFakeCollectionApi());
 
     await seedCollections([collection]);
 
-    expect(mockSaveSeededData).toHaveBeenCalledWith({ other: 'hash-other' });
+    expect(mockSaveSeedHash).not.toHaveBeenCalled();
+  });
+
+  it('seeds nothing, and logs why, when the seed state cannot be read', async () => {
+    const collection = makeCollection();
+    const onSeed = vi.fn();
+    extendCollection(collection, { onSeed });
+    mockUseSeedState.mockRejectedValueOnce(new Error('database unreachable'));
+
+    await seedCollections([collection]);
+
+    expect({ seeded: onSeed.mock.calls.length, errors: mockError.mock.calls.map(([message]) => message) })
+      .toEqual({ seeded: 0, errors: ['Could not read the seed state; skipping seeding.'] });
   });
 
   it('does not touch the collection API for collections without an onSeed hook', async () => {
@@ -129,14 +139,15 @@ describe('seedCollections', () => {
     expect(mockError).toHaveBeenCalledWith(`Error seeding collection "${failing.name}":`, expect.anything());
   });
 
-  it('still saves seeded data when an onSeed throws', async () => {
-    const failing = makeCollection();
-    extendCollection(failing, { onSeed: async () => { throw new Error('seed exploded'); } });
-    mockUseCollection.mockReturnValue(createFakeCollectionApi());
+  it('records no hash for fixed records whose write failed, so the next start retries them', async () => {
+    const collection = makeCollection();
+    const api = createFakeCollectionApi([]);
+    api.upsert.mockRejectedValueOnce(new Error('write failed'));
+    mockUseCollection.mockReturnValue(api);
 
-    await seedCollections([failing]);
+    await seedWith(collection, { fixedRecords: [makeItem('f1')] });
 
-    expect(mockSaveSeededData).toHaveBeenCalledTimes(1);
+    expect({ saved: mockSaveSeedHash.mock.calls.length, errored: mockError.mock.calls.length }).toEqual({ saved: 0, errored: 1 });
   });
 
   // ─── seedWith: argument validation ──────────────────────────────────────────
@@ -183,6 +194,7 @@ describe('seedCollections', () => {
 
     it('only upserts fixed records that differ from what is stored', async () => {
       const collection = makeCollection();
+      storedHashes.set(collection.name, 'hash-of-previous-fixed-records');
       const unchanged = makeItem('same', 'unchanged');
       const api = createFakeCollectionApi([unchanged, makeItem('changed', 'old')]);
       mockUseCollection.mockReturnValue(api);
@@ -198,7 +210,7 @@ describe('seedCollections', () => {
 
       await seedWith(collection, { fixedRecords: [makeItem('f1')] });
 
-      expect(mockSaveSeededData).toHaveBeenCalledWith({ [collection.name]: expect.any(String) });
+      expect(mockSaveSeedHash).toHaveBeenCalledWith(collection.name, expect.any(String));
     });
 
     it('skips seeding when the fixed records are unchanged since the last run', async () => {
@@ -206,9 +218,7 @@ describe('seedCollections', () => {
       const fixedRecords = [makeItem('f1')];
       mockUseCollection.mockReturnValue(createFakeCollectionApi([]));
       await seedWith(collection, { fixedRecords });
-      const savedHashes = mockSaveSeededData.mock.calls[0]![0];
 
-      mockLoadSeededData.mockReturnValue(savedHashes);
       const api = createFakeCollectionApi([]);
       mockUseCollection.mockReturnValue(api);
       await seedCollections([collection]);
@@ -218,13 +228,48 @@ describe('seedCollections', () => {
 
     it('re-seeds when the fixed records have changed since the last run', async () => {
       const collection = makeCollection();
-      mockLoadSeededData.mockReturnValue({ [collection.name]: 'hash-of-previous-fixed-records' });
+      storedHashes.set(collection.name, 'hash-of-previous-fixed-records');
       const api = createFakeCollectionApi([]);
       mockUseCollection.mockReturnValue(api);
 
       const result = await seedWith(collection, { fixedRecords: [makeItem('f1')] });
 
       expect(result).toEqual([makeItem('f1')]);
+    });
+
+    // ─── adopting a database seeded before its hashes were kept in it ─────────
+
+    it('adds only the missing fixed records, overwriting none, to a collection with records but no recorded hash', async () => {
+      const collection = makeCollection();
+      const edited = makeItem('f1', 'renamed in the app');
+      const api = createFakeCollectionApi([edited]);
+      mockUseCollection.mockReturnValue(api);
+
+      const result = await seedWith(collection, { fixedRecords: [makeItem('f1'), makeItem('f2')] });
+
+      expect({ result, upserted: api.upsert.mock.calls }).toEqual({ result: [makeItem('f2')], upserted: [[[makeItem('f2')], { resetAudit: true }]] });
+    });
+
+    it('records the hash when adopting, so the next start skips the collection', async () => {
+      const collection = makeCollection();
+      mockUseCollection.mockReturnValue(createFakeCollectionApi([makeItem('f1', 'renamed in the app')]));
+      await seedWith(collection, { fixedRecords: [makeItem('f1')] });
+
+      const api = createFakeCollectionApi([makeItem('f1', 'renamed in the app')]);
+      mockUseCollection.mockReturnValue(api);
+      await seedCollections([collection]);
+
+      expect(api.getAll).not.toHaveBeenCalled();
+    });
+
+    it('seeds an empty collection with no recorded hash in full', async () => {
+      const collection = makeCollection();
+      mockUseCollection.mockReturnValue(createFakeCollectionApi([]));
+      let created = 0;
+
+      const result = await seedWith(collection, { count: 2, fixedRecords: [makeItem('f1')], create: () => makeItem(`c${++created}`) });
+
+      expect(result).toEqual([makeItem('f1'), makeItem('c1')]);
     });
 
     // ─── count + create ──────────────────────────────────────────────────────
