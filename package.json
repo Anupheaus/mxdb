@@ -81,7 +81,7 @@
   ],
   "typings": "./dist/server.d.ts",
   "dependencies": {
-    "@anupheaus/common": "^0.2.9",
+    "@anupheaus/common": "^0.2.13",
     "@anupheaus/nexus": "^1.2.11",
     "@anupheaus/react-ui": "^0.1.12",
     "@faker-js/faker": "^10.5.0",
