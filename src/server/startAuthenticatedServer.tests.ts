@@ -352,14 +352,32 @@ describe('startAuthenticatedServer — server wiring', () => {
       return { routes, router: { get: register('GET'), post: register('POST') } };
     }
 
-    it.each(['development', 'test', undefined])('exposes the dev sign-in route when NODE_ENV=%s', async nodeEnv => {
+    // The dev sign-in route signs anyone in as any user id, with no credential. A server that is merely "not production"
+    // (a dev server behind a public tunnel, a staging box) must not expose it, so it is opt-in only.
+    it.each(['development', 'test', undefined])('does not expose the dev sign-in route unless the app turns it on (NODE_ENV=%s)', async nodeEnv => {
       vi.stubEnv('NODE_ENV', nodeEnv as string);
       const { socketServerConfig } = await start();
       const { routes, router } = makeRouter();
 
       await socketServerConfig.onRegisterRoutes(router);
 
+      expect(routes.filter(route => route.includes('/dev/'))).toEqual([]);
+    });
+
+    it.each(['development', 'test', undefined])('exposes the dev sign-in route when the app turns it on (devSignIn) and NODE_ENV=%s', async nodeEnv => {
+      vi.stubEnv('NODE_ENV', nodeEnv as string);
+      const { socketServerConfig } = await start({ devSignIn: true });
+      const { routes, router } = makeRouter();
+
+      await socketServerConfig.onRegisterRoutes(router);
+
       expect(routes).toContain('POST /my-app/dev/signin');
+    });
+
+    it('refuses to start in production with the dev sign-in route turned on', async () => {
+      vi.stubEnv('NODE_ENV', 'production');
+
+      await expect(start({ devSignIn: true })).rejects.toThrow('devSignIn must never be turned on in production');
     });
 
     it('never exposes the dev sign-in route in production', async () => {

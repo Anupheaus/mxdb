@@ -24,7 +24,7 @@ This auth layer is intentionally isolated from the sync collection system: `Auth
 - `parseSessionTokenFromHandshake.ts` — reads `nexus_session` / `socketapi_session` cookies, then handshake `sessionToken` (used by `startAuthenticatedServer`).
 
 ### Dev tooling
-- `registerDevAuthRoute.ts` — registers a `POST /{name}/dev/signin` Koa route that issues a dev auth token without WebAuthn. **Excluded in `NODE_ENV=production`** — this is the server-side counterpart to `setupBrowserTools`'s `setDevAuth`.
+- `registerDevAuthRoute.ts` — registers a `POST /{name}/dev/signin` Koa route that issues a dev auth token without WebAuthn: anyone can sign in as any user id. **Registered only when the app sets `ServerConfig.devSignIn: true`**, never by default (a dev server behind a public tunnel is "not production" too), and `startAuthenticatedServer` throws if `devSignIn` is on while `NODE_ENV=production`. This is the server-side counterpart to `setupBrowserTools`'s `setDevAuth`.
 
 ### Device management context
 - `authDevicesContext.ts` — `AuthDevicesApi` interface (`listForUser`, `createInvite`, `setEnabled`, `deleteDevice`, `expireStalePendingInvites`, `findById`, `create`, `update`) plus a module-level singleton pattern: `setAuthDevices(api)` registers the implementation at startup; `useAuthDevices()` returns it and throws if called before registration
@@ -65,7 +65,7 @@ Pending invites that are never redeemed are removed by `expireStalePendingInvite
 ## Ambiguities and gotchas
 
 - **`AuthCollection` is NOT a `ServerDbCollection`** — it bypasses the sync pipeline entirely. Do not pass auth records to `extendCollection` hooks or expect them to appear in change-stream events.
-- **Dev auth route is excluded in production** — `registerDevAuthRoute.ts` is only registered when `NODE_ENV !== 'production'`. The client's `setupBrowserTools` `setDevAuth` helper will silently fail in prod because the endpoint does not exist.
+- **Dev auth route is opt-in** — `registerDevAuthRoute.ts` is registered only with `devSignIn: true`, and never in production (startup throws). Without it, the client's `setupBrowserTools` `setDevAuth` helper fails because the endpoint does not exist.
 - **Single `mxdb_authentication` MongoDB collection** — all auth strategy records share one collection (`mxdb_authentication`). Strategy subclasses distinguish records by their schema shape, not by collection name.
 - **A failed collection setup is never cached** — if opening/creating `mxdb_authentication` rejects (transient Mongo error, or another server instance creating it first → `NamespaceExists`), only that query fails; the next query retries setup. Caching the rejected promise previously broke all auth until restart (see `AuthCollection.resilience.tests.ts`).
 - **`AuthCollection` queries the CURRENT `useDb()`, not the constructor db** — a single `AuthCollection` instance is constructed once at startup and reused for every connection; each query re-resolves `useDb()` so per-connection tenant routing (Phase 2a's `setDb`) works. Only falls back to the constructor-captured db when `useDb()` throws (no scope at all — e.g. ad-hoc tooling outside `provideDb`).

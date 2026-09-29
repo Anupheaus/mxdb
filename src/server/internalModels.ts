@@ -57,6 +57,12 @@ export interface ServerConfig extends Omit<StartSocketServerConfig, 'auth'> {
   shouldSeedCollections?: boolean;
   changeStreamDebounceMs?: number;
   auth: ServerAuthConfig;
+  /**
+   * Exposes `POST /{name}/dev/signin`, which signs anyone in as any user id with no credential (for automated tests
+   * and local tooling; `setupBrowserTools().setDevAuth` calls it). Off unless set to `true`, whatever NODE_ENV says: a
+   * dev server behind a public tunnel is "not production" too. Starting with it on when NODE_ENV is `production` throws.
+   */
+  devSignIn?: boolean;
   onGetAccountDetails?(accountId: string): Promise<MXDBAccount | undefined>;
   onConnected?(ctx: { user: MXDBUser; account?: MXDBAccount }): PromiseMaybe<void>;
   onDisconnected?(ctx: {

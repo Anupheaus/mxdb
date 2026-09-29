@@ -308,7 +308,7 @@ These are used at runtime or in the test harness. None are required by the packa
 
 | Variable | Used by | Description |
 |----------|---------|-------------|
-| `NODE_ENV` | Server | When `production`, the dev-auth bypass route (`POST /{name}/dev/signin`) is **not** registered. Always set `NODE_ENV=production` in deployed environments. |
+| `NODE_ENV` | Server | Always set `NODE_ENV=production` in deployed environments. The dev-auth bypass route (`POST /{name}/dev/signin`) is registered only with `devSignIn: true` in the server config, and a server started with `devSignIn: true` under `NODE_ENV=production` refuses to start. |
 | `MONGO_URI` | Test app / e2e | MongoDB connection URI used in the manual test app and e2e setup. Passed as `mongoDbUrl` to `startServer`. |
 | `MXDB_E2E_*` | E2e test suite | A family of variables injected into the forked test server process (`MXDB_E2E_SERVER_PORT`, `MXDB_E2E_MONGO_URI`, etc.). See `tests/e2e/setup/mongoConstants.ts`. |
 | `MXDB_MCP_API_KEY` | Server (MCP endpoint) | Bearer token that MCP callers must supply in the `Authorization` header. If unset, all `POST /mcp` requests are rejected with 401. |
