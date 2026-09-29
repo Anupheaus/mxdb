@@ -15,9 +15,10 @@
 import sqlite3InitModule from '@sqlite.org/sqlite-wasm';
 import type { WorkerRequestWithCorrelationId, WorkerResponse } from './worker-messages';
 import {
-  isOpfsAvailable, flushEncrypted, openEncrypted, registerRegexp,
+  isOpfsAvailable, flushEncrypted, openEncrypted, registerRegexp, databaseSizeBytes,
   acquireDbLock, releaseDbLock,
 } from './sqlite-worker-shared';
+import { createEncryptedFlushScheduler } from './encryptedFlushScheduler';
 import type { Sqlite3, OO1Db, LockRef } from './sqlite-worker-shared';
 
 // ─── State ────────────────────────────────────────────────────────────────────
@@ -35,6 +36,22 @@ let openDbName = '';
 // Exclusive Web Lock held for the lifetime of this open database.
 // Prevents a second dedicated-worker tab from opening the same OPFS file.
 const lockRef: LockRef = { release: null };
+
+// Persisting the encrypted DB exports and encrypts all of it, so writes only mark it dirty and ONE coalesced flush runs
+// at a time (sc-680). It reads the state current when it runs, so call flushNow() BEFORE switching or closing the DB.
+const flushScheduler = createEncryptedFlushScheduler({
+  flush: async () => {
+    if (db == null || sqlite3 == null || cryptoKey == null) return;
+    await flushEncrypted(sqlite3, db, cryptoKey, encryptedFileName);
+  },
+  onFlushFailed: error => {
+    // The in-memory DB is intact and the flush is retried; only the OPFS copy is behind.
+    // eslint-disable-next-line no-console -- the worker has no Logger (it cannot reach the app's); the worker console is its log
+    console.error('[mxdb-worker] Encrypted flush failed — will retry', {
+      encryptedFileName, dbSizeBytes: db == null ? 0 : databaseSizeBytes(db), error: error instanceof Error ? error.message : String(error),
+    });
+  },
+});
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -85,7 +102,8 @@ async function handleOpen(
 
     // A different database was open (e.g. user switched) — close it before opening the new one.
     if (db) {
-      if (cryptoKey) await flushEncrypted(sqlite3!, db, cryptoKey, encryptedFileName);
+      await flushScheduler.flushNow();
+      flushScheduler.reset();
       db.close();
       db = null;
       cryptoKey = null;
@@ -113,7 +131,7 @@ async function handleOpen(
     });
 
     // Flush after DDL setup so the schema is persisted immediately
-    if (cryptoKey && sqlite3) await flushEncrypted(sqlite3!, db!, cryptoKey, encryptedFileName);
+    if (cryptoKey) flushScheduler.markDirty();
 
     openDbName = dbName;
     reply(correlationId, null);
@@ -126,7 +144,7 @@ async function handleExec(sql: string, params: unknown[] | undefined, correlatio
   try {
     if (!db || !sqlite3) throw new Error('Database not open');
     db.exec({ sql, bind: (params ?? []) as any });
-    if (cryptoKey) await flushEncrypted(sqlite3, db, cryptoKey, encryptedFileName);
+    if (cryptoKey) flushScheduler.markDirty();
     reply(correlationId, null);
   } catch (err) {
     replyError(correlationId, err);
@@ -144,7 +162,7 @@ async function handleExecBatch(
         tx.exec({ sql, bind: (params ?? []) as any });
       }
     });
-    if (cryptoKey) await flushEncrypted(sqlite3, db, cryptoKey, encryptedFileName);
+    if (cryptoKey) flushScheduler.markDirty();
     reply(correlationId, null);
   } catch (err) {
     replyError(correlationId, err);
@@ -186,9 +204,19 @@ function handleQueryMulti(queries: Array<{ sql: string; params?: unknown[] }>, c
   }
 }
 
+async function handleFlush(correlationId: string) {
+  try {
+    await flushScheduler.flushNow();
+    reply(correlationId, null);
+  } catch (err) {
+    replyError(correlationId, err);
+  }
+}
+
 async function handleClose(correlationId: string) {
   try {
-    if (db && sqlite3 && cryptoKey) await flushEncrypted(sqlite3, db, cryptoKey, encryptedFileName);
+    await flushScheduler.flushNow();
+    flushScheduler.reset();
     db?.close();
     db = null;
     cryptoKey = null;
@@ -223,6 +251,9 @@ self.addEventListener('message', ({ data }: MessageEvent<WorkerRequestWithCorrel
       break;
     case 'close':
       void handleClose(correlationId);
+      break;
+    case 'flush':
+      void handleFlush(correlationId);
       break;
     default:
       replyError((data as any).correlationId ?? '', `Unknown message type: ${(data as any).type}`);

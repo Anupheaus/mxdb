@@ -46,6 +46,12 @@ export interface QueryMultiRequest {
   queries: Array<{ sql: string; params?: unknown[] }>;
 }
 
+/** Persist the encrypted database now if it has unflushed writes (sent when a tab is hidden or unloads, sc-680). */
+export interface FlushRequest {
+  type: 'flush';
+  correlationId: string;
+}
+
 export interface CloseRequest {
   type: 'close';
   correlationId: string;
@@ -70,6 +76,7 @@ export type WorkerRequest =
   | QueryRequest
   | QueryMultiRequest
   | CloseRequest
+  | FlushRequest
   | ConnectRequest
   | DisconnectRequest;
 

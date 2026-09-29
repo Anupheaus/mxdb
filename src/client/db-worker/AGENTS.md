@@ -22,6 +22,7 @@ Re-exports `SqliteWorkerClient`, `buildTableDDL`, `filtersToSql`, `sortsToSql`, 
 - `sqlite-worker.ts` — `Worker` (single-tab) entry
 - `sqlite-shared-worker.ts` — `SharedWorker` (multi-tab) entry
 - `sqlite-worker-shared.ts` — logic shared between both worker types
+- `encryptedFlushScheduler.ts` — coalesces persisting the encrypted database: a write only marks it dirty; ONE flush runs at a time, about 1 s after the last write and at most every 5 s under constant writes, plus on close, a database switch and a `flush` request (sent by `SqliteWorkerClient` when a tab is hidden or unloads). A failed flush is logged and retried, never thrown (sc-680)
 
 ### DDL builder (`buildTableDDL.ts`)
 - `buildTableDDL(config)` — generates `CREATE TABLE` statements for the three tables every collection gets:
@@ -45,6 +46,7 @@ All three tables for a collection are created in a single DDL transaction on `op
 
 ## Ambiguities and gotchas
 
+- **The encrypted database is not flushed per write** (sc-680). `flushEncrypted` exports and encrypts the WHOLE database — about twice its size in memory — so running it per write, several at once, exhausted the worker ("Array buffer allocation failed"). Writes go through `encryptedFlushScheduler`; never call `flushEncrypted` directly from a write path. The latest writes can live only in memory for up to the flush window (a few seconds); that is acceptable because the server is the source of truth and the client re-syncs. Encryption at rest is unchanged: nothing plaintext reaches OPFS and the key is never persisted.
 - **`InlineRunner` is in-memory** — data does not persist across process restarts in tests. Reset state by creating a new `SqliteWorkerClient`.
 - **SharedWorker URL resolution** — in browser builds the worker is loaded via `new SharedWorker(new URL('./sqlite-shared-worker.ts', import.meta.url))`. Build tooling must handle this URL transform; it is not a normal import.
 - **`setOnExternalChange`** — only fires in browser environments with a real `SharedWorker`. In Node/InlineRunner mode the callback is never called.

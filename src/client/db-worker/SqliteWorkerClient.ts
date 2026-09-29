@@ -220,6 +220,32 @@ export class SqliteWorkerClient {
       await this.#ensureSharedPort();
     }
     await this.#send({ type: 'open', correlationId: ulid(), dbName, statements, encryptionKey: this.#encryptionKey });
+    this.#flushWhenHidden();
+  }
+
+  /**
+   * Persist the encrypted database now if it has unflushed writes. The worker coalesces flushes (sc-680), so the
+   * latest writes can live only in memory for a few seconds; this is called when the tab is hidden or unloads.
+   */
+  async flush(): Promise<void> {
+    if (this.#mode === 'inline') return;
+    await this.#send({ type: 'flush', correlationId: ulid() });
+  }
+
+  #isFlushWhenHiddenWired = false;
+
+  /** Ask the worker to flush when this tab is hidden or unloads — the moments a tab may not come back. */
+  #flushWhenHidden(): void {
+    if (this.#isFlushWhenHiddenWired || this.#encryptionKey == null) return;
+    this.#isFlushWhenHiddenWired = true;
+    const flushQuietly = () => {
+      // Best effort: the tab may be going away, and the worker logs its own failures and retries.
+      void this.flush().catch(() => { /* the worker keeps the data in memory and flushes again later */ });
+    };
+    globalThis.addEventListener?.('pagehide', flushQuietly);
+    globalThis.document?.addEventListener?.('visibilitychange', () => {
+      if (globalThis.document?.visibilityState === 'hidden') flushQuietly();
+    });
   }
 
   async exec(sql: string, params?: unknown[], collectionHint?: string): Promise<void> {
