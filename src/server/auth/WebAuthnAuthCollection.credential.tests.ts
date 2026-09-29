@@ -103,3 +103,43 @@ describe('claimRegistration', () => {
     expect(await authColl.claimRegistration('tok', { credentialId: 'cred-new', isEnabled: true })).toBeUndefined();
   });
 });
+
+describe('recordSignIn and a disabled device', () => {
+  it('records nothing for a device disabled after it started signing in', async () => {
+    await authColl.update('device', { isEnabled: false });
+
+    expect({ wrote: await authColl.recordSignIn('device', 1_000, { sessionToken: 's2' }), session: (await stored())?.sessionToken }).toEqual({ wrote: false, session: 's1' });
+  });
+});
+
+// Re-enabling a device clears its old session in ONE conditional write, so an enable that races another cannot clear a
+// session the device has just been given (#16 review).
+describe('enableIfDisabled', () => {
+  it('enables a disabled device and removes its old session token', async () => {
+    await authColl.update('device', { isEnabled: false });
+
+    const changed = await authColl.enableIfDisabled('device');
+    const after = await stored();
+
+    expect({ changed, isEnabled: after?.isEnabled, hasSession: 'sessionToken' in (after ?? {}) }).toEqual({ changed: true, isEnabled: true, hasSession: false });
+  });
+
+  it('leaves an enabled device, and its session, alone', async () => {
+    expect({ changed: await authColl.enableIfDisabled('device'), session: (await stored())?.sessionToken }).toEqual({ changed: false, session: 's1' });
+  });
+
+  it('clears the old session only once when two enables race, so a session issued in between survives', async () => {
+    await authColl.update('device', { isEnabled: false });
+
+    const results = await Promise.all([authColl.enableIfDisabled('device'), authColl.enableIfDisabled('device')]);
+    await authColl.update('device', { sessionToken: 'fresh' });
+    await authColl.enableIfDisabled('device');
+
+    expect({ changed: results.filter(Boolean).length, session: (await stored())?.sessionToken }).toEqual({ changed: 1, session: 'fresh' });
+  });
+
+  it.each([[{ $ne: null }], [''], [1]])('changes nothing for %j, which is not a request id', async requestId => {
+    await authColl.update('device', { isEnabled: false });
+    expect({ changed: await authColl.enableIfDisabled(requestId as never), isEnabled: (await stored())?.isEnabled }).toEqual({ changed: false, isEnabled: false });
+  });
+});

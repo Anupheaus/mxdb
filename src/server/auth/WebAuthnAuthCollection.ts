@@ -161,14 +161,15 @@ export class WebAuthnAuthCollection
 
   /**
    * Records a verified sign-in (sc-627) in ONE atomic write: applies `patch` and sets `lastChallengeIssuedAt`, only while the
-   * device's last challenge is missing or older than `challengeIssuedAt`. Resolves whether it wrote, so of two identical
+   * device is enabled and its last challenge is missing or older than `challengeIssuedAt`. Resolves whether it wrote, so of two identical
    * sign-ins sent together only one is recorded, and the challenge time and counter never go backwards.
    */
   async recordSignIn(requestId: string, challengeIssuedAt: number, patch: Partial<WebAuthnAuthRecord>): Promise<boolean> {
     if (!isAuthKey(requestId) || typeof challengeIssuedAt !== 'number' || !Number.isFinite(challengeIssuedAt)) return false;
     const coll = await this.getColl() as unknown as Collection<WebAuthnDoc>;
     const { matchedCount } = await coll.updateOne(
-      { _id: requestId, $or: [{ lastChallengeIssuedAt: null }, { lastChallengeIssuedAt: { $lt: challengeIssuedAt } }] } as any,
+      // Enabled too: a device disabled while its sign-in was being verified gets no session.
+      { _id: requestId, isEnabled: true, $or: [{ lastChallengeIssuedAt: null }, { lastChallengeIssuedAt: { $lt: challengeIssuedAt } }] } as any,
       toAuthRecordUpdate({ ...patch, lastChallengeIssuedAt: challengeIssuedAt }),
     ).catch(error => { throw asPasskeyAlreadyRegistered(error); });
     return matchedCount === 1;

@@ -22,10 +22,11 @@ function matches(doc: Doc, filter: Filter): boolean {
   return Object.entries(filter).every(([field, expected]) => {
     const actual = doc[field];
     if (expected != null && typeof expected === 'object' && !Array.isArray(expected)) {
-      const { $exists, $lt } = expected as { $exists?: boolean; $lt?: number };
+      const { $exists, $lt, $ne } = expected as { $exists?: boolean; $lt?: number; $ne?: unknown };
       if ($exists === false && actual !== undefined) return false;
       if ($exists === true && actual === undefined) return false;
       if ($lt != null && !(typeof actual === 'number' && actual < $lt)) return false;
+      if ('$ne' in (expected as object) && actual === $ne) return false;
       return true;
     }
     return actual === expected;
@@ -47,9 +48,10 @@ function makeFakeMongoCollection() {
     find(filter: Filter) { return { toArray: async () => [...docs.values()].filter(doc => matches(doc, filter)) }; },
     async updateOne(filter: Filter, update: { $set?: Filter; $unset?: Record<string, 1> }) {
       const doc = [...docs.values()].find(candidate => matches(candidate, filter));
-      if (doc == null) return;
+      if (doc == null) return { matchedCount: 0 };
       Object.assign(doc, update.$set ?? {});
       for (const field of Object.keys(update.$unset ?? {})) delete doc[field];
+      return { matchedCount: 1 };
     },
     async deleteOne(filter: Filter) {
       const doc = [...docs.values()].find(candidate => matches(candidate, filter));
