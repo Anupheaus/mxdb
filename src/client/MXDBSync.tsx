@@ -33,6 +33,13 @@ interface Props {
   onSyncRejected?(rejections: MXDBSyncRejection[]): void;
   onConflictResolution?(message: string): Promise<boolean>;
   tokenStorage?: TokenStorage;
+  /**
+   * The WebAuthn relying party (a domain) for passkeys, passed to nexus's `<Nexus rpId>`. Omit it to use the page's own
+   * host. A native app sets it: its page must be served from a subdomain of it (Capacitor's `server.hostname`), and
+   * `https://<rpId>/.well-known/assetlinks.json` must name the app. Never set a parent domain on the web, where every
+   * page under that domain could then use the passkeys.
+   */
+  rpId?: string;
   children?: ReactNode;
 }
 
@@ -51,6 +58,7 @@ export const MXDBSync = createComponent('MXDBSync', ({
   onSyncRejected,
   onConflictResolution,
   tokenStorage,
+  rpId,
   children,
 }: Props) => {
   if (host != null) {
@@ -85,6 +93,7 @@ export const MXDBSync = createComponent('MXDBSync', ({
           onSignedIn={onSignedIn != null ? handleSignedIn : undefined}
           onSignedOut={onSignedOut}
           tokenStorage={tokenStorage}
+          rpId={rpId}
         >
           <MXDBSyncInner
             appName={name}
