@@ -78,6 +78,7 @@ Implementation lives under `src/server/mcp/`.
 
 - **`onAfterUpsert` / `onAfterDelete` are change-stream driven** — they run on every server instance watching the stream, not just the one that originated the write. Use `onBefore*` for per-request validation — they run before the write on the instance performing it, for server-side writes and synced client writes alike (see [collections/AGENTS.md](collections/AGENTS.md)).
 - **`onConnected` / `onDisconnected` are always paired** — if a socket drops while `onClientConnected` is still awaiting auth work (account lookup, `setUser`), the connection is abandoned: no `onConnected`, no entry in `listConnectedClients`, and the host's `onClientConnected` is skipped (its `onClientDisconnected` already ran).
+- **Passkeys are verified (sc-627, nexus 2):** a `webauthn` server config needs `rpIds` (a list, or `(origin) => string[]`) and `isAllowedOrigin(origin)` (exact patterns), and `challengeSecret` in production; mxdb passes them to nexus.
 - **`registerDevAuthRoute` is opt-in** (`devSignIn: true`) and refused in production — it signs anyone in as anyone.
 - **`close()` on `ServerInstance`** terminates the MongoDB connection. Required for clean test teardown; neglecting it causes open handle warnings in Vitest.
 

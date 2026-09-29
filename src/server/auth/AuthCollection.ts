@@ -173,6 +173,18 @@ export abstract class AuthCollection<TRecord extends NexusAuthRecord> implements
     return docs.map(doc => fromDoc(doc as AuthDoc<TRecord>));
   }
 
+  /**
+   * Enables a disabled device and removes its old session token, in ONE conditional write, and resolves whether it did.
+   * An enabled device is left alone (its session stays valid), and of two enables that race only one clears a session,
+   * so neither can clear a session issued in between. A key that is not a string changes nothing.
+   */
+  async enableIfDisabled(requestId: string): Promise<boolean> {
+    if (!isAuthKey(requestId)) return false;
+    const coll = await this.getColl();
+    const { matchedCount } = await coll.updateOne({ _id: requestId, isEnabled: { $ne: true } } as any, { $set: { isEnabled: true }, $unset: { sessionToken: 1 } } as any);
+    return matchedCount === 1;
+  }
+
   /** Throws for a key that is not a non-empty string, rather than update whichever record an operator matches. */
   async update(requestId: string, patch: Partial<TRecord>): Promise<void> {
     assertAuthKeyForWrite(requestId, 'update');

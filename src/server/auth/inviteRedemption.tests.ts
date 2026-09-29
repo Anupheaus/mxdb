@@ -1,11 +1,11 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import http from 'http';
 import type { AddressInfo } from 'net';
-import { createHash } from 'crypto';
 import { MongoClient, type Db } from 'mongodb';
 import { MongoMemoryReplSet } from 'mongodb-memory-server';
 import type { NexusDeviceDetails } from '@anupheaus/nexus/common';
 import { Logger } from '@anupheaus/common';
+import { createSoftwarePasskey } from './softwarePasskey.testing';
 import { startServer } from '../startServer';
 import type { ServerInstance } from '../internalModels';
 
@@ -20,9 +20,6 @@ const deviceDetails = {
   userAgent: 'vitest', platform: 'test', language: 'en-GB', screenWidth: 1080, screenHeight: 2400,
   viewportWidth: 412, viewportHeight: 915, colorDepth: 24, pixelRatio: 2.6, timezone: 'Europe/London',
 } as unknown as NexusDeviceDetails;
-
-/** What nexus (1.2.15+, sc-613) stores for a key hash: a digest, never the value the client sent. */
-const storedKeyHash = (clientKeyHash: string) => `sha256:${createHash('sha256').update(clientKeyHash).digest('hex')}`;
 
 let replSet: MongoMemoryReplSet;
 let mongo: MongoClient;
@@ -47,7 +44,10 @@ beforeAll(async () => {
     server: httpServer,
     mongoDbName: DB_NAME,
     mongoDbUrl: replSet.getUri(),
-    auth: { mode: 'webauthn', inviteTtlMs: TTL_MS, onGetInviteDetails: async () => ({ appName: 'Redemption test' }) as never },
+    auth: {
+      mode: 'webauthn', inviteTtlMs: TTL_MS, onGetInviteDetails: async () => ({ appName: 'Redemption test' }) as never,
+      rpIds: [RP_ID], isAllowedOrigin: origin => origin === ORIGIN, challengeSecret: 'redemption-test-secret',
+    },
   });
   await new Promise<void>(resolve => httpServer.listen(0, '127.0.0.1', resolve));
   baseUrl = `http://127.0.0.1:${(httpServer.address() as AddressInfo).port}`;
@@ -74,9 +74,23 @@ async function call(method: 'GET' | 'POST', path: string, body?: object, session
   return { status: response.status, body: text === '' ? {} : JSON.parse(text), sessionToken: cookie };
 }
 
+const RP_ID = 'app.test';
+const ORIGIN = 'https://app.test';
+/** One software passkey per test key, so a device signs in with the passkey it registered. */
+const passkeys = new Map<string, ReturnType<typeof createSoftwarePasskey>>();
+const passkeyFor = (key: string) => {
+  if (!passkeys.has(key)) passkeys.set(key, createSoftwarePasskey({ rpId: RP_ID, origin: ORIGIN }));
+  return passkeys.get(key)!;
+};
 const openInvite = (requestId: string) => call('GET', `webauthn/invite?requestId=${encodeURIComponent(requestId)}`);
-const register = (registrationToken: string, keyHash: string) => call('POST', 'webauthn/register', { registrationToken, keyHash, deviceDetails });
-const reauth = (keyHash: string) => call('POST', 'webauthn/reauth', { keyHash, deviceDetails });
+/** Registers the passkey named `key` with the invite's registration token (sc-627: the server verifies it). */
+const register = (registrationToken: string, key: string) =>
+  call('POST', 'webauthn/register', { registrationToken, credential: passkeyFor(key).register(new TextEncoder().encode(registrationToken)), deviceDetails });
+/** Signs in with the passkey named `key`, by signing a fresh challenge from the server. */
+const reauth = async (key: string) => {
+  const { challenge } = (await call('GET', 'webauthn/challenge')).body as { challenge: string; };
+  return call('POST', 'webauthn/reauth', { credential: passkeyFor(key).signIn(challenge), deviceDetails });
+};
 const signOut = (sessionToken: string) => call('POST', 'signout', {}, sessionToken);
 /** 'accepted', or the refusal's message. (nexus answers a refused redemption with a plain error, so the status says little.) */
 const outcome = (reply: Reply) => reply.status < 300 ? 'accepted' : (reply.body.error as { message?: string; } | undefined)?.message;
@@ -122,11 +136,11 @@ describe('invite redemption through nexus, with an invite lifetime', () => {
     expect({
       opened: outcome(opened),
       registered: [outcome(registered), registered.sessionToken],
-      after: { isEnabled: after?.isEnabled, keyHash: after?.keyHash },
+      after: { isEnabled: after?.isEnabled, credentialId: after?.credentialId },
     }).toEqual({
       opened: 'accepted',
       registered: ['Invalid registration token', undefined],
-      after: { isEnabled: false, keyHash: undefined },
+      after: { isEnabled: false, credentialId: undefined },
     });
   });
 
@@ -151,11 +165,11 @@ describe('invite redemption through nexus, with an invite lifetime', () => {
     expect({
       signedOut: signedOut.status,
       reopened: outcome(reopened),
-      after: { isEnabled: after?.isEnabled, keyHash: after?.keyHash, registrationToken: after?.registrationToken },
+      after: { isEnabled: after?.isEnabled, credentialId: after?.credentialId, registrationToken: after?.registrationToken },
     }).toEqual({
       signedOut: 200,
       reopened: 'Invite not found',
-      after: { isEnabled: false, keyHash: storedKeyHash('hash-signed-out'), registrationToken: undefined },
+      after: { isEnabled: false, credentialId: passkeyFor('hash-signed-out').credentialId, registrationToken: undefined },
     });
   });
 
@@ -187,7 +201,7 @@ describe('invite redemption through nexus, with an invite lifetime', () => {
     ['{ $ne: null }', { $ne: null }],
     ['{ $gt: "" }', { $gt: '' }],
     ['{ $exists: true }', { $exists: true }],
-  ])('refuses %s in place of a key hash, registration token or invite id, issuing no session', async (_label, operator) => {
+  ])('refuses %s in place of a credential id, registration token or invite id, issuing no session', async (_label, operator) => {
     // Only these records, so the operator's first match is an enabled device: the one it would sign the caller in as.
     await db.collection('mxdb_authentication').deleteMany({});
     const requestId = await invite('u-target');
@@ -197,8 +211,8 @@ describe('invite redemption through nexus, with an invite lifetime', () => {
     await openInvite(pendingId);
 
     const replies = [
-      await call('POST', 'webauthn/reauth', { keyHash: operator, deviceDetails }),
-      await call('POST', 'webauthn/register', { registrationToken: operator, keyHash: 'hash-attacker', deviceDetails }),
+      await call('POST', 'webauthn/reauth', { credential: { id: operator, rawId: 'x', type: 'public-key', response: {} }, deviceDetails }),
+      await call('POST', 'webauthn/register', { registrationToken: operator, credential: passkeyFor('attacker').register(new TextEncoder().encode('x')), deviceDetails }),
       await call('GET', 'webauthn/invite?requestId[$ne]=x'),
     ];
     const pending = await stored(pendingId);
@@ -206,8 +220,8 @@ describe('invite redemption through nexus, with an invite lifetime', () => {
     expect({
       outcomes: replies.map(reply => reply.status < 300),
       sessions: replies.filter(reply => reply.sessionToken != null).length,
-      pendingStillPending: [pending?.isEnabled, pending?.keyHash],
-      attackerRegistered: await db.collection('mxdb_authentication').countDocuments({ keyHash: 'hash-attacker' }),
+      pendingStillPending: [pending?.isEnabled, pending?.credentialId],
+      attackerRegistered: await db.collection('mxdb_authentication').countDocuments({ credentialId: passkeyFor('attacker').credentialId }),
     }).toEqual({ outcomes: [false, false, false], sessions: 0, pendingStillPending: [false, undefined], attackerRegistered: 0 });
   });
 
@@ -224,7 +238,7 @@ describe('invite redemption through nexus, with an invite lifetime', () => {
     expect({
       outcomes: replies.map(outcome).sort(),
       cookies: replies.filter(reply => reply.sessionToken != null).length,
-      stored: after?.keyHash === storedKeyHash(outcome(replies[0]) === 'accepted' ? 'hash-race-a' : 'hash-race-b'),
+      stored: after?.credentialId === passkeyFor(outcome(replies[0]) === 'accepted' ? 'hash-race-a' : 'hash-race-b').credentialId,
     }).toEqual({ outcomes: ['Invalid registration token', 'accepted'], cookies: 1, stored: true });
   });
 });
