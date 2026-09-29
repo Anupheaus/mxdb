@@ -4,6 +4,7 @@
 // fakes; SQLite itself is the real @sqlite.org/sqlite-wasm build and encryption is real WebCrypto.
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import type { LockRef, OO1Db, Sqlite3 } from './sqlite-worker-shared';
+import { createEncryptedFlushScheduler } from './encryptedFlushScheduler';
 import {
   acquireDbLock,
   flushEncrypted,
@@ -28,7 +29,7 @@ const SWAP_FILE_ERROR = 'Failed to create swap file';
 type CreateWritableBehaviour = () => void;
 
 interface FakeWritable {
-  write(data: Uint8Array): Promise<void>;
+  write(data: Uint8Array | ArrayBuffer): Promise<void>;
   close(): Promise<void>;
 }
 
@@ -48,8 +49,17 @@ class FakeOpfsDirectory {
       getFile: async () => ({ arrayBuffer: async () => this.#toArrayBuffer(this.files.get(name)!) }),
       createWritable: async (): Promise<FakeWritable> => {
         this.createWritableBehaviours.shift()?.();
+        // Like the real stream: keepExistingData false starts empty, and each write appends at the cursor.
+        this.files.set(name, new Uint8Array());
         return {
-          write: async data => { this.files.set(name, new Uint8Array(data)); },
+          write: async data => {
+            const existing = this.files.get(name)!;
+            const chunk = new Uint8Array(data);
+            const combined = new Uint8Array(existing.byteLength + chunk.byteLength);
+            combined.set(existing, 0);
+            combined.set(chunk, existing.byteLength);
+            this.files.set(name, combined);
+          },
           close: async () => { this.closedWritables++; },
         };
       },
@@ -220,6 +230,39 @@ describe('openEncrypted and flushEncrypted', () => {
     const { db } = await openEncrypted(sqlite3, DB_NAME, KEY_BYTES);
 
     expect(selectNames(db)).toEqual(['Alice', 'Bob']);
+  });
+
+  it('persists thousands of writes through a handful of coalesced flushes, and round-trips them all (sc-680)', async () => {
+    const directory = new FakeOpfsDirectory();
+    installOpfs(directory);
+    const { db, cryptoKey, encryptedFileName } = await openEncrypted(sqlite3, DB_NAME, KEY_BYTES);
+    db.exec('CREATE TABLE IF NOT EXISTS people (name TEXT)');
+    let flushes = 0;
+    let concurrentFlushes = 0;
+    let maxConcurrentFlushes = 0;
+    const scheduler = createEncryptedFlushScheduler({
+      flush: async () => {
+        flushes++;
+        maxConcurrentFlushes = Math.max(maxConcurrentFlushes, ++concurrentFlushes);
+        try { await flushEncrypted(sqlite3, db, cryptoKey, encryptedFileName); } finally { concurrentFlushes--; }
+      },
+      onFlushFailed: error => { throw error; },
+      debounceMs: 20,
+      maxWaitMs: 60,
+    });
+
+    // Each write marks the database dirty, as the workers do — never a flush of its own.
+    for (let index = 0; index < 3_000; index++) {
+      db.exec({ sql: 'INSERT INTO people(name) VALUES (?)', bind: [`person-${String(index).padStart(4, '0')}`] });
+      scheduler.markDirty();
+      if (index % 500 === 0) await new Promise(resolve => setTimeout(resolve, 25));
+    }
+    await scheduler.flushNow();
+    db.close();
+
+    const { db: reopened } = await openEncrypted(sqlite3, DB_NAME, KEY_BYTES);
+    expect({ count: reopened.selectValue('SELECT COUNT(*) FROM people'), isFewFlushes: flushes <= 10, maxConcurrentFlushes })
+      .toEqual({ count: 3_000, isFewFlushes: true, maxConcurrentFlushes: 1 });
   });
 
   it('keeps accepting writes after restoring a flushed database', async () => {

@@ -8,7 +8,7 @@
  *
  * Encryption: when `encryptionKey` is supplied in the `open` request the
  * database is kept in memory and persisted as an AES-GCM blob (`*.enc`) in
- * OPFS after every write. All tabs share the same in-memory instance, so the
+ * OPFS by a coalesced flush shortly after writes (never per write — sc-680). All tabs share the same in-memory instance, so the
  * key only needs to be correct on the first open; subsequent tabs that trigger
  * a re-open will pass the same key (derived from the same WebAuthn credential).
  */
@@ -22,9 +22,10 @@ import type {
   DisconnectRequest,
 } from './worker-messages';
 import {
-  isOpfsAvailable, flushEncrypted, openEncrypted, registerRegexp,
+  isOpfsAvailable, flushEncrypted, openEncrypted, registerRegexp, databaseSizeBytes,
   acquireDbLock, releaseDbLock,
 } from './sqlite-worker-shared';
+import { createEncryptedFlushScheduler } from './encryptedFlushScheduler';
 import type { Sqlite3, OO1Db, LockRef } from './sqlite-worker-shared';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -59,6 +60,22 @@ let openDbName = '';
 // first open; skipped on subsequent opens because lockRef.release is already set.
 // Prevents a second dedicated-worker tab from stealing the same OPFS file.
 const lockRef: LockRef = { release: null };
+
+// Persisting the encrypted DB exports and encrypts all of it, so writes only mark it dirty and ONE coalesced flush runs
+// at a time (sc-680). It reads the state current when it runs, so call flushNow() BEFORE switching or closing the DB.
+const flushScheduler = createEncryptedFlushScheduler({
+  flush: async () => {
+    if (db == null || sqlite3 == null || cryptoKey == null) return;
+    await flushEncrypted(sqlite3, db, cryptoKey, encryptedFileName);
+  },
+  onFlushFailed: error => {
+    // The in-memory DB is intact and the flush is retried; only the OPFS copy is behind.
+    // eslint-disable-next-line no-console -- the worker has no Logger (it cannot reach the app's); the worker console is its log
+    console.error('[mxdb-worker] Encrypted flush failed — will retry', {
+      encryptedFileName, dbSizeBytes: db == null ? 0 : databaseSizeBytes(db), error: error instanceof Error ? error.message : String(error),
+    });
+  },
+});
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -122,7 +139,8 @@ async function handleOpen(
 
     // A different database was open (e.g. user switched) — close it before opening the new one.
     if (db) {
-      if (cryptoKey) await flushEncrypted(sqlite3!, db, cryptoKey, encryptedFileName);
+      await flushScheduler.flushNow();
+      flushScheduler.reset();
       db.close();
       db = null;
       cryptoKey = null;
@@ -149,7 +167,7 @@ async function handleOpen(
       }
     });
 
-    if (cryptoKey && sqlite3) await flushEncrypted(sqlite3, db!, cryptoKey, encryptedFileName);
+    if (cryptoKey) flushScheduler.markDirty();
 
     openDbName = dbName;
     replyOn(port, correlationId, null);
@@ -169,7 +187,7 @@ async function handleExec(
   try {
     if (!db || !sqlite3) throw new Error('Database not open');
     db.exec({ sql, bind: (params ?? []) as any });
-    if (cryptoKey) await flushEncrypted(sqlite3, db, cryptoKey, encryptedFileName);
+    if (cryptoKey) flushScheduler.markDirty();
     replyOn(port, correlationId, null);
     if (collectionHint) broadcastChange(senderPortId, collectionHint);
   } catch (err) {
@@ -191,7 +209,7 @@ async function handleExecBatch(
         tx.exec({ sql, bind: (params ?? []) as any });
       }
     });
-    if (cryptoKey) await flushEncrypted(sqlite3, db, cryptoKey, encryptedFileName);
+    if (cryptoKey) flushScheduler.markDirty();
     replyOn(port, correlationId, null);
     if (collectionHint) broadcastChange(senderPortId, collectionHint);
   } catch (err) {
@@ -243,10 +261,20 @@ function handleQueryMulti(
   }
 }
 
+async function handleFlush(port: MessagePort, correlationId: string) {
+  try {
+    await flushScheduler.flushNow();
+    replyOn(port, correlationId, null);
+  } catch (err) {
+    replyErrorOn(port, correlationId, err);
+  }
+}
+
 async function handleClose(port: MessagePort, correlationId: string) {
   try {
     console.warn('[LOCK-DIAG] handleClose ENTER', { t: Date.now(), workerInstance: WORKER_INSTANCE_ID, openDbName, dbIsNull: db == null }); // [LOCK-DIAG]
-    if (db && sqlite3 && cryptoKey) await flushEncrypted(sqlite3, db, cryptoKey, encryptedFileName);
+    await flushScheduler.flushNow();
+    flushScheduler.reset();
     db?.close();
     db = null;
     cryptoKey = null;
@@ -296,6 +324,9 @@ function dispatchMessage(port: MessagePort, senderPortId: string, data: WorkerRe
       break;
     case 'close':
       void handleClose(port, data.correlationId);
+      break;
+    case 'flush':
+      void handleFlush(port, data.correlationId);
       break;
     default:
       replyErrorOn(port, (data as any).correlationId ?? '', `Unknown message type: ${(data as any).type}`);

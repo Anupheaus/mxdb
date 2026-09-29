@@ -50,6 +50,10 @@ export async function readAndDecryptOpfs(key: CryptoKey, fileName: string): Prom
  * Serialises the in-memory DB, encrypts it with AES-GCM and writes it to OPFS.
  * Format: [12-byte IV][AES-GCM ciphertext].
  *
+ * It costs about twice the database's size in memory (the export and its ciphertext), so callers must not run it per
+ * write or two at once — see `encryptedFlushScheduler` (sc-680). The export is encrypted as-is (no copy) and the IV and
+ * ciphertext are written one after the other (no combined buffer).
+ *
  * If createWritable fails with a swap-file error, attempts to rename any
  * orphaned .crswap file out of the way and retries once. On a second failure,
  * logs an error and returns without throwing so the caller's SQL result is
@@ -59,11 +63,7 @@ export async function flushEncrypted(s3: Sqlite3, database: OO1Db, cryptoKey: Cr
   if (!isOpfsAvailable()) return;
   const dbBytes: Uint8Array = (s3.capi as any).sqlite3_js_db_export(database.pointer, 'main');
   const iv = crypto.getRandomValues(new Uint8Array(12));
-  const dbBuf: ArrayBuffer = dbBytes.buffer.slice(dbBytes.byteOffset, dbBytes.byteOffset + dbBytes.byteLength) as ArrayBuffer;
-  const ciphertext = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, cryptoKey, dbBuf);
-  const out = new Uint8Array(12 + ciphertext.byteLength);
-  out.set(iv, 0);
-  out.set(new Uint8Array(ciphertext), 12);
+  const ciphertext = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, cryptoKey, dbBytes as Uint8Array<ArrayBuffer>);
   const root = await (navigator.storage as any).getDirectory();
   const fh = await root.getFileHandle(encryptedFileName, { create: true });
 
@@ -93,7 +93,8 @@ export async function flushEncrypted(s3: Sqlite3, database: OO1Db, cryptoKey: Cr
   }
 
   try {
-    await writable.write(out);
+    await writable.write(iv);
+    await writable.write(ciphertext);
   } finally {
     await writable.close();
   }
@@ -135,6 +136,17 @@ export async function openEncrypted(
   }
 
   return { db, cryptoKey, encryptedFileName };
+}
+
+/** The database's size in bytes, for diagnostics (page count × page size — no export). */
+export function databaseSizeBytes(database: OO1Db): number {
+  try {
+    const pageCount = Number(database.selectValue('PRAGMA page_count') ?? 0);
+    const pageSize = Number(database.selectValue('PRAGMA page_size') ?? 0);
+    return pageCount * pageSize;
+  } catch {
+    return -1; // diagnostics only: never let reading the size fail the caller
+  }
 }
 
 // ─── REGEXP custom function ───────────────────────────────────────────────────
