@@ -8,6 +8,7 @@ import { DateTime } from 'luxon';
 import type { AddDisableTo } from '../../../common/models';
 import { ACTION_TIMEOUT_MS, withTimeout } from '../../utils/actionTimeout';
 import type { LiveRequestCallbacks } from './live-request-models';
+import { freezeInDevelopment } from '../../utils/freezeInDevelopment';
 
 const RequestCancelled = Symbol('RequestCancelled');
 
@@ -95,7 +96,8 @@ export function useSubscriptionWrapper<RecordType extends Record, Request extend
       if (slowThreshold != null && timeTaken > slowThreshold) {
         logger.warn(`[${requestId}] Query on collection "${collection.name}" took ${timeTaken}ms`, props);
       }
-      return response;
+      // Delivered records are the collection's own objects: never to be changed in place (see freezeInDevelopment)
+      return freezeInDevelopment(response);
     };
 
     const okToExecute = () => {

@@ -5,10 +5,13 @@ import { useSyncState } from '@anupheaus/react-ui';
 import type { QueryProps } from '../../../common';
 import type { MXDBError } from '../../../common';
 import type { AddDebugTo, AddDisableTo } from '../../../common/models';
+import { useDeepEqualValue } from '../useDeepEqualValue';
 
 export function createUseQuery<RecordType extends Record>(query: Query<RecordType>, logger: Logger) {
 
-  return (props: AddDebugTo<AddDisableTo<QueryProps<RecordType>>> = {}) => {
+  return (givenProps: AddDebugTo<AddDisableTo<QueryProps<RecordType>>> = {}) => {
+    // Re-query only when the props change by value — callers pass them inline, a new object every render
+    const props = useDeepEqualValue(givenProps);
     const { setState, getState } = useSyncState(() => ({ records: [] as RecordType[], total: 0, isLoading: true, error: undefined as MXDBError | undefined }));
     const lastResponseRef = useRef<Partial<ReturnType<typeof getState>>>();
     const requestIdRef = useRef('');
@@ -39,7 +42,7 @@ export function createUseQuery<RecordType extends Record>(query: Query<RecordTyp
           onError,
         }).catch(onError);
       }
-    }, [Object.hash(props)]);
+    }, [props]);
 
     return getState();
   };

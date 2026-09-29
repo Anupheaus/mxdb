@@ -431,6 +431,59 @@ describe('useCollection reactive hooks', () => {
   });
 });
 
+// ─── Props compared by value, never hashed per render (sc-603) ─────────────────
+
+describe('useCollection reactive hooks — props', () => {
+  it.each([
+    ['useQuery', (collection: CollectionApi) => collection.useQuery({ filters: { city: 'London' } })],
+    ['useGetAll', (collection: CollectionApi) => collection.useGetAll({})],
+  ])('%s never hashes its props, and never reads again for equal props passed afresh each render', async (_label, use) => {
+    local.seed(alpha);
+    const query = vi.spyOn(local, 'query');
+    const getAll = vi.spyOn(local, 'getAll');
+    const hash = vi.spyOn(Object, 'hash');
+    render(WIDGETS, use);
+    await settle();
+    const [queries, getAlls] = [query.mock.calls.length, getAll.mock.calls.length];
+
+    render(WIDGETS, use);
+    render(WIDGETS, use);
+    await settle();
+
+    expect({ queries: query.mock.calls.length, getAlls: getAll.mock.calls.length }).toEqual({ queries, getAlls });
+    expect(hash).not.toHaveBeenCalled();
+    hash.mockRestore();
+  });
+
+  it('useQuery reads again when its props change by value', async () => {
+    local.seed(alpha);
+    const query = vi.spyOn(local, 'query');
+    render(WIDGETS, ({ useQuery }) => useQuery({ filters: { city: 'London' } }));
+    await settle();
+    const before = query.mock.calls.length;
+
+    render(WIDGETS, ({ useQuery }) => useQuery({ filters: { city: 'Paris' } }));
+    await settle();
+
+    expect(query.mock.calls.length).toBeGreaterThan(before);
+  });
+});
+
+describe('useCollection reactive hooks — delivered records are read-only in development (sc-603)', () => {
+  const originalMode = process.env.NODE_ENV;
+  afterEach(() => { process.env.NODE_ENV = originalMode; });
+
+  it('makes changing a delivered record in place throw', async () => {
+    process.env.NODE_ENV = 'development';
+    local.seed({ ...alpha });
+    render(WIDGETS, ({ useQuery }) => useQuery({}));
+    await settle();
+
+    const [record] = (observed.value as { records: Widget[] }).records;
+    expect(() => { record!.name = 'Changed'; }).toThrow(TypeError);
+  });
+});
+
 // ─── Reactive re-runs ─────────────────────────────────────────────────────────
 
 /** The two things that re-run a reactive hook's read after it has loaded. */
