@@ -91,20 +91,23 @@ export class ServerReceiver {
     const totalRecords = request.reduce((acc, c) => acc + c.records.length, 0);
     const srId = `sr#${++srIdCounter}`;
 
-    // Step 1: Pause the SD so queued/pending dispatches hold until we finish.
-    serverDispatcher.pause();
-
-    // Step 2: Synchronously mirror the client's claimed state into #filter.
-    // MUST happen before any await — any change-stream event that races with
-    // this C2S call will be evaluated against this mirror when we resume.
-    const mirrorFilters = this.#buildMirrorFilter(request);
-    if (mirrorFilters.length > 0) serverDispatcher.updateFilter(mirrorFilters);
-    // The mirror just subscribed the client to every id it CLAIMED. Until the read gate has vetted those claims
-    // (step 5b), a throw must not leave an unvetted one in the filter: fail closed (see the `finally`).
+    // The mirror (step 2) subscribes the client to every id it CLAIMS. Until the read gate has vetted those claims
+    // (step 5b), a throw — even one while mirroring — must not leave an unvetted one in the filter: fail closed
+    // (see the `finally`). Pause and mirror sit inside the `try` so that `finally` always covers them.
     let areClaimsVetted = this.#props.onFilterReadable == null;
-    const mirrorMs = Math.round(performance.now() - processT0);
+    let mirrorMs = 0;
 
     try {
+      // Step 1: Pause the SD so queued/pending dispatches hold until we finish (resumed in the `finally`).
+      serverDispatcher.pause();
+
+      // Step 2: Synchronously mirror the client's claimed state into #filter.
+      // MUST happen before any await — any change-stream event that races with
+      // this C2S call will be evaluated against this mirror when we resume.
+      const mirrorFilters = this.#buildMirrorFilter(request);
+      if (mirrorFilters.length > 0) serverDispatcher.updateFilter(mirrorFilters);
+      mirrorMs = Math.round(performance.now() - processT0);
+
       // Meta fast-path: a branched-only record (nothing to merge) that the client already holds at the
       // server's current hash is consistent — confirm it from the stored `_meta.hash` instead of
       // fetching and re-hashing the whole record. Falls back to the full path when no meta callback is
@@ -448,9 +451,12 @@ export class ServerReceiver {
     } finally {
       // Fail closed: forget every claim of this request. The client resends them on its retry and they are
       // mirrored (and vetted) again then; meanwhile a claim cannot pull an unreadable record's changes.
-      if (!areClaimsVetted) serverDispatcher.removeFromFilter(this.#claimedIds(request));
-      // Step 8: Resume the SD unconditionally.
-      serverDispatcher.resume();
+      try {
+        if (!areClaimsVetted) serverDispatcher.removeFromFilter(this.#claimedIds(request));
+      } finally {
+        // Step 8: Resume the SD unconditionally.
+        serverDispatcher.resume();
+      }
     }
   }
 
@@ -483,7 +489,8 @@ export class ServerReceiver {
 
   /** Every record id `request` names, per collection. */
   #claimedIds(request: ClientDispatcherRequest): MXDBRecordStatesRequest {
-    return request.map(({ collectionName, records }) => ({ collectionName, recordIds: records.map(({ id }) => id) }));
+    // Tolerant of a malformed request (this runs in the `finally`): only string ids can have reached the filter.
+    return request.map(({ collectionName, records }) => ({ collectionName, recordIds: (Array.isArray(records) ? records : []).map(record => record?.id).filter((id): id is string => typeof id === 'string') }));
   }
 
   /** The ids per collection this client may read, or `undefined` when the server supplies no read gate. */

@@ -8,7 +8,7 @@ import { extendCollection } from './collections/extendCollection';
 import { ServerDbCollection } from './providers/db/ServerDbCollection';
 import { ServerDispatcher, type ClientDispatcherRequest, type MXDBRecordCursors } from '../common/sync-engine';
 import { auditor, AuditEntryType, type AnyAuditOf, type AuditEntry } from '../common/auditor';
-import { OUTSIDE_READ_GATE_REASON } from './actions/rejectWritesOutsideReadGate';
+import { DELETED_RECORD_REASON, OUTSIDE_READ_GATE_REASON } from './actions/rejectWritesOutsideReadGate';
 
 /**
  * A collection's `onQuery` hook is the app's read gate (e.g. "a fitter sees only their own tasks"). It must
@@ -483,6 +483,30 @@ describe('client-to-server sync', () => {
 
       expect(response[0]!.rejectedRecords).toEqual([{ id: bobGreen.id, reason: OUTSIDE_READ_GATE_REASON }]);
       expect(await notesIn(gatedNotes.name).get(bobGreen.id)).toEqual(bobGreen);
+    });
+
+    it('refuses resurrecting a deleted record, whoever it belonged to, and pushes none of it', async () => {
+      ctx.userId = ALICE;
+      await auditsWritten(gatedNotes.name);
+      await auditsWritten(openNotes.name);
+      await notesIn(gatedNotes.name).remove(bobGreen.id);
+      // The delete's audit entry is written after the record goes (fire-and-forget); the tombstone is what counts.
+      await vi.waitFor(async () => expect((await auditOf(bobGreen.id)).entries.some(({ type }) => type === AuditEntryType.Deleted)).toBe(true), WAIT_FOR_PUSH);
+
+      // Restore the tombstone (replay copies the server's last content back to live), then hand the note to Alice.
+      const tombstone = await auditOf(bobGreen.id);
+      const restored = { type: AuditEntryType.Restored, id: auditor.generateUlid() } as AuditEntry;
+      const withRestore = { id: bobGreen.id, entries: [...tombstone.entries, restored] } as AnyAuditOf<Note>;
+      const updated = auditor.entriesOf(auditor.updateAuditWithAfterLatest({ ...bobGreen, ownerId: ALICE }, withRestore, bobGreen)).at(-1)!;
+      const response = await handleClientToServerSync([
+        { collectionName: gatedNotes.name, records: [{ id: bobGreen.id, hash: 'stale-hash', entries: [restored, updated] as AuditEntry[] }] },
+        // An ungated record in the same request: the signal that this sync's pushes have gone out.
+        { collectionName: openNotes.name, records: [probe(aliceBlue.id)] },
+      ]);
+
+      expect(response.find(({ collectionName }) => collectionName === gatedNotes.name)?.rejectedRecords).toEqual([{ id: bobGreen.id, reason: DELETED_RECORD_REASON }]);
+      expect(await notesIn(gatedNotes.name).get(bobGreen.id)).toBeUndefined();
+      await vi.waitFor(() => expect(dispatchedRecordIds()).toEqual([aliceBlue.id]), WAIT_FOR_PUSH);
     });
 
     it('still accepts a change to the caller\'s own record, and a new record', async () => {

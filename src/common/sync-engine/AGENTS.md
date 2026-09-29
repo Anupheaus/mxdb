@@ -40,7 +40,7 @@ A sync request can name any record id — a branch-only probe claiming a stale h
 
 The record is still acknowledged in `successfulRecordIds`. (On the server, an update or delete to a record whose STORED version is outside the gate is refused before it is persisted — `server/actions/rejectWritesOutsideReadGate.ts`.) Without `onFilterReadable` (unit tests, ungated servers) every record is readable.
 
-**Fail closed.** The mirror subscribes the client to every id it claims before any await. If `process` throws before the gate has vetted those claims (a failed retrieve, a gate that throws), the `finally` removes every claimed id of the request from the filter before resuming; the client re-claims them on its retry.
+**Fail closed.** The mirror subscribes the client to every id it claims before any await. If `process` throws before the gate has vetted those claims (a failed retrieve, a gate that throws), the `finally` removes every claimed id of the request from the filter before resuming; the client re-claims them on its retry. The pause and the mirror sit inside the `try`, so a request that cannot even be mirrored still reaches the `finally` and never leaves the SD paused.
 
 **Pauses nest.** `ServerDispatcher.pause()` is re-entrant (a depth count): overlapping C2S syncs on one socket each pause it, and dispatch resumes only when the last one resumes — otherwise the first to finish would release a claim the other had mirrored but not yet vetted.
 

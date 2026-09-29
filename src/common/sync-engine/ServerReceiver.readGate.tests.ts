@@ -217,3 +217,15 @@ describe('ServerReceiver fails closed on the read gate', () => {
     expect(pushedRecordIds()).toEqual([readable.id]);
   });
 });
+
+describe('ServerReceiver with a request it cannot mirror', () => {
+  it('rejects it without leaving the dispatcher paused', async () => {
+    // Has a length (so it can be counted) but cannot be iterated (so mirroring it throws).
+    const malformed = [{ collectionName: COLLECTION, records: { length: 1 } }] as unknown as ClientDispatcherRequest;
+    await expect(receiver().process(malformed)).rejects.toThrow();
+    // Were the pause outside the `finally`'s reach, nothing would ever be dispatched to this client again.
+    sd.push([{ collectionName: COLLECTION, records: [{ record: readable, lastAuditEntryId: auditor.generateUlid() }] }]);
+    await drain();
+    expect(pushedRecordIds()).toEqual([readable.id]);
+  });
+});
