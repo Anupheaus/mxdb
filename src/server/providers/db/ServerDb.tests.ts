@@ -8,6 +8,7 @@ import { defineCollection } from '../../../common/defineCollection';
 import type { MXDBCollection } from '../../../common';
 import { extendCollection } from '../../collections/extendCollection';
 import { ServerDb } from './ServerDb';
+import { runInDbScope, setDb, useDb } from './DbContext';
 import type { ServerDbChangeEvent } from './server-db-models';
 
 // ─── Fake MongoDB driver (external boundary) ──────────────────────────────────
@@ -435,6 +436,32 @@ describe('ServerDb', () => {
       await vi.advanceTimersByTimeAsync(0);
 
       expect({ notifiedBeforeHookFinished, notifiedAfter: events.length }).toEqual({ notifiedBeforeHookFinished: 0, notifiedAfter: 1 });
+    });
+
+    it('runs the onAfter hooks against the database that saw the change, not the one ambient where it was built', async () => {
+      // Production: a pooled tenant ServerDb is built — and its change stream started — in a context whose ambient
+      // database is the process default (the controller). The driver emits changes in that context, so a hook that
+      // calls useDb()/useCollection() would read and write the controller database (sc-621).
+      const collection = makeCollection();
+      const seenDbs: unknown[] = [];
+      extendCollection(collection, {
+        onAfterUpsert: () => { seenDbs.push(useDb()); },
+        onAfterDelete: () => { seenDbs.push(useDb()); },
+      });
+      const controllerDb = { name: 'controller' } as unknown as ServerDb;
+      const { serverDb, emit } = await runInDbScope(async () => {
+        setDb(controllerDb);
+        return makeWatchingServerDb(collection);
+      });
+
+      await runInDbScope(async () => {
+        setDb(controllerDb);
+        emit(changeEvent('insert', collection.name, { _id: 'a', name: 'A' }));
+        emit({ operationType: 'delete', ns: { db: DB_NAME, coll: collection.name }, documentKey: { _id: 'gone' } });
+        await vi.advanceTimersByTimeAsync(DEBOUNCE_MS);
+      });
+
+      expect(seenDbs).toEqual([serverDb, serverDb]);
     });
 
     it('still notifies change callbacks when an onAfter hook throws', async () => {
