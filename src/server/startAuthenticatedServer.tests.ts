@@ -179,6 +179,17 @@ describe('startAuthenticatedServer — authentication configuration', () => {
     expect(authColl).toBe(configuredAuth.store);
   });
 
+  it('with inviteTtlMs, gives nexus a store that refuses an invite older than it, while the returned store still sees it', async () => {
+    const { configuredAuth, authColl } = await start({ auth: { mode: 'webauthn', inviteTtlMs: 1_000 } });
+    const expiredInvite = { requestId: 'r1', sessionToken: '', userId: 'u1', deviceId: '', isEnabled: false, createdAt: Date.now() - 60_000 };
+    vi.spyOn(authColl, 'findById').mockResolvedValue(expiredInvite);
+
+    expect({
+      redeemed: await configuredAuth.store.findById('r1'),
+      direct: await authColl.findById('r1'),
+    }).toEqual({ redeemed: undefined, direct: expiredInvite });
+  });
+
   it('backs google-oauth authentication with a Google auth store and passes the OAuth client settings through', async () => {
     const { configuredAuth } = await start({ auth: GOOGLE_AUTH });
 

@@ -18,6 +18,7 @@ This auth layer is intentionally isolated from the sync collection system: `Auth
 ### Device management
 - `deviceManagement.ts` — `getDevices`, `enableDevice`, `disableDevice`, `deleteDevice`, `expireStalePendingInvites`. Registered on **`useAuthDevices()`** at startup; also exposed on the **`ServerInstance`** from `startServer`.
 - `authDevicesContext.ts` — module-level `AuthDevicesApi` store; `setAuthDevices` (called from `startServer`), `useAuthDevices()` for handlers.
+- `withInviteExpiry.ts` — `withInviteExpiry(store, inviteTtlMs)`: the store nexus redeems invites through when `WebAuthnServerAuthConfig.inviteTtlMs` is set (`startAuthenticatedServer`). `findById` (opening an invite link) and `findByRegistrationToken` (finishing registration) treat a pending invite older than the lifetime, or with no `createdAt`, as not found, so an old link fails before the sweep deletes it; registered devices and every other lookup are untouched, and the returned `authColl` (device management) is the unwrapped collection.
 - `useAuthDevices.ts` — re-exports `authDevicesContext` (`listForUser`, `createInvite`, `setEnabled`, `deleteDevice`, `expireStalePendingInvites`, `findById`, `create`, `update`).
 - `parseSessionTokenFromHandshake.ts` — reads `nexus_session` / `socketapi_session` cookies, then handshake `sessionToken` (used by `startAuthenticatedServer`).
 
