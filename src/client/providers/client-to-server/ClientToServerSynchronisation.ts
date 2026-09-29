@@ -9,6 +9,7 @@ import {
   type MXDBRecordStatesRequest,
   type MXDBSyncEngineResponse,
   type MXDBSyncStall,
+  type MXDBSyncTooLarge,
   type MXDBUpdateRequest,
 } from '../../../common/sync-engine';
 import type { Db } from '../dbs';
@@ -34,6 +35,8 @@ export interface ClientToServerSynchronisationProps {
   onRejected?(rejections: MXDBSyncRejection[]): void;
   /** Called once when a change keeps failing to reach the server (it keeps retrying with backoff). */
   onStalled?(stall: MXDBSyncStall): void;
+  /** Called once per session for each change too large to ever reach the server (not sent, not retried). */
+  onTooLarge?(refusal: MXDBSyncTooLarge): void;
 }
 
 export class ClientToServerSynchronisation {
@@ -64,6 +67,7 @@ export class ClientToServerSynchronisation {
       onUnauthorized: props.onUnauthorized,
       onRejected: props.onRejected,
       onStalled: props.onStalled,
+      onTooLarge: props.onTooLarge,
     });
   }
 

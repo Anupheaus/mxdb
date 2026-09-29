@@ -15,7 +15,7 @@ import type { ClientReceiver } from './ClientReceiver';
 import type { MXDBSyncRejection } from '../models';
 import { isActiveRecordState, getStateId } from './utils';
 import {
-  MAX_DISPATCH_BYTES, MAX_RECORD_DISPATCH_BYTES, batchDispatchRecords, estimateDispatchBytes, type DispatchBatch, type DispatchRecord,
+  MAX_DISPATCH_BYTES, MAX_RECORD_DISPATCH_BYTES, batchDispatchRecords, estimateDispatchBytes, type DispatchBatch, type DispatchRecord, type MXDBSyncTooLarge,
 } from './dispatchBatches';
 
 interface ClientDispatcherProps {
@@ -39,14 +39,30 @@ interface ClientDispatcherProps {
   maxDispatchBytes?: number;
   /** The most one record may be (default {@link MAX_RECORD_DISPATCH_BYTES}); a bigger one is refused locally. */
   maxRecordDispatchBytes?: number;
+  /**
+   * Called once per session for each change too large to ever reach the server ({@link MXDBSyncTooLarge}). It is not
+   * sent and not retried; it never blocks the other changes.
+   */
+  onTooLarge?(refusal: MXDBSyncTooLarge): void;
+}
+
+/** An emit that failed, with its records' states. */
+interface FailedEmit {
+  error: unknown;
+  states: MXDBRecordStates;
 }
 
 /** What sending a dispatch's emits came to. */
 interface BatchedDispatchResult {
   /** stop() ran while it was in flight: nothing more may be touched. */
   isStopped: boolean;
-  /** The emit that failed (those before it were settled; those after it were not sent), with its states and error. */
-  failure?: { error: unknown; states: MXDBRecordStates };
+  /** How many emits the server answered (each was settled). */
+  answered: number;
+  /**
+   * The emits that failed. Each failure leaves the others alone — a deterministically failing emit never starves the
+   * ones after it — except an authentication failure, after which nothing more is sent.
+   */
+  failures: FailedEmit[];
 }
 
 /** Why a record the server answered for, but did not acknowledge, is being retried. */
@@ -79,6 +95,8 @@ export class ClientDispatcher {
   #retries = new Map<string, RecordRetryState>(); // "collectionName:recordId" keys
   /** When the pending #timer fires (ms since epoch), so an enqueue can bring a long backoff wait forward. */
   #timerDueAt: number | undefined = undefined;
+  /** Changes reported as too large this session ("collectionName:recordId"), so each is reported once. */
+  #reportedTooLarge = new Set<string>();
   #epoch = 0;
 
   constructor(logger: Logger, props: ClientDispatcherProps) {
@@ -150,6 +168,7 @@ export class ClientDispatcher {
     this.#pendingReEnqueue.clear();
     // A fresh session re-sweeps everything, so it starts from fast retries again.
     this.#retries.clear();
+    this.#reportedTooLarge.clear();
     // Reset in-flight / dispatching state here since the stale coroutine's
     // finally block will skip the reset (epoch mismatch guard).
     if (this.#inFlight) {
@@ -202,13 +221,21 @@ export class ClientDispatcher {
 
       try {
         // A large backlog goes in several emits; each one the server answers is settled as it comes back
-        const { isStopped, failure } = await this.#dispatchInBatches(batches, dispatchEpoch);
+        const { isStopped, answered, failures } = await this.#dispatchInBatches(batches, dispatchEpoch);
 
         if (isStopped) {
           // stop() was called mid-flight — discard response
           return;
         }
-        if (failure != null) throw failure.error;
+        const unauthorized = failures.find(({ error }) => error instanceof AuthenticationError);
+        // Nothing got through (or the session is gone): the sweep itself failed — retried as a whole, below
+        if (unauthorized != null) throw unauthorized.error;
+        if (answered === 0 && failures.length > 0) throw failures[0]!.error;
+        // Some got through: each failed emit's records back off on their own, and the timer retries them
+        for (const { error, states: failedStates } of failures) {
+          this.#logger.warn('[CD] onStart emit failed; its records will retry', { error: describeError(error) });
+          this.#recordFailures(failedStates, describeError(error));
+        }
 
         // Start timer if queue has items
         if (this.#queue.length > 0 && this.#epoch === startEpoch) {
@@ -370,15 +397,17 @@ export class ClientDispatcher {
     this.#props.clientReceiver.pause();
 
     try {
-      const { isStopped, failure } = await this.#dispatchInBatches(batches, epoch);
+      const { isStopped, failures } = await this.#dispatchInBatches(batches, epoch);
 
       if (isStopped) {
         // stop() was called — skip steps 6-7
         return;
       }
 
-      // Only the emit that failed backs off: those before it are settled, those after it simply wait for the next tick
-      if (failure != null && this.#handleTimerDispatchFailure(failure.error, failure.states, epoch)) return;
+      // Only the emits that failed back off; the others were settled
+      for (const { error, states: failedStates } of failures) {
+        if (this.#handleTimerDispatchFailure(error, failedStates, epoch)) return;
+      }
 
     } catch (err) {
       if (this.#handleTimerDispatchFailure(err, states, epoch)) return;
@@ -423,19 +452,20 @@ export class ClientDispatcher {
       maxRecordBytes: this.#props.maxRecordDispatchBytes ?? MAX_RECORD_DISPATCH_BYTES,
     });
     this.#refuseOversize(oversize);
-    // Nothing to send is still one (empty) dispatch: the start-up sweep's answer is how the server learns the client is
-    // ready, and the dispatch was always sent, empty or not
-    return batches.length > 0 ? batches : [{ states: [], request: [], bytes: 0 }];
+    // Nothing at all to send is still one (empty) dispatch: the start-up sweep's answer is how the server learns the
+    // client is ready. When there were records but every one was refused, nothing is sent.
+    if (records.length === 0) return [{ states: [], request: [], bytes: 0 }];
+    return batches;
   }
 
   /**
-   * A record too big to send: taken off the queue (so it never blocks the others) and reported as stalled with the
-   * reason. It stays in the local database; a later, smaller edit queues it again, and each fresh session's sweep reports
-   * it again until then.
+   * Records too big to ever send: taken off the queue (so they never block the others) and reported — once per session
+   * each — through `onTooLarge`. Not retried: the pending audit carries the oversize entry, so a later, smaller edit does
+   * not get it through either; someone has to deal with it. The next session's sweep finds it again (and reports it once).
    */
   #refuseOversize(oversize: DispatchRecord[]): void {
     if (oversize.length === 0) return;
-    const limit = this.#props.maxRecordDispatchBytes ?? MAX_RECORD_DISPATCH_BYTES;
+    const limitBytes = this.#props.maxRecordDispatchBytes ?? MAX_RECORD_DISPATCH_BYTES;
     const refused = new Set(oversize.map(({ collectionName, entry }) => queueKeyOf(collectionName, entry.id)));
     this.#queue = this.#queue.filter(item => !refused.has(queueKeyOf(item.collectionName, item.recordId)));
     this.#queueSet = new Set(this.#queue.map(item => queueKeyOf(item.collectionName, item.recordId)));
@@ -443,26 +473,37 @@ export class ClientDispatcher {
       const key = queueKeyOf(collectionName, entry.id);
       this.#retries.delete(key);
       this.#pendingReEnqueue.delete(key);
-      const reason = `the change is too large to sync (${formatMegabytes(bytes)}; the limit is ${formatMegabytes(limit)})`;
-      this.#logger.error('[CD] a change is too large to sync and was not sent', { collectionName, recordId: entry.id, bytes, limit });
-      this.#props.onStalled?.({ collectionName, recordId: entry.id, attempts: 1, reason });
+      if (this.#reportedTooLarge.has(key)) continue;
+      this.#reportedTooLarge.add(key);
+      this.#logger.error(`[CD] a change is too large to sync (${formatMegabytes(bytes)}; the limit is ${formatMegabytes(limitBytes)}) and was not sent`, {
+        collectionName, recordId: entry.id, bytes, limitBytes,
+      });
+      this.#props.onTooLarge?.({ collectionName, recordId: entry.id, bytes, limitBytes });
     }
   }
 
-  /** Sends the emits one after another, settling each as its answer arrives; stops at the first that fails. */
+  /**
+   * Sends the emits one after another, settling each as its answer arrives. A failed emit does not stop the ones after
+   * it — unless the session is gone (an authentication failure), when nothing more is sent.
+   */
   async #dispatchInBatches(batches: DispatchBatch[], epoch: number): Promise<BatchedDispatchResult> {
+    let answered = 0;
+    const failures: FailedEmit[] = [];
     for (const batch of batches) {
       let response: MXDBSyncEngineResponse;
       try {
         response = await this.#props.onDispatch(batch.request);
       } catch (error) {
-        if (epoch !== this.#epoch) return { isStopped: true };
-        return { isStopped: false, failure: { error, states: batch.states } };
+        if (epoch !== this.#epoch) return { isStopped: true, answered, failures };
+        failures.push({ error, states: batch.states });
+        if (error instanceof AuthenticationError) break;
+        continue;
       }
-      if (epoch !== this.#epoch) return { isStopped: true };
+      if (epoch !== this.#epoch) return { isStopped: true, answered, failures };
+      answered += 1;
       this.#processSuccessResponse(response, batch.states);
     }
-    return { isStopped: false };
+    return { isStopped: false, answered, failures };
   }
 
   /** A timer dispatch that failed: signs out on an authentication error (returns true), else backs the records off. */

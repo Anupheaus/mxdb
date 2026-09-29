@@ -81,6 +81,8 @@ export type MXDBErrorCode =
   | 'SYNC_FAILED'
   /** A local change has failed to reach the server several times in a row; it is still being retried with backoff. */
   | 'SYNC_STALLED'
+  /** A local change is too large to ever reach the server: it was not sent and is not retried (sc-623). */
+  | 'SYNC_TOO_LARGE'
   | 'AUTH_MISSING'
   | 'AUTH_REJECTED'
   | 'ENCRYPTION_FAILED'
