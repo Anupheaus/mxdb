@@ -22,6 +22,19 @@ const UNIQUE_KEY_HASH_INDEX = { name: KEY_HASH_INDEX, unique: true, partialFilte
 /** The prefix nexus puts on the digest it stores (`toStoredKeyHash`); a key hash without it predates digests. */
 const STORED_KEY_HASH_PREFIX = 'sha256:';
 
+/** nexus's own words for a key hash another device holds: what a client may see and what its handlers log. */
+const PASSKEY_ALREADY_REGISTERED = 'Passkey already registered';
+
+/**
+ * A write that broke the unique key hash index becomes nexus's plain "Passkey already registered". MongoDB's own error
+ * names the index and repeats the stored digest, and would reach the client and the logs. Anything else passes through.
+ */
+function asPasskeyAlreadyRegistered(error: unknown): unknown {
+  const { code, keyPattern, message } = (error ?? {}) as { code?: number; keyPattern?: Record<string, unknown>; message?: string; };
+  const isKeyHashDuplicate = code === 11000 && (keyPattern != null ? 'keyHash' in keyPattern : String(message).includes(KEY_HASH_INDEX));
+  return isKeyHashDuplicate ? new Error(PASSKEY_ALREADY_REGISTERED) : error;
+}
+
 /** Extra conditions a wrapper adds to `claimRegistration`. Not part of nexus's `WebAuthnAuthStore`. */
 export interface ClaimRegistrationOptions {
   /** Claim only an invite created at or after this time (unix ms). `withInviteExpiry` sets it from the invite lifetime. */
@@ -77,6 +90,14 @@ export class WebAuthnAuthCollection
     }
   }
 
+  override async create(record: WebAuthnAuthRecord): Promise<void> {
+    try { await super.create(record); } catch (error) { throw asPasskeyAlreadyRegistered(error); }
+  }
+
+  override async update(requestId: string, patch: Partial<WebAuthnAuthRecord>): Promise<void> {
+    try { await super.update(requestId, patch); } catch (error) { throw asPasskeyAlreadyRegistered(error); }
+  }
+
   // As in AuthCollection: a key that is not a non-empty string (an object is a MongoDB operator) finds and claims nothing.
 
   async findByRegistrationToken(registrationToken: string): Promise<WebAuthnAuthRecord | undefined> {
@@ -108,7 +129,8 @@ export class WebAuthnAuthCollection
       deviceDetails: null,
       lastConnectedAt: null,
       ...(createdSince != null ? { createdAt: { $gte: createdSince } } : {}),
-    } as any, toAuthRecordUpdate({ ...patch, registrationToken: undefined }), { returnDocument: 'before' });
+    } as any, toAuthRecordUpdate({ ...patch, registrationToken: undefined }), { returnDocument: 'before' })
+      .catch(error => { throw asPasskeyAlreadyRegistered(error); });
     if (doc == null) return undefined;
     const { _id, ...rest } = doc;
     return { requestId: _id, ...rest };
