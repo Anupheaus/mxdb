@@ -161,6 +161,8 @@ beforeEach(() => {
   db.s2cRegistrations.length = 0;
   signInAs(undefined);
   vi.mocked(seedCollections).mockClear();
+  // The auth collection's db is a stub here; the deletion itself is tested against MongoDB in AuthCollection.devSignIn.tests.
+  vi.spyOn(WebAuthnAuthCollection.prototype, 'deleteDevSignInRecords').mockResolvedValue(0);
 });
 
 afterEach(() => {
@@ -312,6 +314,23 @@ describe('startAuthenticatedServer — server wiring', () => {
   });
 
   describe('startup', () => {
+    // A session the dev sign-in route issued stays live (handshake session token) until its record is gone.
+    it.each([[undefined], [false]])('deletes the sessions the dev sign-in route issued when devSignIn is %s', async devSignIn => {
+      const { socketServerConfig } = await start({ devSignIn });
+
+      await socketServerConfig.onStartup();
+
+      expect(WebAuthnAuthCollection.prototype.deleteDevSignInRecords).toHaveBeenCalledOnce();
+    });
+
+    it('keeps them while devSignIn is on, so a restarted test server keeps its signed-in clients', async () => {
+      const { socketServerConfig } = await start({ devSignIn: true });
+
+      await socketServerConfig.onStartup();
+
+      expect(WebAuthnAuthCollection.prototype.deleteDevSignInRecords).not.toHaveBeenCalled();
+    });
+
     it.each([
       [true, 1],
       [false, 0],

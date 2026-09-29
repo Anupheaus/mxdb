@@ -1,3 +1,4 @@
+import { createHash, timingSafeEqual } from 'crypto';
 import { compileIpAllowlist } from './ipAllowlist';
 
 export type McpAuthInput = {
@@ -27,12 +28,18 @@ function parseBearerToken(authorizationHeader: string | undefined): string | und
   return token;
 }
 
+/** Compares in constant time (over fixed-length digests, so the key's length is not revealed either). */
+function apiKeysMatch(token: string, expectedApiKey: string): boolean {
+  const digest = (value: string) => createHash('sha256').update(value).digest();
+  return timingSafeEqual(digest(token), digest(expectedApiKey));
+}
+
 export function isMcpAuthorized(input: McpAuthInput): McpAuthResult {
   const expectedApiKey = (input.expectedApiKey ?? '').trim();
   if (!expectedApiKey) return { ok: false, status: 401, error: 'missing_api_key' };
 
   const token = parseBearerToken(input.authorizationHeader);
-  if (!token || token !== expectedApiKey) return { ok: false, status: 401, error: 'invalid_api_key' };
+  if (!token || !apiKeysMatch(token, expectedApiKey)) return { ok: false, status: 401, error: 'invalid_api_key' };
 
   const allowlistRaw = (input.ipAllowlist ?? '').trim();
   if (!allowlistRaw) return { ok: false, status: 403, error: 'ip_not_allowed' };

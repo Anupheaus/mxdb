@@ -13,6 +13,7 @@ import type { NexusAuthRecord, NexusAuthStore } from '@anupheaus/nexus/common';
 import type { ServerDb } from '../providers';
 import { useDb } from '../providers';
 import { isAuthKey } from './isAuthKey';
+import { DEV_SIGN_IN_REQUEST_ID_PREFIX } from './registerDevAuthRoute';
 
 const COLLECTION_NAME = 'mxdb_authentication';
 
@@ -171,6 +172,17 @@ export abstract class AuthCollection<TRecord extends NexusAuthRecord> implements
     if (Object.keys(update).length > 0) {
       await coll.updateOne({ _id: requestId } as any, update);
     }
+  }
+
+  /**
+   * Deletes every record the dev sign-in route created (`dev-bypass-<userId>`), returning how many. Each is an enabled
+   * device with a live session token, so it keeps signing its holder in (the handshake's session token) after the route
+   * is turned off, until it is deleted.
+   */
+  async deleteDevSignInRecords(): Promise<number> {
+    const coll = await this.getColl();
+    const { deletedCount } = await coll.deleteMany({ _id: { $regex: `^${DEV_SIGN_IN_REQUEST_ID_PREFIX}` } } as any);
+    return deletedCount;
   }
 
   /** Throws for a key that is not a non-empty string, rather than delete whichever record an operator matches. */

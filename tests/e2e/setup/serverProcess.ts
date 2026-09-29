@@ -93,6 +93,8 @@ async function main() {
     mongoDbName: MONGO_DB_NAME,
     mongoDbUrl: MONGO_URI!,
     auth: { mode: 'webauthn' },
+    // The e2e clients sign in through the dev sign-in route (syncClient.tsx), which is opt-in.
+    devSignIn: true,
   });
   bootLog('startServer.returned');
 

@@ -24,7 +24,7 @@ This auth layer is intentionally isolated from the sync collection system: `Auth
 - `parseSessionTokenFromHandshake.ts` — reads `nexus_session` / `socketapi_session` cookies, then handshake `sessionToken` (used by `startAuthenticatedServer`).
 
 ### Dev tooling
-- `registerDevAuthRoute.ts` — registers a `POST /{name}/dev/signin` Koa route that issues a dev auth token without WebAuthn: anyone can sign in as any user id. **Registered only when the app sets `ServerConfig.devSignIn: true`**, never by default (a dev server behind a public tunnel is "not production" too), and `startAuthenticatedServer` throws if `devSignIn` is on while `NODE_ENV=production`. This is the server-side counterpart to `setupBrowserTools`'s `setDevAuth`.
+- `registerDevAuthRoute.ts` — registers a `POST /{name}/dev/signin` Koa route that issues a dev auth token without WebAuthn: anyone can sign in as any user id. **Registered only when the app sets `ServerConfig.devSignIn: true`**, never by default (a dev server behind a public tunnel is "not production" too), and `startAuthenticatedServer` throws if `devSignIn` is on while `NODE_ENV=production`. With `devSignIn` off, startup deletes the records it issued earlier (`dev-bypass-<userId>`, `AuthCollection.deleteDevSignInRecords`), which are enabled devices with live session tokens. This is the server-side counterpart to `setupBrowserTools`'s `setDevAuth`.
 
 ### Device management context
 - `authDevicesContext.ts` — `AuthDevicesApi` interface (`listForUser`, `createInvite`, `setEnabled`, `deleteDevice`, `expireStalePendingInvites`, `findById`, `create`, `update`) plus a module-level singleton pattern: `setAuthDevices(api)` registers the implementation at startup; `useAuthDevices()` returns it and throws if called before registration

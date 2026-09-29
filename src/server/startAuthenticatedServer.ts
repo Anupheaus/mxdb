@@ -191,6 +191,11 @@ export async function startAuthenticatedServer({
 
     async onStartup() {
       logger?.info('[startAuthenticatedServer] onStartup.begin');
+      // With the dev sign-in route off, the sessions it issued earlier must not keep working.
+      if (devSignIn !== true) {
+        const removed = await authColl.deleteDevSignInRecords();
+        if (removed > 0) logger?.warn('[startAuthenticatedServer] removed the sessions the dev sign-in route issued, as devSignIn is off', { removed });
+      }
       const { impersonateUser } = useAuthentication();
       await impersonateUser(adminUser, async () => {
         const startupLogger = (
