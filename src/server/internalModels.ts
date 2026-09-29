@@ -16,9 +16,15 @@ export { Koa };
 
 export interface WebAuthnServerAuthConfig {
   mode: 'webauthn';
-  /** WebAuthn relying party ID — the domain registered devices authenticate against.
-   *  Defaults to `'localhost'` in development. */
-  rpId?: string;
+  /**
+   * The relying parties passkeys may belong to (sc-627): a list, or chosen per ceremony from its origin, e.g. a web page's
+   * own host, or the parent domain for a native app (`android:apk-key-hash:<hash>` origins).
+   */
+  rpIds: string[] | ((origin: string) => string[]);
+  /** Whether a page or app at `origin` may register or sign in with a passkey. Match exact values or patterns, never substrings. */
+  isAllowedOrigin(origin: string): boolean;
+  /** The secret sign-in challenges are signed with; every server of the app shares it. Required in production. */
+  challengeSecret?: string;
   /**
    * How long an invite link can be redeemed, in ms. When set, nexus redeems invites through `withInviteExpiry`, so an
    * older link is refused ("Invite not found") even before `expireStalePendingInvites` deletes it. Unset, the age is not

@@ -148,6 +148,10 @@ export async function startAuthenticatedServer({
       ? configureAuthentication({
         mode: 'webauthn',
         store: auth.inviteTtlMs != null ? withInviteExpiry(authColl as WebAuthnAuthCollection, auth.inviteTtlMs) : authColl as WebAuthnAuthCollection,
+        // Passkeys are verified (sc-627).
+        rpIds: auth.rpIds,
+        isAllowedOrigin: auth.isAllowedOrigin,
+        challengeSecret: auth.challengeSecret,
         onGetInviteDetails: async (userId, accountId) => {
           if (auth.onGetInviteDetails == null)
             throw new Error('onGetInviteDetails is required for WebAuthn servers');

@@ -92,7 +92,8 @@ async function main() {
     server,
     mongoDbName: MONGO_DB_NAME,
     mongoDbUrl: MONGO_URI!,
-    auth: { mode: 'webauthn' },
+    // Passkeys are verified (sc-627); the e2e clients sign in through the dev route, on localhost.
+    auth: { mode: 'webauthn', rpIds: ['localhost'], isAllowedOrigin: origin => /^https:\/\/localhost(:\d+)?$/.test(origin) },
     // The e2e clients sign in through the dev sign-in route (syncClient.tsx), which is opt-in.
     devSignIn: true,
   });
