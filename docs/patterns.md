@@ -52,6 +52,13 @@ export const useSurvey = createUseRecord('survey', surveysCollection, {
 Returns `survey`, `isLoadingSurvey`, `isNewSurvey`, `setSurvey`, `upsertSurvey`, `removeSurvey`.
 - **`hydrateRecord`** provides a default new record when none exists yet.
 
+### Live results are compared by value, never hashed
+A live request (`query` / `getAll` / `distinct` with callbacks) re-runs after every burst of collection changes and
+delivers the result only if it changed. The last delivered result is kept and compared with `is.deepEqual` (DateTimes by
+instant); `onSameResponse` fires otherwise. Never hash a result to compare it: `Object.hash` (object-hash) walks every
+record and each DateTime's prototype chain, and on a screen of live lists it was most of the CPU the page spent (Vision's
+Pipeline, 29 Sep 2026: about 60% of opening it and a lead).
+
 ### 2c. Raw hooks for bespoke logic
 When a hook needs custom querying/side-effects, use `useCollection` / `useRecord` from `@anupheaus/mxdb/client` directly, composing them with other hooks as needed.
 

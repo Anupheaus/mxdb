@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import '@anupheaus/common';
+import { DateTime } from 'luxon';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
@@ -651,6 +652,58 @@ describe('useCollection live requests', () => {
     await touchLocally();
 
     expect(onSameResponse).toHaveBeenCalled();
+  });
+
+  // A re-run is compared with the result last delivered by value — records rebuilt from the local store (new objects,
+  // new DateTimes for the same instants) are the same result — never by hashing it: hashing every record of every
+  // result on every change was most of the CPU a screen of live lists spent (Vision's Pipeline, sc-579).
+  describe('telling a changed result from the same one', () => {
+    const at = (iso: string) => DateTime.fromISO(iso, { zone: 'utc' });
+    const withDate = (iso: string): Widget => ({ ...alpha, city: 'London', updatedAt: at(iso) } as Widget);
+
+    async function rebuildLocally(record: Widget): Promise<void> {
+      local.seed(record);
+      await act(async () => {
+        local.emit({ type: 'upsert', records: [record], auditAction: 'default' });
+        await vi.advanceTimersByTimeAsync(200);
+      });
+    }
+
+    it('counts records rebuilt as new objects, with new DateTimes for the same instants, as the same result', async () => {
+      local.seed(withDate('2026-09-29T10:00:00Z'));
+      render(WIDGETS);
+      const onResponse = vi.fn();
+      const onSameResponse = vi.fn();
+      await act(async () => { await api().query({}, { onResponse, onSameResponse }); });
+
+      await rebuildLocally(withDate('2026-09-29T10:00:00.000Z'));
+
+      expect({ responses: onResponse.mock.calls.length, same: onSameResponse.mock.calls.length }).toEqual({ responses: 1, same: 1 });
+    });
+
+    it('delivers a result whose only change is a date', async () => {
+      local.seed(withDate('2026-09-29T10:00:00Z'));
+      render(WIDGETS);
+      const onResponse = vi.fn();
+      await act(async () => { await api().query({}, { onResponse }); });
+
+      await rebuildLocally(withDate('2026-09-29T11:00:00Z'));
+
+      expect(onResponse).toHaveBeenCalledTimes(2);
+    });
+
+    it('never hashes a result to compare it', async () => {
+      const hash = vi.spyOn(Object, 'hash');
+      local.seed(alpha);
+      render(WIDGETS);
+      await act(async () => { await api().query({}, { onResponse: vi.fn() }); });
+      hash.mockClear();
+
+      await touchLocally();
+
+      expect(hash.mock.calls.filter(([target]) => (target as { records?: unknown })?.records != null)).toEqual([]);
+      hash.mockRestore();
+    });
   });
 
   describe('deprecated positional forms keep working', () => {

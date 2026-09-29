@@ -11,6 +11,9 @@ import type { LiveRequestCallbacks } from './live-request-models';
 
 const RequestCancelled = Symbol('RequestCancelled');
 
+/** No result has been delivered yet (or the last delivery was an error), so the next result is always delivered. */
+const NoResultDelivered = Symbol('NoResultDelivered');
+
 /** Collection mutations arrive in bursts (initial sync/hydration writes many records); coalesce a burst into a
  *  single query re-execution rather than re-running the query per change. Each subscription debounces its OWN
  *  onChange callback (its own `debounce` instance), so distinct subscribers still each re-run — only repeated
@@ -50,7 +53,10 @@ export function useSubscriptionWrapper<RecordType extends Record, Request extend
   const { execute: remoteInvoke } = useSubscription(subscription);
   const actionResult = useAction(action);
   const lastRequestIdRef = useRef<string>();
-  const lastResultHashRef = useRef<string>();
+  // The result last delivered, compared by value with each re-run's — never hashed: hashing every record of every
+  // result on every collection change (object-hash walks each DateTime's prototype chain) was most of the CPU a screen of
+  // live lists spent.
+  const lastResultRef = useRef<Response | typeof NoResultDelivered>(NoResultDelivered);
   const executeValidateAndUpdateRef = useRef(() => Promise.resolve());
   const remoteQueryCalledRef = useRef(false);
 
@@ -104,7 +110,7 @@ export function useSubscriptionWrapper<RecordType extends Record, Request extend
     const reportRerunError = (error: unknown) => {
       // The consumer now shows an error rather than the last result, so the next successful result must be
       // delivered through onResponse (clearing the error) even when it is identical to the one before the failure.
-      lastResultHashRef.current = undefined;
+      lastResultRef.current = NoResultDelivered;
       if (onError != null) {
         onError(error);
         return;
@@ -126,15 +132,14 @@ export function useSubscriptionWrapper<RecordType extends Record, Request extend
       }
     };
 
-    // validate and update the result only if it has changed
+    // validate and update the result only if it has changed (by value: DateTimes compare by instant)
     const validateAndUpdate = (response: Response) => {
       if (!okToExecute()) return;
-      const resultHash = Object.hash(response);
-      if (lastResultHashRef.current === resultHash) {
+      if (lastResultRef.current !== NoResultDelivered && is.deepEqual(lastResultRef.current, response)) {
         onSameResponse?.();
         return;
       }
-      lastResultHashRef.current = resultHash;
+      lastResultRef.current = response;
       onResponse?.(response);
     };
 
