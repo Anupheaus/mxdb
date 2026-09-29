@@ -12,7 +12,7 @@ import type { Collection } from 'mongodb';
 import type { NexusAuthRecord, NexusAuthStore } from '@anupheaus/nexus/common';
 import type { ServerDb } from '../providers';
 import { useDb } from '../providers';
-import { isAuthKey } from './isAuthKey';
+import { isAuthKey } from '@anupheaus/nexus/common';
 import { DEV_SIGN_IN_REQUEST_ID_PREFIX } from './registerDevAuthRoute';
 
 const COLLECTION_NAME = 'mxdb_authentication';

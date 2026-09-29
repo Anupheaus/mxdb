@@ -531,6 +531,20 @@ describe('startAuthenticatedServer — client connection', () => {
       expect(onConnected).toHaveBeenCalledWith({ user: USER, account: { id: 'account-7' } });
     });
 
+    // The account comes from a session token mxdb reads from the handshake itself, not necessarily the one nexus signed
+    // the user in with: a client can present its own valid session AND another record's token in a second cookie. Only a
+    // record that belongs to the signed-in user, and is enabled, may name the account.
+    it.each([
+      ['belongs to another user', authRecord({ accountId: 'account-9', userId: 'user-2' })],
+      ['is disabled', authRecord({ accountId: 'account-9', isEnabled: false })],
+    ])('never takes the account from a session record that %s', async (_label, record) => {
+      const { onConnected, onGetAccountDetails, authCtx } = await connectWithoutAccount({ socket: makeSocket({ cookie: 'nexus_session=tok-1' }), record });
+
+      expect(onGetAccountDetails).not.toHaveBeenCalled();
+      expect(authCtx.setAccount).not.toHaveBeenCalled();
+      expect(onConnected).toHaveBeenCalledWith({ user: USER, account: undefined });
+    });
+
     it.each([
       ['there is no session token', {}, authRecord({ accountId: 'account-1' })],
       ['the session has no auth record', { cookie: 'nexus_session=tok-1' }, undefined],

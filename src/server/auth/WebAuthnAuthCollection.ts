@@ -10,7 +10,7 @@ import type { Collection } from 'mongodb';
 import type { WebAuthnAuthRecord, WebAuthnAuthStore } from '@anupheaus/nexus/common';
 import type { ServerDb } from '../providers';
 import { AuthCollection, toAuthRecordUpdate } from './AuthCollection';
-import { isAuthKey } from './isAuthKey';
+import { isAuthKey } from '@anupheaus/nexus/common';
 
 type WebAuthnDoc = Omit<WebAuthnAuthRecord, 'requestId'> & { _id: string };
 

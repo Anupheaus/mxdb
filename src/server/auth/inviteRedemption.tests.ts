@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import http from 'http';
 import type { AddressInfo } from 'net';
+import { createHash } from 'crypto';
 import { MongoClient, type Db } from 'mongodb';
 import { MongoMemoryReplSet } from 'mongodb-memory-server';
 import type { NexusDeviceDetails } from '@anupheaus/nexus/common';
@@ -19,6 +20,9 @@ const deviceDetails = {
   userAgent: 'vitest', platform: 'test', language: 'en-GB', screenWidth: 1080, screenHeight: 2400,
   viewportWidth: 412, viewportHeight: 915, colorDepth: 24, pixelRatio: 2.6, timezone: 'Europe/London',
 } as unknown as NexusDeviceDetails;
+
+/** What nexus (1.2.15+, sc-613) stores for a key hash: a digest, never the value the client sent. */
+const storedKeyHash = (clientKeyHash: string) => `sha256:${createHash('sha256').update(clientKeyHash).digest('hex')}`;
 
 let replSet: MongoMemoryReplSet;
 let mongo: MongoClient;
@@ -151,7 +155,7 @@ describe('invite redemption through nexus, with an invite lifetime', () => {
     }).toEqual({
       signedOut: 200,
       reopened: 'Invite not found',
-      after: { isEnabled: false, keyHash: 'hash-signed-out', registrationToken: undefined },
+      after: { isEnabled: false, keyHash: storedKeyHash('hash-signed-out'), registrationToken: undefined },
     });
   });
 
@@ -220,7 +224,7 @@ describe('invite redemption through nexus, with an invite lifetime', () => {
     expect({
       outcomes: replies.map(outcome).sort(),
       cookies: replies.filter(reply => reply.sessionToken != null).length,
-      stored: after?.keyHash === (outcome(replies[0]) === 'accepted' ? 'hash-race-a' : 'hash-race-b'),
+      stored: after?.keyHash === storedKeyHash(outcome(replies[0]) === 'accepted' ? 'hash-race-a' : 'hash-race-b'),
     }).toEqual({ outcomes: ['Invalid registration token', 'accepted'], cookies: 1, stored: true });
   });
 });
