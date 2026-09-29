@@ -120,12 +120,17 @@ export async function startAuthenticatedServer({
   auth,
   changeStreamDebounceMs,
   resolveConnectionDb,
+  devSignIn,
   ...config
 }: Props): Promise<{ app: Koa; authColl: AuthCollection<NexusAuthRecord>; startListening: () => Promise<void>; stopListening: () => Promise<void>; updateCertificate: (cert: TLSCertificate) => void }> {
   const { configureAuthentication, useAuthentication } = defineAuthentication<
     MXDBUser,
     MXDBAccount
   >();
+  // The dev sign-in route signs anyone in as anyone: never in production, and elsewhere only when asked for.
+  if (devSignIn === true && process.env.NODE_ENV === 'production') {
+    throw new Error('devSignIn must never be turned on in production: it lets anyone sign in as any user.');
+  }
   const authColl = createAuthCollection(auth, db);
 
   // Absent `resolveConnectionDb` → `onResolveConnection`/`onResolveRestConnection: undefined`, a
@@ -186,6 +191,11 @@ export async function startAuthenticatedServer({
 
     async onStartup() {
       logger?.info('[startAuthenticatedServer] onStartup.begin');
+      // With the dev sign-in route off, the sessions it issued earlier must not keep working.
+      if (devSignIn !== true) {
+        const removed = await authColl.deleteDevSignInRecords();
+        if (removed > 0) logger?.warn('[startAuthenticatedServer] removed the sessions the dev sign-in route issued, as devSignIn is off', { removed });
+      }
       const { impersonateUser } = useAuthentication();
       await impersonateUser(adminUser, async () => {
         const startupLogger = (
@@ -208,7 +218,7 @@ export async function startAuthenticatedServer({
         logger,
         clientS2CInstances,
       });
-      if (process.env.NODE_ENV !== 'production') {
+      if (devSignIn === true) {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         registerDevAuthRoute(router as any, config.name, authColl, auth.mode);
       }

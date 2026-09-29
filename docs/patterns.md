@@ -55,9 +55,25 @@ Returns `survey`, `isLoadingSurvey`, `isNewSurvey`, `setSurvey`, `upsertSurvey`,
 ### Live results are compared by value, never hashed
 A live request (`query` / `getAll` / `distinct` with callbacks) re-runs after every burst of collection changes and
 delivers the result only if it changed. The last delivered result is kept and compared with `is.deepEqual` (DateTimes by
-instant); `onSameResponse` fires otherwise. Never hash a result to compare it: `Object.hash` (object-hash) walks every
-record and each DateTime's prototype chain, and on a screen of live lists it was most of the CPU the page spent (Vision's
-Pipeline, 29 Sep 2026: about 60% of opening it and a lead).
+instant, in arrays too; two invalid DateTimes alike are equal); `onSameResponse` fires otherwise. Never hash a result to
+compare it: `Object.hash` (object-hash) walks every record and each DateTime's prototype chain, and on a screen of live
+lists it was most of the CPU the page spent (Vision's Pipeline, 29 Sep 2026: about 60% of opening it and a lead). The
+same goes for a hook's props: `useQuery` / `useGetAll` keep them by value (`useDeepEqualValue`), never hashing them per
+render.
+
+- **A change of zone alone is not a change.** A DateTime moved to another zone at the same instant compares equal, so the
+  result is not delivered again. Anything that must show a new zone reads it from somewhere else (a setting, the user's
+  locale) — never from a record's DateTime having been re-zoned.
+
+### Delivered records are read-only
+Records a live request delivers are the collection's own objects, and a record passed to `upsert` becomes one. Treat
+both as immutable: to change a record, copy it (`{ ...record, name }`) and upsert the copy. Two things rely on it — the
+collection's `upsert` returns early when the record is deep-equal to the stored one, and a live request compares each
+re-run with the last result it delivered — so a record changed in place would never be saved, or never be delivered.
+In a development build (`NODE_ENV` `development`) delivered arrays and records are frozen (`freezeInDevelopment`), so
+such a change throws where it is made; DateTimes and other class instances inside are left alone. The same goes for a
+hook's props: `useQuery` / `useGetAll` compare them by value against the last props they saw (`useDeepEqualValue`), so a
+props object changed in place is never noticed — pass a new one.
 
 ### 2c. Raw hooks for bespoke logic
 When a hook needs custom querying/side-effects, use `useCollection` / `useRecord` from `@anupheaus/mxdb/client` directly, composing them with other hooks as needed.

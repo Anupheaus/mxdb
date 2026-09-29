@@ -4,9 +4,12 @@ import { useSyncState } from '@anupheaus/react-ui';
 import type { MXDBError } from '../../../common';
 import type { AddDebugTo, AddDisableTo } from '../../../common/models';
 import type { GetAll } from './createGetAll';
+import { useDeepEqualValue } from '../useDeepEqualValue';
 
 export function createUseGetAll<RecordType extends Record>(getAll: GetAll<RecordType>) {
-  return (props: AddDebugTo<AddDisableTo<object>> = {}) => {
+  return (givenProps: AddDebugTo<AddDisableTo<object>> = {}) => {
+    // Re-subscribe only when the props change by value — callers pass them inline, a new object every render
+    const props = useDeepEqualValue(givenProps);
     const { setState, getState } = useSyncState(() => ({ records: [] as RecordType[], isLoading: true, error: undefined as MXDBError | undefined }));
     const lastResponseRef = useRef<Partial<ReturnType<typeof getState>>>();
     const requestIdRef = useRef('');
@@ -37,7 +40,7 @@ export function createUseGetAll<RecordType extends Record>(getAll: GetAll<Record
           onError,
         }).catch(onError);
       }
-    }, [Object.hash(props)]);
+    }, [props]);
 
     return getState();
   };
