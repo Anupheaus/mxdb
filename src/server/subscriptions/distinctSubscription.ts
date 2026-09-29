@@ -1,5 +1,6 @@
 import { mxdbDistinctSubscription } from '../../common';
 import { useCollection } from '../collections';
+import { useQueryGate } from '../collections/useQueryGate';
 import { useServerToClientSynchronisation } from '../providers';
 import { createServerCollectionSubscription } from './createServerCollectionSubscription';
 import { pushSubscriptionResultRecords } from './pushSubscriptionResultRecords';
@@ -10,8 +11,12 @@ export const serverDistinctSubscription = createServerCollectionSubscription()(m
     // Capture at subscription-setup time. onChange callbacks fire from the MongoDB change stream
     // outside any ALS context, so a late useServerToClientSynchronisation() would fall back to the no-op.
     const capturedS2C = useServerToClientSynchronisation();
+    // Resolved once, now: the change handler runs from the change stream, outside this request, where the
+    // caller the gate scopes to can no longer be read. Values are drawn only from what the gate lets them see.
+    const { field, filters, sorts } = request;
+    const { filters: gatedFilters, sorts: gatedSorts } = await useQueryGate(collection).gateRequest({ filters, sorts });
 
-    const runDistinct = () => distinct(request);
+    const runDistinct = () => distinct({ field, filters: gatedFilters, sorts: gatedSorts });
 
     async function refreshDistinctAndPushToSubscriber(): Promise<string[]> {
       const records = await runDistinct();

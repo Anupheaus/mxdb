@@ -24,6 +24,8 @@ export interface RunBeforeWriteHooksOnSyncStatesProps {
   collection: SyncHookCollection;
   /** One collection's merged client changes, about to be persisted. Amended in place (see below). */
   states: SyncState[];
+  /** Ids already refused before the hooks (e.g. outside the read gate): left untouched, and no hook runs for them. */
+  excludedIds?: ReadonlySet<string>;
 }
 
 export interface RunBeforeWriteHooksOnSyncStatesResult {
@@ -56,7 +58,7 @@ export interface RunBeforeWriteHooksOnSyncStatesResult {
  * - rejected delete → left out of the write (see {@link RunBeforeWriteHooksOnSyncStatesResult.unpersistedIds}).
  * Server-authored entries always sort after the client's (see `auditor.updateAuditWithAfterLatest`).
  */
-export async function runBeforeWriteHooksOnSyncStates({ collection, states }: RunBeforeWriteHooksOnSyncStatesProps): Promise<RunBeforeWriteHooksOnSyncStatesResult> {
+export async function runBeforeWriteHooksOnSyncStates({ collection, states, excludedIds }: RunBeforeWriteHooksOnSyncStatesProps): Promise<RunBeforeWriteHooksOnSyncStatesResult> {
   const result: RunBeforeWriteHooksOnSyncStatesResult = { rejectedRecords: [], unpersistedIds: [] };
   const { collection: definition, get } = collection;
   const extensions = getCollectionExtensions(definition);
@@ -69,6 +71,7 @@ export async function runBeforeWriteHooksOnSyncStates({ collection, states }: Ru
   for (let index = 0; index < states.length; index++) {
     const state = states[index]!;
     const id = stateIdOf(state);
+    if (excludedIds?.has(id) === true) continue;
     const stored = storedById.get(id);
     try {
       if (isActiveRecordState(state)) {

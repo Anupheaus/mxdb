@@ -277,6 +277,30 @@ export class ServerDbCollection<RecordType extends Record = Record> {
     }
   }
 
+  /**
+   * The ids of the stored records matching `filters`, projected from `_id` alone — no record is fetched or
+   * deserialised. For checks that only need to know which records match (e.g. the read gate on the sync path).
+   */
+  @bind
+  public async queryIds(filters: DataFilters<RecordType>): Promise<string[]> {
+    const collection = await this.#getCollection();
+    const docs = await collection.find(this.#parseFilters(filters) ?? {}, { projection: { _id: 1 } }).toArray();
+    return docs.map(({ _id }) => String(_id));
+  }
+
+  /**
+   * Of `ids`, those with a stored audit — every record the server has ever held, INCLUDING deleted ones (a
+   * delete keeps the audit as a tombstone). Projected from `_id` alone. Always empty for a collection with
+   * `disableAudit`, which keeps no audit (and so no tombstones); its audit collection is never created here.
+   */
+  @bind
+  public async getAuditIds(ids: string[]): Promise<string[]> {
+    if (this.#config.disableAudit === true || ids.length === 0) return [];
+    const collection = await this.#getAuditCollection();
+    const docs = await collection.find({ _id: { $in: ids as any[] } }, { projection: { _id: 1 } }).toArray();
+    return docs.map(({ _id }) => String(_id));
+  }
+
   @bind
   public async getAll(): Promise<RecordType[]> {
     const collection = await this.#getCollection();

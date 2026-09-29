@@ -3,6 +3,7 @@ import {
   type MXDBRecordCursors,
   type MXDBActiveRecordCursor,
   type MXDBDeletedRecordCursor,
+  type MXDBRecordStatesRequest,
   type MXDBSyncEngineResponse,
   type ServerDispatcherFilter,
   type ServerDispatcherFilterRecord,
@@ -56,7 +57,12 @@ interface TaggedCursor {
 export class ServerDispatcher {
   readonly #logger: Logger;
   readonly #props: ServerDispatcherProps;
-  #isPaused = false;
+  /**
+   * How many holders have paused the SD. Re-entrant: overlapping C2S syncs on one socket each pause it, and
+   * one finishing must not resume dispatch while another still has claimed ids mirrored into the filter that
+   * its read gate has not yet vetted — so dispatch resumes only when every pause has been released.
+   */
+  #pauseDepth = 0;
   #inFlight = false;
   #retryTimer: ReturnType<typeof setTimeout> | undefined = undefined;
   /** Dispatches in a row that failed (other than SyncPaused) — drives the retry backoff. */
@@ -76,15 +82,19 @@ export class ServerDispatcher {
     this.#logger.debug('[SD] ServerDispatcher created');
   }
 
+  get #isPaused(): boolean { return this.#pauseDepth > 0; }
+
+  /** Holds dispatch until a matching {@link resume}. Pauses nest; see `#pauseDepth`. */
   pause(): void {
-    if (this.#isPaused) return;
-    this.#isPaused = true;
-    this.#logger.debug('[SD] paused');
+    this.#pauseDepth++;
+    if (this.#pauseDepth === 1) this.#logger.debug('[SD] paused');
   }
 
+  /** Releases one {@link pause}; dispatch resumes once every pause is released. A resume without a pause is a no-op. */
   resume(): void {
-    if (!this.#isPaused) return;
-    this.#isPaused = false;
+    if (this.#pauseDepth === 0) return;
+    this.#pauseDepth--;
+    if (this.#pauseDepth > 0) return;
     this.#logger.debug('[SD] resumed');
     if (!this.#inFlight && this.#retryTimer == null) {
       void this.#dispatch();
@@ -141,6 +151,20 @@ export class ServerDispatcher {
         // record from ever reaching the client (delete-is-final) until the SD is rebuilt (reconnect/restart).
         for (const id of filterItem.deletedRecordIds) this.#tombstone(colName, id, 'client-claimed-deletion(mirror)');
       }
+    }
+  }
+
+  /**
+   * SR-only: forget that the client holds these records, so change-stream fan-out stops reaching it for
+   * them. The ServerReceiver's mirror seeds every id a client CLAIMS to hold; for a record outside the
+   * collection's read gate a claim alone must not subscribe the client to its later changes. This is not
+   * a delete — tombstones are untouched and the client's copy is left as it is.
+   */
+  removeFromFilter(request: MXDBRecordStatesRequest): void {
+    for (const { collectionName, recordIds } of request) {
+      const colMap = this.#filter.get(collectionName);
+      if (colMap == null) continue;
+      for (const recordId of recordIds) colMap.delete(recordId);
     }
   }
 

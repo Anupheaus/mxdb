@@ -18,6 +18,9 @@ import type { AnyAuditOf, AuditOf } from '../../common';
 import { isActiveRecordState } from '../../common/sync-engine';
 import { isTransientMongoCloseError } from '../utils/isTransientMongoCloseError';
 import { runBeforeWriteHooksOnSyncStates } from './runBeforeWriteHooksOnSyncStates';
+import { filterReadableRecordIds } from './filterReadableRecordIds';
+import { rejectWritesOutsideReadGate } from './rejectWritesOutsideReadGate';
+import { assertValidSyncRequest } from './assertValidSyncRequest';
 
 /**
  * Per-record promise chain — serialises concurrent C2S syncs for the same record across clients.
@@ -97,6 +100,8 @@ export function buildServerRecordStates(
  * (persist merged audits + materialised records via `ServerDbCollection.sync`).
  */
 export async function handleClientToServerSync(request: ClientDispatcherRequest): Promise<MXDBSyncEngineResponse> {
+  // Before anything is mirrored or queried: every id becomes a filter key and a MongoDB `$in` value.
+  assertValidSyncRequest(request);
   const db = useDb();
   const logger = useLogger();
   const s2c = useServerToClientSynchronisation();
@@ -108,6 +113,10 @@ export async function handleClientToServerSync(request: ClientDispatcherRequest)
 
   const sr = new ServerReceiver(logger.createSubLogger('sr'), {
     serverDispatcher: s2c.dispatcher,
+
+    // The read gate: a sync request can name any record id, so the receiver answers (and subscribes the client
+    // to) only the records the collection's onQuery lets this caller read (sc-583).
+    onFilterReadable: filterReadableRecordIds,
 
     // Meta fast-path: project stored `_meta.hash` only — no full record fetch/deserialise. The
     // ServerReceiver uses this to confirm branched-only records whose hash already matches the client,
@@ -182,13 +191,20 @@ export async function handleClientToServerSync(request: ClientDispatcherRequest)
         }
 
         try {
-          // Before-write hooks may amend or revert the states in place; the receiver reads them back to push
-          // what was persisted to the client. A rejected record is still acknowledged (so the client stops
-          // resending it) and reported back with the hook's reason.
-          const { rejectedRecords, unpersistedIds } = await runBeforeWriteHooksOnSyncStates({ collection, states: col.records });
-          for (const { id, reason } of rejectedRecords) {
+          // First the read gate: an update or delete to a record whose stored version the caller may not read is
+          // refused outright (sc-583). Then the before-write hooks, which may amend or revert the remaining states
+          // in place; the receiver reads them back to push what was persisted to the client. A rejected record is
+          // still acknowledged (so the client stops resending it) and reported back with the reason.
+          const outsideGate = await rejectWritesOutsideReadGate({ collection, states: col.records });
+          for (const { id } of outsideGate.rejectedRecords) {
+            logger.warn('C2S write refused: the caller may not read the stored record (outside its read gate)', { collectionName: col.collectionName, recordId: id });
+          }
+          const hooked = await runBeforeWriteHooksOnSyncStates({ collection, states: col.records, excludedIds: new Set(outsideGate.unpersistedIds) });
+          for (const { id, reason } of hooked.rejectedRecords) {
             logger.warn('C2S write rejected by a before-write hook — reverting it on the client', { collectionName: col.collectionName, recordId: id, reason });
           }
+          const rejectedRecords = [...outsideGate.rejectedRecords, ...hooked.rejectedRecords];
+          const unpersistedIds = [...outsideGate.unpersistedIds, ...hooked.unpersistedIds];
           const unpersisted = new Set(unpersistedIds);
 
           const updated: MXDBRecord[] = [];

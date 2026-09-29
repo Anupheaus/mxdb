@@ -1,0 +1,112 @@
+import type { DataFilters, Record as MXDBRecord } from '@anupheaus/common';
+import type { MXDBCollection } from '../../common';
+import { auditor, type AnyAuditOf, type AuditEntry, type ServerAuditOf } from '../../common/auditor';
+import { isActiveRecordState, type MXDBActiveRecordState, type MXDBDeletedRecordState, type MXDBSyncRejectedRecord } from '../../common/sync-engine';
+import { useQueryGate } from '../collections/useQueryGate';
+
+/** Shown to the user whose change was refused; the record is someone else's to change. */
+export const OUTSIDE_READ_GATE_REASON = 'You do not have access to change this record.';
+
+/** Shown when a change targets a record that has been deleted — deletes are final. */
+export const DELETED_RECORD_REASON = 'This record has been deleted, so it cannot be changed.';
+
+type SyncState = MXDBActiveRecordState | MXDBDeletedRecordState;
+
+/** The parts of a server collection the write gate needs (a `ServerDbCollection` provides them). */
+export interface ReadGateWriteCollection {
+  collection: MXDBCollection;
+  /** Ids of the live records matching the filters (a projection — see `ServerDbCollection.queryIds`). */
+  queryIds(filters: DataFilters<MXDBRecord>): Promise<string[]>;
+  /** Of the ids, those with a stored audit, deleted records included (see `ServerDbCollection.getAuditIds`). */
+  getAuditIds(ids: string[]): Promise<string[]>;
+  get(ids: string[]): Promise<MXDBRecord[]>;
+  getAudit(ids: string[]): Promise<ServerAuditOf<MXDBRecord>[]>;
+}
+
+export interface RejectWritesOutsideReadGateProps {
+  collection: ReadGateWriteCollection;
+  /** One collection's merged client changes, about to be persisted. Refused ones are replaced in place (see below). */
+  states: SyncState[];
+}
+
+export interface RejectWritesOutsideReadGateResult {
+  /** The refused changes, with the reason to report to the client. */
+  rejectedRecords: MXDBSyncRejectedRecord[];
+  /** Their ids: left out of the write entirely, but acknowledged so the client stops resending them. */
+  unpersistedIds: string[];
+}
+
+/**
+ * The read gate applied to client writes, for a collection with an `onQuery` gate. A client may not change a
+ * record whose stored version is outside the gate for them — a record it cannot read is not its to change.
+ * Without this, a fitter who knew a task's id could add themself to its assignees (and so read it) or delete it.
+ *
+ * - A **live** record outside the caller's gate: the update or delete is refused.
+ * - A **deleted** record (its audit is a tombstone): any change is refused, whoever asks. Its gate cannot be
+ *   judged on a record that is not live, deletes are final, and a client-sent `Restored` entry would otherwise
+ *   resurrect the server's last content — for a record the caller may never have been allowed to read.
+ * - An id the server has never held is a **create**, and is allowed; the before-write hooks still judge it. (A
+ *   collection with `disableAudit` keeps no tombstones, so there a deleted id looks new — it holds nothing to leak.)
+ *
+ * A refused change is not persisted at all — not even its audit entries, which were never the client's to add.
+ * Its state is replaced, in place, by what the server holds (the stored record, or the tombstone), so the
+ * receiver, reading the states back, never sees the client's merged version: it pushes the stored record only
+ * if the caller may read it, and for a tombstone only a delete. Anything that must legitimately change a record
+ * outside the caller's read scope belongs in a server action, not a synced write.
+ */
+export async function rejectWritesOutsideReadGate({ collection, states }: RejectWritesOutsideReadGateProps): Promise<RejectWritesOutsideReadGateResult> {
+  const result: RejectWritesOutsideReadGateResult = { rejectedRecords: [], unpersistedIds: [] };
+  const { collection: definition, queryIds, getAuditIds, get, getAudit } = collection;
+  const gateFilters = await useQueryGate<MXDBRecord>(definition).getGateFilters();
+  if (gateFilters == null || states.length === 0) return result;
+
+  const ids = states.map(stateIdOf);
+  const liveIds = await queryIds({ id: { $in: ids } });
+  const auditedIds = await getAuditIds(ids);
+  const deletedIds = auditedIds.filter(id => !liveIds.includes(id));
+  if (liveIds.length === 0 && deletedIds.length === 0) return result;
+  const readableIds = liveIds.length === 0 ? [] : await queryIds({ $and: [{ id: { $in: liveIds } }, gateFilters] });
+
+  const refusedLiveIds = liveIds.filter(id => !readableIds.includes(id));
+  const refusals = [
+    ...refusedLiveIds.map(id => ({ id, reason: OUTSIDE_READ_GATE_REASON })),
+    ...deletedIds.map(id => ({ id, reason: DELETED_RECORD_REASON })),
+  ];
+  if (refusals.length === 0) return result;
+
+  const storedStates = await loadStoredStates({ get, getAudit, liveIds: refusedLiveIds, auditedIds, refusedIds: refusals.map(({ id }) => id) });
+  states.forEach((state, index) => {
+    const stored = storedStates.get(stateIdOf(state));
+    if (stored != null) states[index] = stored;
+  });
+  result.rejectedRecords.push(...refusals);
+  result.unpersistedIds.push(...refusals.map(({ id }) => id));
+  return result;
+}
+
+function stateIdOf(state: SyncState): string {
+  return isActiveRecordState(state) ? state.record.id : state.recordId;
+}
+
+interface LoadStoredStatesProps extends Pick<ReadGateWriteCollection, 'get' | 'getAudit'> {
+  liveIds: string[];
+  /** Ids with a stored audit: only these are read from the audit collection (a `disableAudit` collection has none). */
+  auditedIds: string[];
+  refusedIds: string[];
+}
+
+/** What the server holds for each refused id: the live record with its audit, or the tombstone. */
+async function loadStoredStates({ get, getAudit, liveIds, auditedIds, refusedIds }: LoadStoredStatesProps): Promise<Map<string, SyncState>> {
+  const auditIdsToRead = refusedIds.filter(id => auditedIds.includes(id));
+  const [records, audits] = await Promise.all([
+    liveIds.length === 0 ? [] : get(liveIds),
+    auditIdsToRead.length === 0 ? [] : getAudit(auditIdsToRead),
+  ]);
+  const entriesById = new Map(audits.map(audit => [audit.id, auditor.entriesOf(audit as unknown as AnyAuditOf<MXDBRecord>) as AuditEntry[]] as const));
+  const recordsById = new Map(records.map(record => [record.id, record] as const));
+  return new Map(refusedIds.map((id): [string, SyncState] => {
+    const record = recordsById.get(id);
+    const audit = entriesById.get(id) ?? [];
+    return [id, record != null ? { record, audit } : { recordId: id, audit }];
+  }));
+}
