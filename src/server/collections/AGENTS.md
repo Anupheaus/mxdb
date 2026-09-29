@@ -12,6 +12,7 @@
 - `useCollection.ts` — `useCollection(collectionName)` — returns `{ collection, getAll, get, find, query, upsert, remove, distinct, onChange, removeOnChange }`; use inside `onAfter*` hooks for cross-collection cascades
 - `runBeforeUpsertHook.ts` — `runBeforeUpsertHook({ collection, records, existingRecords })` — runs `onBeforeUpsert` on copies of the records about to be written (classifying inserts vs updates) and returns the copies to write; internal, called by `ServerDbCollection.upsert` and the C2S sync write path
 - `runBeforeDeleteHook.ts` — `runBeforeDeleteHook({ collection, recordIds, getStoredIds })` — runs `onBeforeDelete` for the ids that are still stored; internal, called by `ServerDbCollection.remove` and the C2S sync write path
+- `useQueryGate.ts` — `useQueryGate(collection)` — binds the collection's `onQuery` gate to the current caller; `gateRequest(request)` for queries and `distinct`, `getGateFilters()` for reads that are not a query (`get`, `getAll`). Internal, used by every read action and subscription; types in `query-gate-models.ts`
 - `index.ts` — re-exports `extendCollection` and `useCollection` (the hook runners are internal and deliberately not exported)
 
 ## Available hooks
@@ -25,7 +26,7 @@
 | `onBeforeClear({ collectionName })` | Before `clear()`, on originating instance | Throw to reject |
 | `onAfterClear({ collectionName })` | After clear, on originating instance only | Not change-stream driven |
 | `onSeed(seedWith)` | At startup if `shouldSeedCollections: true` | — |
-| `onQuery({ request, userId })` | Before query action/subscription fetch | Security scoping; interpret `serverHints` (see below) |
+| `onQuery({ request, userId })` | Before EVERY client read — `query`, `get`, `getAll`, `distinct` actions and the query, getAll and distinct subscriptions (see "The read gate" below) | Security scoping; interpret `serverHints` (see below) |
 
 ## Before-write hooks (`onBeforeUpsert` / `onBeforeDelete`)
 
@@ -37,13 +38,26 @@ Both run **before anything is persisted**, on the instance performing the write,
 - **Rejecting a synced client write (reject and revert).** A hook that throws rejects only that record; the rest of the batch persists. The record is still acknowledged (so the client stops resending it) and reported back in the sync response's `rejectedRecords` with the thrown message as `reason`, which the client hands the app via `MXDBSync`'s `onSyncRejected`. The device is brought back in line: a rejected **update** keeps the client's audit entries and gets a server `Updated` entry restoring the stored record, which is pushed back so the device reverts; a rejected **create** keeps the client's `Created` entry, gets a `Deleted` entry and is never stored live — the device drops it; a rejected **delete** is not applied on the server (the record and its audit are untouched) and stays deleted on the device, because restoring a deleted record is not supported — surface the reason to the user. Server-authored entries always sort after the client's, even from a client whose clock runs ahead. Throw `Error`s with user-presentable messages.
 - **Context.** The hooks run in the writer's context (ambient db, socket/user for client writes), so `useCollection` inside them targets the same database. Do not upsert the same collection from its own `onBeforeUpsert` (infinite recursion).
 
+## The read gate (`onQuery`)
+
+`onQuery` is the collection's read gate: it narrows every path a client can read the collection through, so a hand-crafted socket request for `get`, `getAll` or `distinct` cannot return what `query` would withhold. Every read action and subscription binds it through `useQueryGate`:
+
+- **`query`, `distinct`** (actions and subscriptions) — the client's request is passed to `onQuery` and the rewritten request is what runs.
+- **`get`, `getAll`** (action, and the getAll subscription) — `onQuery` is called with an empty request; the filters it returns are the gate. `get` fetches `{ $and: [{ id: { $in: ids } }, gate] }`, so it never returns a record that was not asked for, whatever the gate does with `id`. A gate that returns no filters (or nothing) leaves the read unnarrowed and the plain `get`/`getAll` path runs.
+- **`reconcile`** carries no record content — it only confirms which of the ids a client holds are gone — so there is nothing for the gate to withhold. It deliberately does not report a gated-out record as deleted: that would tombstone it on the device, and a tombstone refuses the record for good (delete-is-final) even once the gate lets it back in. The getAll subscription follows the same rule: a record that leaves the gate is dropped from the snapshot but only pushed as a delete if it was really deleted.
+- **Subscriptions resolve the gate once, at subscribe time**, because their change handlers run from the change stream with no request context. A change in what the caller may see (a new role, a reassigned record) applies from the next subscribe.
+
+Write a gate as a pure rewrite of the request — AND your scope onto `request.filters` rather than replacing an `id` filter — and have it return a filter that matches nothing for a caller it cannot resolve.
+
+**Not covered by the gate:** a record already on a device that later leaves the gate keeps receiving change-stream updates (the server dispatcher's filter still holds it), and the C2S sync path does not consult the gate. Both are tracked as follow-ups; do not rely on the gate to revoke access to records a device already holds.
+
 ## Server query hints (`serverHints`)
 
 `serverHints` is an optional, strongly-typed, **server-only** metadata bag on `QueryProps` / `QueryRequest` (defined in `common/models/collectionsModels.ts`). It is the channel by which a caller passes *intent* to a collection's `onQuery` hook — it is **never applied to the client's local SQLite query, and never forwarded into the server's MongoDB query**. It does nothing on its own; only an `onQuery` hook gives it meaning.
 
 **Round trip:**
 1. A caller sets `serverHints` on a query — `query(...)` / `useQuery(...)` on the client, or a server-side query.
-2. The server entry points (`queryAction.ts`, `querySubscription.ts`) package it into the `request` passed to `onQuery({ request, userId })`.
+2. The server entry points (`queryAction.ts`, `querySubscription.ts`, via `useQueryGate`) package it into the `request` passed to `onQuery({ request, userId })`.
 3. `onQuery` reads `request.serverHints` and returns a modified `QueryProps` (extra filters, sorts, pagination, `getAccurateTotal`) to act on the hint.
 4. `serverHints` is then dropped — only the effective `filters` / `sorts` / `pagination` / `getAccurateTotal` drive the actual fetch. The hint object never reaches storage.
 

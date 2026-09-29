@@ -9,10 +9,10 @@ Each file registers one socket action using `createServerActionHandler`. Actions
 ## Contents
 
 ### Read actions
-- `getAction.ts` — `mxdbGetAction` — fetch a single record by id
-- `getAllAction.ts` — `mxdbGetAllAction` — fetch all records in a collection
+- `getAction.ts` — `mxdbGetAction` — fetch records by id, narrowed to those the collection's `onQuery` gate lets the caller see
+- `getAllAction.ts` — `mxdbGetAllAction` — fetch every record in a collection the `onQuery` gate lets the caller see
 - `queryAction.ts` — `mxdbQueryAction` — paginated, sorted, filtered query. Forwards the request's `serverHints` to the collection's `onQuery` hook (see [../collections/AGENTS.md](../collections/AGENTS.md#server-query-hints-serverhints))
-- `distinctAction.ts` — `mxdbDistinctAction` — distinct field values for a given field
+- `distinctAction.ts` — `mxdbDistinctAction` — distinct field values for a given field, drawn only from records the `onQuery` gate lets the caller see
 
 ### Sync actions
 - `clientToServerSyncAction.ts` — `mxdbClientToServerSyncAction` — receives a `ClientDispatcherRequest`, delegates to `ServerReceiver.process()`, returns `MXDBSyncEngineResponse`. The most critical action — serialises concurrent syncs per record id to prevent lost-write races.
@@ -31,6 +31,7 @@ Read actions (`getAll`, `query`) push their results through the S2C dispatch pat
 
 ## Ambiguities and gotchas
 
+- **Every read action applies the collection's `onQuery` gate** through `useQueryGate` (see [../collections/AGENTS.md](../collections/AGENTS.md#the-read-gate-onquery)). A new read action must too, or it reopens the hole the gate closes: a hand-crafted socket request reading what `query` withholds.
 - **All read actions update the S2C filter** — they do not just return data. Bypassing them (e.g. querying MongoDB directly) will cause the SD filter to drift and clients will miss change-stream notifications.
 - **`reconcileAction` vs `clientToServerSyncAction`** — reconcile is a lighter check that compares hashes without merging audits; C2S sync does the full merge-replay-persist cycle.
 

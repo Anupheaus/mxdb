@@ -1,11 +1,11 @@
 import type { Record } from '@anupheaus/common';
 import { mxdbQuerySubscription } from '../../common';
-import { getCollectionExtensions, useCollection } from '../collections';
-import { useDb, useServerToClientSynchronisation } from '../providers';
+import { useCollection } from '../collections';
+import { useQueryGate } from '../collections/useQueryGate';
+import { useServerToClientSynchronisation } from '../providers';
 import { createServerCollectionSubscription } from './createServerCollectionSubscription';
 import { pushSubscriptionResultRecords } from './pushSubscriptionResultRecords';
-import { useAuthentication, useLogger } from '@anupheaus/nexus/server';
-import type { QueryProps } from '../../common';
+import { useLogger } from '@anupheaus/nexus/server';
 
 export const serverQuerySubscription = createServerCollectionSubscription<string[]>()(mxdbQuerySubscription,
   async ({ request, subscriptionId, updateAdditionalData, update, onUnsubscribe }) => {
@@ -16,16 +16,9 @@ export const serverQuerySubscription = createServerCollectionSubscription<string
     // outside any ALS context, so a late useServerToClientSynchronisation() would fall back to the no-op.
     const capturedS2C = useServerToClientSynchronisation();
 
-    // Apply onQuery extension hook for server-side security filtering
-    const db = useDb();
-    const dbCollection = db.use(collectionName);
-    const extensions = dbCollection.collection != null ? getCollectionExtensions(dbCollection.collection) : undefined;
-    let baseRequest: QueryProps<Record> = { filters, pagination, sorts, serverHints, getAccurateTotal };
-    if (extensions?.onQuery != null) {
-      const userId = (() => { try { return useAuthentication().user?.id; } catch { return undefined; } })();
-      const modified = await extensions.onQuery({ request: baseRequest, userId });
-      if (modified != null) baseRequest = modified;
-    }
+    // The collection's gate (server-side security scoping), resolved once, now: the change handler runs from the
+    // change stream, outside this request, where the caller the gate scopes to can no longer be read.
+    const baseRequest = await useQueryGate<Record>(collection).gateRequest({ filters, pagination, sorts, serverHints, getAccurateTotal });
     const {
       filters: effectiveFilters,
       pagination: effectivePagination,

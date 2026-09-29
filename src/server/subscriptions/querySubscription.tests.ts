@@ -37,11 +37,14 @@ vi.mock('./createServerCollectionSubscription', () => ({
 
 vi.mock('../collections', () => ({
   useCollection: h.useCollection,
+}));
+
+// The gate hook reads the collection's extensions directly.
+vi.mock('../collections/extendCollection', () => ({
   getCollectionExtensions: h.getCollectionExtensions,
 }));
 
 vi.mock('../providers', () => ({
-  useDb: () => ({ use: () => ({ collection: h.collectionToken }) }),
   useServerToClientSynchronisation: () => ({ isNoOp: true }),
 }));
 

@@ -80,10 +80,12 @@ export interface CollectionExtensionHooks<RecordType extends Record = Record> {
   /** Run when seeding. Receives seedWith for this collection only; use the server's useCollection() for other collections. */
   onSeed?(seedWith: SeedWithFn<RecordType>): Promise<void>;
   /**
-   * Run before a query is executed. Receives the request and the authenticated userId.
-   * Return a modified request to apply additional server-side filters (e.g. security scoping)
-   * or to interpret {@link QueryProps.serverHints}.
-   * Return void/undefined to use the original request unchanged.
+   * The collection's read gate. Runs before every client read — `query`, `get`, `getAll` and `distinct`,
+   * as actions and as subscriptions. Receives the request and the authenticated userId (`undefined` when
+   * the caller is not signed in). Return a modified request to apply server-side filters (e.g. security
+   * scoping) or to interpret {@link QueryProps.serverHints}; return void/undefined to use the request
+   * unchanged. For `get` and `getAll` the request is empty and only the returned filters are used, AND-ed
+   * with the requested ids for `get` — so AND your scope onto `request.filters` rather than replacing it.
    */
   onQuery?(payload: OnQueryPayload): PromiseMaybe<QueryProps<any> | void>;
 }
