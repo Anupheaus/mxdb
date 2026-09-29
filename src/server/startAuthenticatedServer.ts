@@ -260,7 +260,18 @@ export async function startAuthenticatedServer({
         if (socketAuthCtx.account == null && onGetAccountDetails != null) {
           const sessionToken = parseSessionToken(client);
           if (sessionToken != null) {
-            const record = await authColl.findBySessionToken(sessionToken);
+            // The token is read from the handshake here, not necessarily the one nexus signed the user in with (a client can
+            // send its own session and another record's token in a second cookie), so the record may name the account only
+            // when it is this user's and enabled.
+            const found = await authColl.findBySessionToken(sessionToken);
+            const isOwnSession = found != null && found.isEnabled === true && found.userId === socketAuthCtx.user.id;
+            if (found != null && !isOwnSession) {
+              logger?.warn('[Auth] Ignored a session auth record that is not the signed-in user\'s, or is disabled', {
+                userId: socketAuthCtx.user.id,
+                requestId: found.requestId,
+              });
+            }
+            const record = isOwnSession ? found : undefined;
             logger?.info('[Auth] Resolving account from session auth record', {
               userId: socketAuthCtx.user.id,
               hasSessionToken: true,
