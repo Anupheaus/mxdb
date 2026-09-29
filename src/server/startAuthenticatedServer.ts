@@ -15,6 +15,7 @@ import { internalSubscriptions } from './subscriptions';
 import { addClientWatches, removeClientWatches } from './clientDbWatches';
 import { ServerToClientSynchronisation } from './ServerToClientSynchronisation';
 import { WebAuthnAuthCollection } from './auth/WebAuthnAuthCollection';
+import { withInviteExpiry } from './auth/withInviteExpiry';
 import { GoogleOAuthAuthCollection } from './auth/GoogleOAuthAuthCollection';
 import { registerDevAuthRoute } from './auth/registerDevAuthRoute';
 import { mxdbServerToClientSyncAction } from '../common/internalActions';
@@ -150,7 +151,7 @@ export async function startAuthenticatedServer({
     auth.mode === 'webauthn'
       ? configureAuthentication({
         mode: 'webauthn',
-        store: authColl as WebAuthnAuthCollection,
+        store: auth.inviteTtlMs != null ? withInviteExpiry(authColl as WebAuthnAuthCollection, auth.inviteTtlMs) : authColl as WebAuthnAuthCollection,
         onGetInviteDetails: async (userId, accountId) => {
           if (auth.onGetInviteDetails == null)
             throw new Error('onGetInviteDetails is required for WebAuthn servers');

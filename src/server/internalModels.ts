@@ -19,6 +19,12 @@ export interface WebAuthnServerAuthConfig {
   /** WebAuthn relying party ID — the domain registered devices authenticate against.
    *  Defaults to `'localhost'` in development. */
   rpId?: string;
+  /**
+   * How long an invite link can be redeemed, in ms. When set, nexus redeems invites through `withInviteExpiry`, so an
+   * older link is refused ("Invite not found") even before `expireStalePendingInvites` deletes it. Unset, the age is not
+   * checked at redemption.
+   */
+  inviteTtlMs?: number;
   onGetUserDetails?(userId: string): Promise<MXDBUser>;
   onGetInviteDetails?(userId: string, accountId?: string): Promise<InviteDetails>;
 }
