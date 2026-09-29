@@ -19,7 +19,6 @@ export async function filterReadableRecordIds(request: MXDBRecordStatesRequest):
 
     const gateFilters = await useQueryGate<Record>(dbCollection.collection).getGateFilters();
     if (gateFilters == null) return { collectionName, recordIds };
-    const { data: readable } = await dbCollection.query({ filters: { $and: [{ id: { $in: recordIds } }, gateFilters] } });
-    return { collectionName, recordIds: readable.ids() };
+    return { collectionName, recordIds: await dbCollection.queryIds({ $and: [{ id: { $in: recordIds } }, gateFilters] }) };
   });
 }

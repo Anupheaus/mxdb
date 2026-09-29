@@ -1,13 +1,14 @@
 import { describe, it, expect, vi, beforeAll, afterAll, beforeEach } from 'vitest';
 import { MongoClient } from 'mongodb';
 import { MongoMemoryReplSet } from 'mongodb-memory-server';
-import type { DataFilters, Logger, Record } from '@anupheaus/common';
+import { ArgumentInvalidError, type DataFilters, type Logger, type Record } from '@anupheaus/common';
 import { defineCollection } from '../common/defineCollection';
 import type { DistinctRequest, MXDBOnChangeEvent, QueryProps } from '../common';
 import { extendCollection } from './collections/extendCollection';
 import { ServerDbCollection } from './providers/db/ServerDbCollection';
 import { ServerDispatcher, type ClientDispatcherRequest, type MXDBRecordCursors } from '../common/sync-engine';
-import { AuditEntryType, type AuditEntry } from '../common/auditor';
+import { auditor, AuditEntryType, type AnyAuditOf, type AuditEntry } from '../common/auditor';
+import { OUTSIDE_READ_GATE_REASON } from './actions/rejectWritesOutsideReadGate';
 
 /**
  * A collection's `onQuery` hook is the app's read gate (e.g. "a fitter sees only their own tasks"). It must
@@ -25,7 +26,9 @@ interface Note extends Record {
 
 const gatedNotes = defineCollection<Note>({ name: 'read_gate_notes', indexes: [] });
 const openNotes = defineCollection<Note>({ name: 'read_gate_open_notes', indexes: [] });
-const COLLECTIONS = [gatedNotes, openNotes];
+const overridingNotes = defineCollection<Note>({ name: 'read_gate_overriding_notes', indexes: [] });
+const eitherNotes = defineCollection<Note>({ name: 'read_gate_either_notes', indexes: [] });
+const COLLECTIONS = [gatedNotes, openNotes, overridingNotes, eitherNotes];
 
 /** The id no record carries, so a filter on it matches nothing. */
 const NO_MATCH_ID = 'no-such-record';
@@ -35,6 +38,24 @@ const NO_MATCH_ID = 'no-such-record';
 extendCollection(gatedNotes, {
   onQuery({ request, userId }): QueryProps<Note> {
     const gate: DataFilters<Note> = userId == null ? { id: NO_MATCH_ID } : { ownerId: userId };
+    const { filters } = request as QueryProps<Note>;
+    return { ...request, filters: filters == null ? gate : { $and: [filters, gate] } } as QueryProps<Note>;
+  },
+});
+
+// An id-overriding gate, like Vision's accounts gate: it REPLACES any `id` filter with the ids the caller may
+// see. A `get` must still return only the ids that were asked for.
+extendCollection(overridingNotes, {
+  onQuery({ request, userId }): QueryProps<Note> {
+    const accessibleIds = userId == null ? [] : ALL_NOTES.filter(({ ownerId }) => ownerId === userId).map(({ id }) => id);
+    return { ...request, filters: { ...(request as QueryProps<Note>).filters, id: { $in: accessibleIds } } } as QueryProps<Note>;
+  },
+});
+
+// An `$or` gate: the caller's own notes, and every green one.
+extendCollection(eitherNotes, {
+  onQuery({ request, userId }): QueryProps<Note> {
+    const gate = { $or: [{ ownerId: userId ?? NO_MATCH_ID }, { colour: 'green' }] } as DataFilters<Note>;
     const { filters } = request as QueryProps<Note>;
     return { ...request, filters: filters == null ? gate : { $and: [filters, gate] } } as QueryProps<Note>;
   },
@@ -429,5 +450,89 @@ describe('client-to-server sync', () => {
     await auditsWritten(openNotes.name);
     await handleClientToServerSync([{ collectionName: openNotes.name, records: [probe(bobGreen.id), probe(aliceRed.id)] }]);
     await vi.waitFor(() => expect(dispatchedRecordIds()).toEqual([aliceRed.id, bobGreen.id].sort()), WAIT_FOR_PUSH);
+  });
+
+  it('refuses an id that is not a string before anything is mirrored or queried', async () => {
+    ctx.userId = ALICE;
+    const malformed = [{ collectionName: gatedNotes.name, records: [{ id: { $gt: '' }, hash: 'stale-hash', entries: [] }] }] as unknown as ClientDispatcherRequest;
+    await expect(handleClientToServerSync(malformed)).rejects.toThrow(ArgumentInvalidError);
+  });
+
+  describe('writes outside the gate', () => {
+    async function auditOf(id: string): Promise<AnyAuditOf<Note>> {
+      return (await notesIn(gatedNotes.name).getAudit(id)) as unknown as AnyAuditOf<Note>;
+    }
+
+    it('refuses an update to a record the caller may not read, and stores nothing', async () => {
+      ctx.userId = ALICE;
+      await auditsWritten(gatedNotes.name);
+      // Alice tries to hand Bob's note to herself — which would also let her read it.
+      const entries = auditor.entriesOf(auditor.updateAuditWithAfterLatest({ ...bobGreen, ownerId: ALICE }, await auditOf(bobGreen.id), bobGreen));
+      const response = await handleClientToServerSync([{ collectionName: gatedNotes.name, records: [{ id: bobGreen.id, hash: 'stale-hash', entries }] }]);
+
+      expect(response).toEqual([{ collectionName: gatedNotes.name, successfulRecordIds: [bobGreen.id], rejectedRecords: [{ id: bobGreen.id, reason: OUTSIDE_READ_GATE_REASON }] }]);
+      expect(await notesIn(gatedNotes.name).get(bobGreen.id)).toEqual(bobGreen);
+      expect(dispatchedRecordIds()).toEqual([]);
+    });
+
+    it('refuses a delete of a record the caller may not read', async () => {
+      ctx.userId = ALICE;
+      await auditsWritten(gatedNotes.name);
+      const entries = auditor.entriesOf(auditor.deleteAfterLatest(await auditOf(bobGreen.id)));
+      const response = await handleClientToServerSync([{ collectionName: gatedNotes.name, records: [{ id: bobGreen.id, entries }] }]);
+
+      expect(response[0]!.rejectedRecords).toEqual([{ id: bobGreen.id, reason: OUTSIDE_READ_GATE_REASON }]);
+      expect(await notesIn(gatedNotes.name).get(bobGreen.id)).toEqual(bobGreen);
+    });
+
+    it('still accepts a change to the caller\'s own record, and a new record', async () => {
+      ctx.userId = ALICE;
+      await auditsWritten(gatedNotes.name);
+      const recoloured: Note = { ...aliceRed, colour: 'purple' };
+      const created: Note = { id: 'alice-new', ownerId: ALICE, colour: 'white' };
+      const response = await handleClientToServerSync([{
+        collectionName: gatedNotes.name,
+        records: [
+          { id: aliceRed.id, hash: 'stale-hash', entries: auditor.entriesOf(auditor.updateAuditWithAfterLatest(recoloured, await auditOf(aliceRed.id), aliceRed)) },
+          { id: created.id, hash: 'client-hash', entries: auditor.createAuditFrom(created).entries },
+        ],
+      }]);
+
+      expect(response[0]!.rejectedRecords).toBeUndefined();
+      expect(await notesIn(gatedNotes.name).get(aliceRed.id)).toEqual(recoloured);
+      expect(await notesIn(gatedNotes.name).get(created.id)).toEqual(created);
+    });
+  });
+});
+
+// ─── Unusual gate shapes ────────────────────────────────────────────────────────────────────────────────
+
+describe('a gate that replaces the id filter (accounts-style)', () => {
+  it('never widens a get to records that were not asked for', async () => {
+    ctx.userId = ALICE;
+    expect(await handleGet({ collectionName: overridingNotes.name, ids: [aliceRed.id, bobGreen.id] })).toEqual([aliceRed.id]);
+    expect(pushedIds(overridingNotes.name)).toEqual([aliceRed.id]);
+  });
+
+  it('gives getAll exactly the caller\'s records', async () => {
+    ctx.userId = BOB;
+    expect(await handleGetAll({ collectionName: overridingNotes.name })).toEqual([bobGreen.id]);
+  });
+});
+
+describe('an $or gate', () => {
+  it('lets through each branch of the gate, and nothing else', async () => {
+    ctx.userId = ALICE;
+    // Alice's own notes, plus Bob's green one through the colour branch.
+    expect([...await handleGetAll({ collectionName: eitherNotes.name })].sort()).toEqual([aliceBlue.id, aliceRed.id, bobGreen.id].sort());
+    await notesIn(eitherNotes.name).upsert({ id: 'bob-yellow', ownerId: BOB, colour: 'yellow' });
+    expect(await handleGet({ collectionName: eitherNotes.name, ids: ['bob-yellow', bobGreen.id] })).toEqual([bobGreen.id]);
+  });
+
+  it('cannot be widened by a client filter with its own $or', async () => {
+    ctx.userId = ALICE;
+    await notesIn(eitherNotes.name).upsert({ id: 'bob-yellow', ownerId: BOB, colour: 'yellow' });
+    await handleDistinct({ collectionName: eitherNotes.name, field: 'colour', filters: { $or: [{ ownerId: BOB }, { ownerId: ALICE }] } as DataFilters<Note> });
+    expect(pushedIds(eitherNotes.name)).not.toContain('bob-yellow');
   });
 });

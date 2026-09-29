@@ -99,6 +99,9 @@ export class ServerReceiver {
     // this C2S call will be evaluated against this mirror when we resume.
     const mirrorFilters = this.#buildMirrorFilter(request);
     if (mirrorFilters.length > 0) serverDispatcher.updateFilter(mirrorFilters);
+    // The mirror just subscribed the client to every id it CLAIMED. Until the read gate has vetted those claims
+    // (step 5b), a throw must not leave an unvetted one in the filter: fail closed (see the `finally`).
+    let areClaimsVetted = this.#props.onFilterReadable == null;
     const mirrorMs = Math.round(performance.now() - processT0);
 
     try {
@@ -317,6 +320,7 @@ export class ServerReceiver {
         .map(({ collectionName, records }) => ({ collectionName, recordIds: records.map(({ id }) => id).filter(id => !isReadable(collectionName, id)) }))
         .filter(({ recordIds }) => recordIds.length > 0);
       if (unreadable.length > 0) serverDispatcher.removeFromFilter(unreadable);
+      areClaimsVetted = true;
 
       const persistSuccessMap = new Map<string, Set<string>>();
       for (const item of updateResponse) persistSuccessMap.set(item.collectionName, new Set(item.successfulRecordIds));
@@ -442,6 +446,9 @@ export class ServerReceiver {
       this.#logger.debug('[SR] process threw — SD will be resumed', { srId, error: err instanceof Error ? err.message : String(err) });
       throw err;
     } finally {
+      // Fail closed: forget every claim of this request. The client resends them on its retry and they are
+      // mirrored (and vetted) again then; meanwhile a claim cannot pull an unreadable record's changes.
+      if (!areClaimsVetted) serverDispatcher.removeFromFilter(this.#claimedIds(request));
       // Step 8: Resume the SD unconditionally.
       serverDispatcher.resume();
     }
@@ -472,6 +479,11 @@ export class ServerReceiver {
       }
     }
     return [...byCollection.values()];
+  }
+
+  /** Every record id `request` names, per collection. */
+  #claimedIds(request: ClientDispatcherRequest): MXDBRecordStatesRequest {
+    return request.map(({ collectionName, records }) => ({ collectionName, recordIds: records.map(({ id }) => id) }));
   }
 
   /** The ids per collection this client may read, or `undefined` when the server supplies no read gate. */

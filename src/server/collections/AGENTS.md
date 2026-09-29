@@ -51,6 +51,8 @@ Write a gate as a pure rewrite of the request — AND your scope onto `request.f
 
 **C2S sync** consults the gate too (`actions/filterReadableRecordIds.ts` → the `ServerReceiver`'s `onFilterReadable`): a sync request naming a record the caller may not read is never answered with its content, and does not subscribe the client to its changes (see `common/sync-engine/AGENTS.md`, "The read gate").
 
+**Writes are gated by it too.** A synced update or delete to a record whose STORED version is outside the caller's gate is refused before it is persisted (`actions/rejectWritesOutsideReadGate.ts`), reported in `rejectedRecords` and not pushed back. Creating a record is always allowed. Anything that must legitimately change a record outside the caller's read scope belongs in a server action.
+
 **Not covered by the gate:** a record already on a device that later leaves the gate keeps receiving change-stream updates while the client's subscriptions hold it (sc-584). Do not rely on the gate to revoke access to records a device already holds.
 
 ## Server query hints (`serverHints`)

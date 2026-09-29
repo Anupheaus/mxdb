@@ -17,6 +17,8 @@ Each file registers one socket action using `createServerActionHandler`. Actions
 ### Sync actions
 - `clientToServerSyncAction.ts` — `mxdbClientToServerSyncAction` — receives a `ClientDispatcherRequest`, delegates to `ServerReceiver.process()`, returns `MXDBSyncEngineResponse`. The most critical action — serialises concurrent syncs per record id to prevent lost-write races.
 - `filterReadableRecordIds.ts` — the C2S read gate: of a sync request's record ids, those the caller may read (each collection's `onQuery` via `useQueryGate`, AND-ed with the ids); the `ServerReceiver` never pushes the rest and drops them from the dispatcher filter
+- `rejectWritesOutsideReadGate.ts` — the C2S write gate: refuses an update or delete to a record whose stored version the caller may not read (creates are allowed); runs before the before-write hooks, whose runner skips the refused ids (`excludedIds`)
+- `assertValidSyncRequest.ts` — refuses a C2S request whose shape a client would not send (e.g. an operator object as a record id) before anything is mirrored or queried
 - `runBeforeWriteHooksOnSyncStates.ts` — runs the collections' `onBeforeDelete` / `onBeforeUpsert` hooks on a C2S batch before it is persisted (see [../collections/AGENTS.md](../collections/AGENTS.md)); an amendment replaces the state's record and appends an `Updated` audit entry, in place, so the `ServerReceiver` pushes the amended record back to the client
 - `reconcileAction.ts` — `mxdbReconcileAction` — reconciles a client's claimed state against the server; used on reconnect to detect divergence
 

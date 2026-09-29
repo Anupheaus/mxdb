@@ -38,7 +38,11 @@ A sync request can name any record id — a branch-only probe claiming a stale h
 - sends **no active cursor** — its content never reaches the client. Delete cursors still go: they carry no content, and a missing record must still leave the device.
 - **removes it from the `ServerDispatcher` filter** (`removeFromFilter`) that the mirror seeded from the client's claim, so claiming an id does not subscribe the client to its change-stream updates. This is not a delete: no tombstone, and the client's own copy is left alone (revoking it is sc-584).
 
-The record is still acknowledged in `successfulRecordIds`, and its write still runs — write authorisation is the before-write hooks' job. Without `onFilterReadable` (unit tests, ungated servers) every record is readable.
+The record is still acknowledged in `successfulRecordIds`. (On the server, an update or delete to a record whose STORED version is outside the gate is refused before it is persisted — `server/actions/rejectWritesOutsideReadGate.ts`.) Without `onFilterReadable` (unit tests, ungated servers) every record is readable.
+
+**Fail closed.** The mirror subscribes the client to every id it claims before any await. If `process` throws before the gate has vetted those claims (a failed retrieve, a gate that throws), the `finally` removes every claimed id of the request from the filter before resuming; the client re-claims them on its retry.
+
+**Pauses nest.** `ServerDispatcher.pause()` is re-entrant (a depth count): overlapping C2S syncs on one socket each pause it, and dispatch resumes only when the last one resumes — otherwise the first to finish would release a claim the other had mirrored but not yet vetted.
 
 ## Retry backoff (C2S)
 

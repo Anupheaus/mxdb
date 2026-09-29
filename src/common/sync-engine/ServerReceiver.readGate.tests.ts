@@ -168,3 +168,52 @@ describe('ServerReceiver and the read gate', () => {
     expect(pushedRecordIds().sort()).toEqual([readable.id, gated.id].sort());
   });
 });
+
+describe('ServerReceiver fails closed on the read gate', () => {
+  /** Both notes change: which of them reaches the client through the change stream? */
+  async function changeStreamReaches(): Promise<string[]> {
+    dispatched = [];
+    changeStreamPush({ ...gated, text: 'secret, changed' });
+    changeStreamPush({ ...readable, text: 'my note, changed' });
+    await drain();
+    return pushedRecordIds();
+  }
+
+  it('leaves no claim subscribed when the read gate itself throws', async () => {
+    const throwingGate = async (): Promise<MXDBRecordStatesRequest> => { throw new Error('gate lookup failed'); };
+    const sr = new ServerReceiver(logger, { onRetrieve, onUpdate, onFilterReadable: throwingGate, serverDispatcher: sd });
+    await expect(sr.process([{ collectionName: COLLECTION, records: [probe(gated.id), probe(readable.id)] }])).rejects.toThrow('gate lookup failed');
+    await drain();
+    expect(pushedRecordIds()).toEqual([]);
+    // Every claim is forgotten — the readable one too; the client re-claims it on its retry.
+    expect(await changeStreamReaches()).toEqual([]);
+  });
+
+  it('leaves no claim subscribed when the sync throws before the gate is reached', async () => {
+    const failingRetrieve = async (): Promise<MXDBRecordStates> => { throw new Error('database unavailable'); };
+    const sr = new ServerReceiver(logger, { onRetrieve: failingRetrieve, onUpdate, onFilterReadable, serverDispatcher: sd });
+    await expect(sr.process([{ collectionName: COLLECTION, records: [probe(gated.id)] }])).rejects.toThrow('database unavailable');
+    expect(await changeStreamReaches()).toEqual([]);
+  });
+
+  it('does not let one sync finishing release a claim another, overlapping sync has not vetted yet', async () => {
+    // The second sync's gate is held open until the test releases it.
+    let releaseGate!: () => void;
+    const gateHeld = new Promise<void>(resolve => { releaseGate = resolve; });
+    const slowGate = async (request: MXDBRecordStatesRequest): Promise<MXDBRecordStatesRequest> => { await gateHeld; return onFilterReadable(request); };
+    const slow = new ServerReceiver(logger, { onRetrieve, onUpdate, onFilterReadable: slowGate, serverDispatcher: sd });
+
+    const slowSync = slow.process([{ collectionName: COLLECTION, records: [probe(gated.id)] }]);
+    await receiver().process([{ collectionName: COLLECTION, records: [probe(readable.id)] }]);
+    // The first sync has finished and resumed its pause — but the second still holds the dispatcher.
+    changeStreamPush({ ...gated, text: 'secret, changed' });
+    await drain();
+    expect(pushedRecordIds()).toEqual([]);
+
+    releaseGate();
+    await slowSync;
+    await drain();
+    // Vetted: the gated claim is dropped before the dispatcher resumes, so its change never goes out.
+    expect(pushedRecordIds()).toEqual([readable.id]);
+  });
+});

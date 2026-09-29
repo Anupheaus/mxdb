@@ -59,6 +59,23 @@ describe('ServerDispatcher resume without a prior pause', () => {
   });
 });
 
+describe('ServerDispatcher nested pauses', () => {
+  it('holds dispatch until every pause has been released', async () => {
+    const { sd, dispatched } = makeAckingDispatcher();
+    sd.pause();
+    sd.pause();
+    sd.push(batch(active('r1', 'u1')));
+
+    sd.resume();
+    await vi.runAllTimersAsync();
+    expect(dispatched).toEqual([]);
+
+    sd.resume();
+    await vi.runAllTimersAsync();
+    expect(dispatched).toEqual([batch(active('r1', 'u1'))]);
+  });
+});
+
 // ─── Squashing queued cursors ─────────────────────────────────────────────────
 
 describe('ServerDispatcher squashing of queued cursors', () => {
