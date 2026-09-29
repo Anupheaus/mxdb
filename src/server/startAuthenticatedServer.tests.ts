@@ -25,6 +25,8 @@ const nexus = vi.hoisted(() => ({
   socketAuthCtx: undefined as unknown as SocketAuthCtx,
   impersonatedUsers: [] as unknown[],
   emittedS2C: [] as unknown[],
+  /** nexus's per-connection auth data: the session token nexus validated when it signed the socket in. */
+  authData: undefined as { token?: string; } | undefined,
 }));
 
 vi.mock('@anupheaus/nexus/server', async importOriginal => ({
@@ -44,6 +46,7 @@ vi.mock('@anupheaus/nexus/server', async importOriginal => ({
   }),
   useAction: () => async (payload: unknown) => { nexus.emittedS2C.push(payload); },
   useAuthentication: () => nexus.socketAuthCtx,
+  useAuthData: () => nexus.authData,
 }));
 
 // ─── db boundary ─────────────────────────────────────────────────────────────
@@ -155,6 +158,7 @@ const USER: MXDBUser = { id: 'user-1' } as MXDBUser;
 const ACCOUNT: MXDBAccount = { id: 'account-1' } as MXDBAccount;
 
 beforeEach(() => {
+  nexus.authData = { token: 'tok-1' };
   nexus.impersonatedUsers.length = 0;
   nexus.emittedS2C.length = 0;
   db.setDbCalls.length = 0;
@@ -512,13 +516,15 @@ describe('startAuthenticatedServer — client connection', () => {
       return { onConnected, onGetAccountDetails, findBySessionToken, authCtx };
     }
 
-    it.each([
-      ['nexus_session cookie', { cookie: 'nexus_session=tok-1' }],
-      ['legacy socketapi_session cookie', { cookie: 'other=1; socketapi_session=tok-1' }],
-      ['handshake auth sessionToken', { sessionToken: 'tok-1' }],
-    ])('looks the session up from the %s', async (_label, socketOptions) => {
-      const { findBySessionToken } = await connectWithoutAccount({ socket: makeSocket(socketOptions), record: authRecord({ accountId: 'account-1' }) });
-      expect(findBySessionToken).toHaveBeenCalledWith('tok-1');
+    // The account comes from the session nexus signed the socket in with, never from other tokens the handshake carries:
+    // a client can send its own valid session and another record's token in a second cookie or in its auth.
+    it('looks the session up by the token nexus validated, ignoring every other token in the handshake', async () => {
+      nexus.authData = { token: 'tok-1' };
+      const socket = makeSocket({ cookie: 'socketapi_session=someone-elses', sessionToken: 'another-one' });
+
+      const { findBySessionToken } = await connectWithoutAccount({ socket, record: authRecord({ accountId: 'account-1' }) });
+
+      expect(findBySessionToken.mock.calls).toEqual([['tok-1']]);
     });
 
     it('uses the account recorded against the session\'s auth record', async () => {
@@ -545,8 +551,17 @@ describe('startAuthenticatedServer — client connection', () => {
       expect(onConnected).toHaveBeenCalledWith({ user: USER, account: undefined });
     });
 
+    it('connects without an account when nexus holds no validated session token', async () => {
+      nexus.authData = {};
+      const { onConnected, onGetAccountDetails, findBySessionToken } = await connectWithoutAccount({
+        socket: makeSocket({ cookie: 'nexus_session=tok-1' }), record: authRecord({ accountId: 'account-1' }),
+      });
+
+      expect({ lookups: findBySessionToken.mock.calls.length, accountLookups: onGetAccountDetails.mock.calls.length }).toEqual({ lookups: 0, accountLookups: 0 });
+      expect(onConnected).toHaveBeenCalledWith({ user: USER, account: undefined });
+    });
+
     it.each([
-      ['there is no session token', {}, authRecord({ accountId: 'account-1' })],
       ['the session has no auth record', { cookie: 'nexus_session=tok-1' }, undefined],
       ['the auth record has no account', { cookie: 'nexus_session=tok-1' }, authRecord()],
     ])('connects without an account when %s', async (_label, socketOptions, record) => {

@@ -7,6 +7,7 @@ import { internalActions } from './actions';
 import {
   startServer as startSocketServer,
   useAction,
+  useAuthData,
   useAuthentication as useSocketAuthentication,
 } from '@anupheaus/nexus/server';
 import { defineAuthentication } from '@anupheaus/nexus/server';
@@ -26,7 +27,6 @@ import type { AuthCollection } from './auth/AuthCollection';
 import type { NexusAuthRecord } from '@anupheaus/nexus/common';
 import { Logger } from '@anupheaus/common';
 import type { MXDBAccount, MXDBUser } from '../common/models';
-import { parseSessionTokenFromHandshake } from './auth/parseSessionTokenFromHandshake';
 import { registerMcpRoutes } from './mcp/McpRouter';
 import { mxdbAdminClientSqlQueryAction } from '../common/mcpActions';
 import type { MXDBRemoteSqliteQueryRequest, MXDBRemoteSqliteQueryResponse } from '../common/mcpModels';
@@ -74,15 +74,6 @@ interface Props extends ServerConfig {
   /** Pool of per-tenant `ServerDb` instances for connections routed via `resolveConnectionDb`.
    *  Never populated when `resolveConnectionDb` is not supplied. */
   dbPool: ConnectionDbPool;
-}
-
-function parseSessionToken(client: Socket): string | undefined {
-  return parseSessionTokenFromHandshake({
-    cookieHeader: client.handshake.headers.cookie as string | undefined,
-    sessionTokenFromAuth: (client.handshake.auth as Record<string, unknown>)?.sessionToken as
-      | string
-      | undefined,
-  });
 }
 
 function buildOnGetUser(authConfig: ServerAuthConfig) {
@@ -258,11 +249,10 @@ export async function startAuthenticatedServer({
 
       if (socketAuthCtx.user != null) {
         if (socketAuthCtx.account == null && onGetAccountDetails != null) {
-          const sessionToken = parseSessionToken(client);
+          // The session nexus validated when it signed this socket in, never another token the handshake carries.
+          const sessionToken = useAuthData()?.token;
           if (sessionToken != null) {
-            // The token is read from the handshake here, not necessarily the one nexus signed the user in with (a client can
-            // send its own session and another record's token in a second cookie), so the record may name the account only
-            // when it is this user's and enabled.
+            // Defence in depth: the record may name the account only when it is this user's and enabled.
             const found = await authColl.findBySessionToken(sessionToken);
             const isOwnSession = found != null && found.isEnabled === true && found.userId === socketAuthCtx.user.id;
             if (found != null && !isOwnSession) {
