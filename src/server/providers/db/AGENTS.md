@@ -32,7 +32,7 @@ Change stream lifecycle:
 1. `ServerDb` opens a MongoDB change stream on startup.
 2. Each insert/update/delete event routes to the matching `ServerDbCollectionEvents` instance.
 3. `ServerDbCollectionEvents` accumulates events within `changeStreamDebounceMs` (default 20ms), then:
-   a. Runs `onAfterUpsert` / `onAfterDelete` hooks for all batched records.
+   a. Runs `onAfterUpsert` / `onAfterDelete` hooks for all batched records, scoped (`runInDbScope` + `setDb`) to the `ServerDb` that saw the change. The driver emits changes in whatever context the stream was started in — for a pooled tenant database that is the process default (the controller) — so without the scope a hook's `useDb()`/`useCollection()` would reach the wrong database (sc-621).
    b. Notifies registered callbacks (which trigger `ServerDispatcher.push` for each connected client).
 4. This two-step ensures clients are notified only after cascade effects have been applied.
 

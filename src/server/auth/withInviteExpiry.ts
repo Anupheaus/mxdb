@@ -1,13 +1,8 @@
-import type { WebAuthnAuthRecord, WebAuthnAuthStore } from '@anupheaus/nexus/common';
+import { isPendingWebAuthnInvite, type WebAuthnAuthRecord, type WebAuthnAuthStore } from '@anupheaus/nexus/common';
+import type { ClaimRegistrationOptions } from './WebAuthnAuthCollection';
 
-/**
- * A pending invite: created by `createInvite` and never registered. A registered device has a key hash or device
- * details, has connected, or has been enabled, and stays registered after sign-out or an admin disable, when only
- * `isEnabled` goes back to false.
- */
-function isPendingInvite(record: WebAuthnAuthRecord): boolean {
-  return record.isEnabled !== true && record.keyHash == null && record.deviceDetails == null && record.lastConnectedAt == null;
-}
+/** A store's `claimRegistration` that also takes the invite-lifetime condition, as `WebAuthnAuthCollection`'s does. */
+type ClaimRegistration = (registrationToken: string, patch: Partial<WebAuthnAuthRecord>, options?: ClaimRegistrationOptions) => Promise<WebAuthnAuthRecord | undefined>;
 
 /** Refuses anything but a positive, finite lifetime, so a typo cannot make invites never expire or always expire. */
 export function assertInviteTtlMs(inviteTtlMs: number): void {
@@ -17,28 +12,40 @@ export function assertInviteTtlMs(inviteTtlMs: number): void {
 }
 
 /**
- * The WebAuthn store nexus redeems invites through. The two finders the redemption uses — `findById` (opening the invite
- * link) and `findByRegistrationToken` (finishing registration) — return a record ONLY when it is a pending invite younger
- * than `inviteTtlMs`:
- * - an older invite, or one with no `createdAt` (it cannot be dated), is not found, even before
- *   `expireStalePendingInvites` deletes it;
- * - a registered device is never found, however it is disabled: its record keeps the invite's `requestId` (the
- *   `?requestId=` in the emailed link), so returning it would let whoever holds the old link register over it after a
- *   sign-out or an admin disable.
+ * The WebAuthn store nexus redeems invites through. Every step of the redemption sees ONLY a pending invite (nexus's
+ * `isPendingWebAuthnInvite`) younger than `inviteTtlMs`:
+ * - `findById` (opening the invite link) and `findByRegistrationToken` (finishing registration) return nothing else;
+ * - `claimRegistration` (the atomic registration write) matches nothing else, so an invite opened inside the lifetime
+ *   but finished after it is refused. A store without `claimRegistration` stays without it, and nexus falls back to a
+ *   find (gated as above) then an update.
+ *
+ * So an older invite, or one with no numeric `createdAt` (it cannot be dated), cannot be redeemed, even before
+ * `expireStalePendingInvites` deletes it. A registered device can never be redeemed again, however it is disabled: its
+ * record keeps the invite's `requestId` (the `?requestId=` in the emailed link), so returning it would let whoever holds
+ * the old link register over it after a sign-out or an admin disable.
  *
  * Every other lookup (`findBySessionToken`, `findByKeyHash`, …) passes through unchanged, and device management uses the
  * unwrapped collection.
  */
-export function withInviteExpiry<TStore extends WebAuthnAuthStore>(store: TStore, inviteTtlMs: number, now: () => number = Date.now): TStore {
+export function withInviteExpiry<TStore extends WebAuthnAuthStore>(store: TStore, inviteTtlMs: number, now: () => number = () => Date.now()): TStore {
   assertInviteTtlMs(inviteTtlMs);
+  const createdSince = () => now() - inviteTtlMs;
   const asRedeemableInvite = (record: WebAuthnAuthRecord | undefined): WebAuthnAuthRecord | undefined => {
-    if (record == null || !isPendingInvite(record)) return undefined;
-    return record.createdAt != null && record.createdAt >= now() - inviteTtlMs ? record : undefined;
+    if (record == null || !isPendingWebAuthnInvite(record)) return undefined;
+    // Only a numeric creation time dates an invite: JavaScript would compare a string one by coercing it.
+    return typeof record.createdAt === 'number' && record.createdAt >= createdSince() ? record : undefined;
   };
   return new Proxy(store, {
     get(target, property) {
       if (property === 'findById' || property === 'findByRegistrationToken') {
         return async (key: string) => asRedeemableInvite(await target[property](key));
+      }
+      if (property === 'claimRegistration') {
+        const claim = Reflect.get(target, property, target) as ClaimRegistration | undefined;
+        if (typeof claim !== 'function') return undefined;
+        // The store applies the lifetime inside its atomic write, so a claim that succeeds was pending and in date then.
+        return (registrationToken: string, patch: Partial<WebAuthnAuthRecord>) =>
+          claim.call(target, registrationToken, patch, { createdSince: createdSince() });
       }
       const value = Reflect.get(target, property, target);
       return typeof value === 'function' ? value.bind(target) : value;
