@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { WebAuthnAuthRecord, WebAuthnAuthStore } from '@anupheaus/nexus/common';
 import { assertInviteTtlMs, withInviteExpiry } from './withInviteExpiry';
 
@@ -20,7 +20,7 @@ const registered = (overrides: Partial<WebAuthnAuthRecord> = {}) =>
   record({ isEnabled: true, keyHash: 'k1', deviceDetails: { name: 'Pixel' } as never, createdAt: NOW - 30 * TTL_MS, ...overrides });
 
 /** An in-memory store holding one record, found by any lookup alike. */
-function storeWith(held: WebAuthnAuthRecord) {
+function storeWith(held: WebAuthnAuthRecord, extra: Partial<WebAuthnAuthStore> = {}) {
   const calls: string[] = [];
   const store: WebAuthnAuthStore & { findByUserId(userId: string): Promise<WebAuthnAuthRecord[]>; } = {
     create: async () => undefined,
@@ -32,6 +32,7 @@ function storeWith(held: WebAuthnAuthRecord) {
     findByKeyHash: async () => held,
     // Proves unfiltered methods still run against the store itself (`this`).
     async findByUserId(this: unknown) { calls.push(this === store ? 'bound' : 'unbound'); return [held]; },
+    ...extra,
   } as never;
   return { store: withInviteExpiry(store, TTL_MS, () => NOW), calls };
 }
@@ -70,6 +71,44 @@ describe('withInviteExpiry', () => {
     const { store } = storeWith(device);
 
     expect([await store.findByKeyHash('k1'), await store.findBySessionToken('s')]).toEqual([device, device]);
+  });
+
+  it('claims a registration only inside the invite lifetime: the store is asked for invites created since then', async () => {
+    const claim = vi.fn(async () => record({}));
+    const { store } = storeWith(record({}), { claimRegistration: claim });
+
+    const claimed = await store.claimRegistration!('t', { keyHash: 'k1' });
+
+    expect({ claimed: claimed?.requestId, calls: claim.mock.calls }).toEqual({
+      claimed: 'r1',
+      calls: [['t', { keyHash: 'k1' }, { createdSince: NOW - TTL_MS }]],
+    });
+  });
+
+  it('refuses the registration when the store claims nothing (expired, already used, or registered since)', async () => {
+    const { store } = storeWith(record({}), { claimRegistration: async () => undefined });
+
+    expect(await store.claimRegistration!('t', { keyHash: 'k1' })).toBeUndefined();
+  });
+
+  it('reads the clock at every lookup by default, so an invite ages while the server runs (and under fake timers)', async () => {
+    vi.useFakeTimers({ now: NOW });
+    try {
+      const held = record({ createdAt: NOW });
+      const store = withInviteExpiry({ findById: async () => held } as unknown as WebAuthnAuthStore, TTL_MS);
+      const inDate = await store.findById('r1');
+      vi.setSystemTime(NOW + TTL_MS + 1);
+
+      expect([inDate?.requestId, await store.findById('r1')]).toEqual(['r1', undefined]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('adds no claim to a store without one, so nexus falls back to its gated find then update', () => {
+    const { store } = storeWith(record({}));
+
+    expect(store.claimRegistration).toBeUndefined();
   });
 
   it('leaves the other lookups running against the store itself', async () => {

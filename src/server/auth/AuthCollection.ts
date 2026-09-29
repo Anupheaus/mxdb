@@ -27,6 +27,20 @@ function fromDoc<TRecord extends NexusAuthRecord>(doc: AuthDoc<TRecord>): TRecor
   return { requestId: _id, ...rest } as unknown as TRecord;
 }
 
+/** The MongoDB update for a record patch: a field set to `undefined` is removed (`$unset`), every other field is `$set`. */
+export function toAuthRecordUpdate(patch: object): { $set?: Record<string, unknown>; $unset?: Record<string, 1>; } {
+  const setFields: Record<string, unknown> = {};
+  const unsetFields: Record<string, 1> = {};
+  for (const [key, value] of Object.entries(patch)) {
+    if (value === undefined) unsetFields[key] = 1;
+    else setFields[key] = value;
+  }
+  return {
+    ...(Object.keys(setFields).length > 0 ? { $set: setFields } : {}),
+    ...(Object.keys(unsetFields).length > 0 ? { $unset: unsetFields } : {}),
+  };
+}
+
 export abstract class AuthCollection<TRecord extends NexusAuthRecord> implements NexusAuthStore<TRecord> {
 
   /**
@@ -138,15 +152,7 @@ export abstract class AuthCollection<TRecord extends NexusAuthRecord> implements
 
   async update(requestId: string, patch: Partial<TRecord>): Promise<void> {
     const coll = await this.getColl();
-    const setFields: Record<string, unknown> = {};
-    const unsetFields: Record<string, 1> = {};
-    for (const [key, value] of Object.entries(patch)) {
-      if (value === undefined) unsetFields[key] = 1;
-      else setFields[key] = value;
-    }
-    const update: Record<string, unknown> = {};
-    if (Object.keys(setFields).length > 0) update['$set'] = setFields;
-    if (Object.keys(unsetFields).length > 0) update['$unset'] = unsetFields;
+    const update: Record<string, unknown> = toAuthRecordUpdate(patch);
     if (Object.keys(update).length > 0) {
       await coll.updateOne({ _id: requestId } as any, update);
     }
