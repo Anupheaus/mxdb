@@ -3,6 +3,7 @@ import {
   type MXDBRecordCursors,
   type MXDBActiveRecordCursor,
   type MXDBDeletedRecordCursor,
+  type MXDBRecordStatesRequest,
   type MXDBSyncEngineResponse,
   type ServerDispatcherFilter,
   type ServerDispatcherFilterRecord,
@@ -141,6 +142,20 @@ export class ServerDispatcher {
         // record from ever reaching the client (delete-is-final) until the SD is rebuilt (reconnect/restart).
         for (const id of filterItem.deletedRecordIds) this.#tombstone(colName, id, 'client-claimed-deletion(mirror)');
       }
+    }
+  }
+
+  /**
+   * SR-only: forget that the client holds these records, so change-stream fan-out stops reaching it for
+   * them. The ServerReceiver's mirror seeds every id a client CLAIMS to hold; for a record outside the
+   * collection's read gate a claim alone must not subscribe the client to its later changes. This is not
+   * a delete — tombstones are untouched and the client's copy is left as it is.
+   */
+  removeFromFilter(request: MXDBRecordStatesRequest): void {
+    for (const { collectionName, recordIds } of request) {
+      const colMap = this.#filter.get(collectionName);
+      if (colMap == null) continue;
+      for (const recordId of recordIds) colMap.delete(recordId);
     }
   }
 

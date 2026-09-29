@@ -49,7 +49,9 @@ Both run **before anything is persisted**, on the instance performing the write,
 
 Write a gate as a pure rewrite of the request — AND your scope onto `request.filters` rather than replacing an `id` filter — and have it return a filter that matches nothing for a caller it cannot resolve.
 
-**Not covered by the gate:** a record already on a device that later leaves the gate keeps receiving change-stream updates (the server dispatcher's filter still holds it), and the C2S sync path does not consult the gate. Both are tracked as follow-ups; do not rely on the gate to revoke access to records a device already holds.
+**C2S sync** consults the gate too (`actions/filterReadableRecordIds.ts` → the `ServerReceiver`'s `onFilterReadable`): a sync request naming a record the caller may not read is never answered with its content, and does not subscribe the client to its changes (see `common/sync-engine/AGENTS.md`, "The read gate").
+
+**Not covered by the gate:** a record already on a device that later leaves the gate keeps receiving change-stream updates while the client's subscriptions hold it (sc-584). Do not rely on the gate to revoke access to records a device already holds.
 
 ## Server query hints (`serverHints`)
 

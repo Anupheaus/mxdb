@@ -31,6 +31,15 @@ One SR + SD pair per connected client on the server. One CD + CR pair per client
 
 A C2S response item may carry `rejectedRecords: { id, reason }[]` — records a server collection before-write hook refused. They are ALSO in `successfulRecordIds`: the `ClientDispatcher` settles them like any acknowledged record (so they are never resent) and reports them through its `onRejected` prop. The server reverts them (the `ServerReceiver` reads the states `onUpdate` persisted back — `onUpdate` may amend a state in place or replace it with a state for the same record — and pushes the reverted record, or a delete for a rejected create, to the client). Older clients ignore the field and still settle the records.
 
+## The read gate (C2S)
+
+A sync request can name any record id — a branch-only probe claiming a stale hash, or an update — and the `ServerReceiver` answers a disparity with the stored (or merged) record. So the server passes `onFilterReadable`: of the request's ids, those this client may read (the collection's `onQuery` gate, see `src/server/collections/AGENTS.md`). The receiver calls it **after** persisting (a record the client just created is judged as stored) and then, for every id outside it:
+
+- sends **no active cursor** — its content never reaches the client. Delete cursors still go: they carry no content, and a missing record must still leave the device.
+- **removes it from the `ServerDispatcher` filter** (`removeFromFilter`) that the mirror seeded from the client's claim, so claiming an id does not subscribe the client to its change-stream updates. This is not a delete: no tombstone, and the client's own copy is left alone (revoking it is sc-584).
+
+The record is still acknowledged in `successfulRecordIds`, and its write still runs — write authorisation is the before-write hooks' job. Without `onFilterReadable` (unit tests, ungated servers) every record is readable.
+
 ## Retry backoff (C2S)
 
 The `ClientDispatcher` tracks consecutive failures per queued record — a dispatch that throws, or a response that does not acknowledge the record. The first `SYNC_FAST_RETRY_ATTEMPTS` retries run at the normal timer interval (transient blips); after that the delay doubles from `SYNC_RETRY_BASE_DELAY_MS` up to `SYNC_RETRY_MAX_DELAY_MS` (`syncRetryPolicy.ts`). A backing-off record is left out of dispatches until its retry is due and never holds up other records (an enqueue of a due record brings a long wait forward). After `SYNC_ATTEMPTS_BEFORE_STALLED` attempts it is reported once through `onStalled` (the client surfaces it as an `onError` `SYNC_STALLED` error) — and keeps retrying; nothing is ever dropped. The start-up sweep backs off the same way and reports without a record id. `stop()` forgets all backoff state (a new session re-sweeps).

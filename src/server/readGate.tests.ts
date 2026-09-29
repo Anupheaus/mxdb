@@ -6,6 +6,8 @@ import { defineCollection } from '../common/defineCollection';
 import type { DistinctRequest, MXDBOnChangeEvent, QueryProps } from '../common';
 import { extendCollection } from './collections/extendCollection';
 import { ServerDbCollection } from './providers/db/ServerDbCollection';
+import { ServerDispatcher, type ClientDispatcherRequest, type MXDBRecordCursors } from '../common/sync-engine';
+import { AuditEntryType, type AuditEntry } from '../common/auditor';
 
 /**
  * A collection's `onQuery` hook is the app's read gate (e.g. "a fitter sees only their own tasks"). It must
@@ -21,8 +23,8 @@ interface Note extends Record {
   colour: string;
 }
 
-const gatedNotes = defineCollection<Note>({ name: 'read_gate_notes', indexes: [], disableAudit: true });
-const openNotes = defineCollection<Note>({ name: 'read_gate_open_notes', indexes: [], disableAudit: true });
+const gatedNotes = defineCollection<Note>({ name: 'read_gate_notes', indexes: [] });
+const openNotes = defineCollection<Note>({ name: 'read_gate_open_notes', indexes: [] });
 const COLLECTIONS = [gatedNotes, openNotes];
 
 /** The id no record carries, so a filter on it matches nothing. */
@@ -48,6 +50,9 @@ const ctx = vi.hoisted(() => ({
   changeListeners: [] as ((event: unknown) => void)[],
   pushedActive: [] as { collectionName: string; ids: string[] }[],
   pushedDeletes: [] as { collectionName: string; ids: string[] }[],
+  /** The client connection's S2C dispatcher (a real one; set per test), for the C2S sync path. */
+  dispatcher: undefined as unknown,
+  dispatched: [] as MXDBRecordCursors[],
   clientData: new Map<string, unknown>(),
 }));
 
@@ -58,7 +63,10 @@ vi.mock('@anupheaus/nexus/server', async importOriginal => ({
     if (ctx.hasNoAuthContext) throw new Error('no auth context outside a request');
     return { user: ctx.userId == null ? undefined : { id: ctx.userId } };
   },
-  useLogger: () => ({ warn: () => void 0, error: () => void 0, info: () => void 0, debug: () => void 0, silly: () => void 0 }),
+  useLogger: () => {
+    const quiet = { warn: () => void 0, error: () => void 0, info: () => void 0, debug: () => void 0, silly: () => void 0, createSubLogger: () => quiet };
+    return quiet;
+  },
 }));
 
 vi.mock('./providers', () => ({
@@ -75,6 +83,7 @@ vi.mock('./providers', () => ({
   }),
   useServerToClientSynchronisation: () => ({
     isNoOp: false,
+    dispatcher: ctx.dispatcher,
     pushActive: async (collectionName: string, records: Record[]) => { ctx.pushedActive.push({ collectionName, ids: records.map(({ id }) => id) }); },
     pushDeletes: async (collectionName: string, ids: string[]) => { ctx.pushedDeletes.push({ collectionName, ids }); },
   }),
@@ -98,6 +107,7 @@ const { handleReconcile } = await import('./actions/reconcileAction');
 const { serverGetAllSubscription } = await import('./subscriptions/getAllSubscription');
 const { serverDistinctSubscription } = await import('./subscriptions/distinctSubscription');
 const { serverQuerySubscription } = await import('./subscriptions/querySubscription');
+const { handleClientToServerSync } = await import('./actions/clientToServerSyncAction');
 
 // ─── Database ───────────────────────────────────────────────────────────────────────────────────────────
 
@@ -144,6 +154,7 @@ function notesIn(name: string): ServerDbCollection<Note> {
 beforeEach(async () => {
   for (const { name } of COLLECTIONS) {
     await client.db('readgatedb').collection(name).deleteMany({});
+    await client.db('readgatedb').collection(`${name}_sync`).deleteMany({});
     await notesIn(name).upsert(ALL_NOTES);
   }
   ctx.userId = undefined;
@@ -151,6 +162,13 @@ beforeEach(async () => {
   ctx.changeListeners = [];
   ctx.pushedActive = [];
   ctx.pushedDeletes = [];
+  ctx.dispatched = [];
+  ctx.dispatcher = new ServerDispatcher(logger, {
+    onDispatch: async payload => {
+      ctx.dispatched.push(payload as MXDBRecordCursors);
+      return payload.map(({ collectionName, records }) => ({ collectionName, successfulRecordIds: records.map(cursor => ('record' in cursor ? cursor.record.id : cursor.recordId)) }));
+    },
+  });
   ctx.clientData.clear();
 });
 
@@ -354,5 +372,62 @@ describe('query subscription (the path that already applied the gate)', () => {
     ctx.userId = BOB;
     await handler(subscriptionParams({ collectionName: gatedNotes.name }));
     expect(pushedIds()).toEqual([bobGreen.id]);
+  });
+});
+
+// ─── C2S sync (sc-583) ──────────────────────────────────────────────────────────────────────────────────
+
+describe('client-to-server sync', () => {
+  /** Sorts before every generated ULID, so the server's version always looks newer than the client's claim. */
+  const EARLIEST_ULID = '00000000000000000000000000';
+
+  /** A branch-only probe: the client claims to hold `id` at a hash that is not the server's. */
+  function probe(id: string): ClientDispatcherRequest[0]['records'][0] {
+    return { id, hash: 'stale-hash', entries: [{ type: AuditEntryType.Branched, id: EARLIEST_ULID } as AuditEntry] };
+  }
+
+  /** Every record id whose content was dispatched to the client. */
+  function dispatchedRecordIds(): string[] {
+    return ctx.dispatched.flatMap(payload => payload.flatMap(({ records }) => records.flatMap(cursor => ('record' in cursor ? [cursor.record.id] : [])))).sort();
+  }
+
+  /** Audits are written after the record (fire-and-forget); the sync path merges against them, so wait for them. */
+  async function auditsWritten(collectionName: string): Promise<void> {
+    await vi.waitFor(async () => expect(await client.db('readgatedb').collection(`${collectionName}_sync`).countDocuments()).toBe(ALL_NOTES.length), WAIT_FOR_PUSH);
+  }
+
+  function dispatcher(): ServerDispatcher {
+    return ctx.dispatcher as ServerDispatcher;
+  }
+
+  it('answers a probe for a record outside the gate with nothing, and does not subscribe the client to it', async () => {
+    await auditsWritten(gatedNotes.name);
+    ctx.userId = ALICE;
+    await handleClientToServerSync([{ collectionName: gatedNotes.name, records: [probe(bobGreen.id), probe(aliceRed.id)] }]);
+    await vi.waitFor(() => expect(dispatchedRecordIds()).toEqual([aliceRed.id]), WAIT_FOR_PUSH);
+
+    // Both notes change: only the one Alice may read reaches her through the change stream.
+    ctx.dispatched = [];
+    dispatcher().push([{ collectionName: gatedNotes.name, records: [{ record: { ...bobGreen, colour: 'teal' }, lastAuditEntryId: 'ZZZZZZZZZZZZZZZZZZZZZZZZZZ' }] }], false);
+    dispatcher().push([{ collectionName: gatedNotes.name, records: [{ record: { ...aliceRed, colour: 'pink' }, lastAuditEntryId: 'ZZZZZZZZZZZZZZZZZZZZZZZZZZ' }] }], false);
+    await vi.waitFor(() => expect(dispatchedRecordIds()).toEqual([aliceRed.id]), WAIT_FOR_PUSH);
+  });
+
+  it('answers a caller the server cannot identify with nothing from a gated collection', async () => {
+    await auditsWritten(gatedNotes.name);
+    await auditsWritten(openNotes.name);
+    // An ungated record in the same request is the signal the sync's push has gone out.
+    await handleClientToServerSync([
+      { collectionName: gatedNotes.name, records: [probe(bobGreen.id), probe(aliceRed.id)] },
+      { collectionName: openNotes.name, records: [probe(aliceBlue.id)] },
+    ]);
+    await vi.waitFor(() => expect(dispatchedRecordIds()).toEqual([aliceBlue.id]), WAIT_FOR_PUSH);
+  });
+
+  it('is unchanged for a collection without a gate', async () => {
+    ctx.userId = ALICE;
+    await auditsWritten(openNotes.name);
+    await handleClientToServerSync([{ collectionName: openNotes.name, records: [probe(bobGreen.id), probe(aliceRed.id)] }]);
+    await vi.waitFor(() => expect(dispatchedRecordIds()).toEqual([aliceRed.id, bobGreen.id].sort()), WAIT_FOR_PUSH);
   });
 });

@@ -32,6 +32,14 @@ interface ServerReceiverProps {
    * any `rejectedRecords` in the response through to the client.
    */
   onUpdate(records: MXDBRecordStates): Promise<MXDBSyncEngineResponse>;
+  /**
+   * The server's read gate (the collection's `onQuery`): of the given record ids, those this client may read.
+   * Called after persisting, so a record the client just wrote is judged as it is now stored. A record outside
+   * it is never pushed to the client — delete cursors still are, they carry no content — and is removed from
+   * the dispatcher's filter, so a client claiming an id it may not read is not subscribed to its changes.
+   * Absent: every record is readable.
+   */
+  onFilterReadable?(request: MXDBRecordStatesRequest): Promise<MXDBRecordStatesRequest>;
   serverDispatcher: ServerDispatcher;
 }
 
@@ -57,6 +65,8 @@ interface ServerReceiverProps {
  *         about, push the disparity cursor. Records whose first non-Branched entry
  *         is not Created and the server has no state are treated as server-origin
  *         ghosts and receive a delete cursor — client Created records are excluded.
+ * 4b. Read gate: resolve which of the request's records this client may read ({@link ServerReceiverProps.onFilterReadable}).
+ *    A record outside it gets no active cursor, and is removed from the SD filter the mirror seeded.
  * 5. All disparity pushes go through `sd.push(payload)` with the default
  *    `addToFilter=true`. Since the mirror set in step 2 has the client's old
  *    hash and the cursor carries the new (server/merged) hash, the SD's filter
@@ -299,6 +309,15 @@ export class ServerReceiver {
         item.mergedEntries = state.audit;
       }
 
+      // Step 5b: the read gate, judged on what is now stored. A client can name any id in a sync request; it
+      // must not be answered with, or subscribed to, a record it may not read.
+      const readableIds = await this.#resolveReadableIds(request);
+      const isReadable = (collectionName: string, recordId: string): boolean => readableIds == null || readableIds.get(collectionName)?.has(recordId) === true;
+      const unreadable: MXDBRecordStatesRequest = request
+        .map(({ collectionName, records }) => ({ collectionName, recordIds: records.map(({ id }) => id).filter(id => !isReadable(collectionName, id)) }))
+        .filter(({ recordIds }) => recordIds.length > 0);
+      if (unreadable.length > 0) serverDispatcher.removeFromFilter(unreadable);
+
       const persistSuccessMap = new Map<string, Set<string>>();
       for (const item of updateResponse) persistSuccessMap.set(item.collectionName, new Set(item.successfulRecordIds));
 
@@ -360,6 +379,7 @@ export class ServerReceiver {
         }
         if (isActiveRecordState(d.serverState)) {
           const serverHash = branchedHashByIdx.get(branchedActiveIdx++)!;
+          if (!isReadable(d.collectionName, d.recordId)) continue; // outside the read gate: never send its content
           if (serverHash === d.clientHash) continue; // already consistent
           const serverLastId = this.#getLastAuditEntryId(d.serverState.audit);
           const cursor: MXDBActiveRecordCursor & { hash: string } = {
@@ -386,6 +406,7 @@ export class ServerReceiver {
         const lastAuditEntryId = this.#getLastAuditEntryId(item.mergedEntries);
 
         if (item.liveRecord != null) {
+          if (!isReadable(colName, item.recordId)) continue; // outside the read gate: never send its content
           const mergedHash = persistedHashByKey.get(`${colName}::${item.recordId}`)!;
           if (mergedHash === item.clientHash) continue; // client already matches the merged state
           const cursor: MXDBActiveRecordCursor & { hash: string } = {
@@ -451,6 +472,21 @@ export class ServerReceiver {
       }
     }
     return [...byCollection.values()];
+  }
+
+  /** The ids per collection this client may read, or `undefined` when the server supplies no read gate. */
+  async #resolveReadableIds(request: ClientDispatcherRequest): Promise<Map<string, Set<string>> | undefined> {
+    const { onFilterReadable } = this.#props;
+    if (onFilterReadable == null) return undefined;
+    const recordsRequest: MXDBRecordStatesRequest = request
+      .map(({ collectionName, records }) => ({ collectionName, recordIds: [...new Set(records.map(({ id }) => id))] }))
+      .filter(({ recordIds }) => recordIds.length > 0);
+    const readableIds = new Map<string, Set<string>>();
+    if (recordsRequest.length === 0) return readableIds;
+    for (const { collectionName, recordIds } of await onFilterReadable(recordsRequest)) {
+      readableIds.set(collectionName, new Set([...(readableIds.get(collectionName) ?? []), ...recordIds]));
+    }
+    return readableIds;
   }
 
   #getLastAuditEntryId(entries: AuditEntry[]): string {

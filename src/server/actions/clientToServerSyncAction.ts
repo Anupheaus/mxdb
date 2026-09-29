@@ -18,6 +18,7 @@ import type { AnyAuditOf, AuditOf } from '../../common';
 import { isActiveRecordState } from '../../common/sync-engine';
 import { isTransientMongoCloseError } from '../utils/isTransientMongoCloseError';
 import { runBeforeWriteHooksOnSyncStates } from './runBeforeWriteHooksOnSyncStates';
+import { filterReadableRecordIds } from './filterReadableRecordIds';
 
 /**
  * Per-record promise chain — serialises concurrent C2S syncs for the same record across clients.
@@ -108,6 +109,10 @@ export async function handleClientToServerSync(request: ClientDispatcherRequest)
 
   const sr = new ServerReceiver(logger.createSubLogger('sr'), {
     serverDispatcher: s2c.dispatcher,
+
+    // The read gate: a sync request can name any record id, so the receiver answers (and subscribes the client
+    // to) only the records the collection's onQuery lets this caller read (sc-583).
+    onFilterReadable: filterReadableRecordIds,
 
     // Meta fast-path: project stored `_meta.hash` only — no full record fetch/deserialise. The
     // ServerReceiver uses this to confirm branched-only records whose hash already matches the client,
