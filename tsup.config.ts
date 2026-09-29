@@ -1,6 +1,7 @@
 import { defineConfig } from 'tsup';
 import { copyFile, mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
+import { WORKER_FILES } from './src/client/db-worker/worker-files';
 
 // The SQLite workers are started from the client bundle with
 // `new Worker(new URL('./sqlite-worker.ts', import.meta.url), { type: 'module' })`
@@ -16,12 +17,7 @@ import { join } from 'node:path';
 // (@sqlite.org/sqlite-wasm, ulidx) resolve from the consumer, exactly as in the dev build. Nothing in
 // this set imports outside db-worker at runtime, so a flat copy to dist is self-contained.
 const WORKER_SRC_DIR = 'src/client/db-worker';
-const WORKER_FILES = [
-  'sqlite-worker.ts',
-  'sqlite-shared-worker.ts',
-  'sqlite-worker-shared.ts',
-  'worker-messages.ts',
-];
+// The list lives beside the workers, where a test checks every relative import they make is in it.
 
 export default defineConfig({
   entry: {
