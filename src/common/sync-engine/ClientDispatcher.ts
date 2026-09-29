@@ -1,4 +1,4 @@
-import { AuthenticationError } from '@anupheaus/common';
+import { AuthenticationError, Error as AnsweredError } from '@anupheaus/common';
 import type { Logger, Record as MXDBRecord } from '@anupheaus/common';
 import { hashRecord } from '../auditor/hash';
 import {
@@ -59,8 +59,9 @@ interface BatchedDispatchResult {
   /** How many emits the server answered (each was settled). */
   answered: number;
   /**
-   * The emits that failed. Each failure leaves the others alone — a deterministically failing emit never starves the
-   * ones after it — except an authentication failure, after which nothing more is sent.
+   * The emits that failed. A failure the server answered leaves the others alone — a deterministically failing emit never
+   * starves the ones after it. An authentication failure, a timeout or a lost connection stops the rest (not sent, and
+   * not counted as failures: they wait for the next tick).
    */
   failures: FailedEmit[];
 }
@@ -483,8 +484,9 @@ export class ClientDispatcher {
   }
 
   /**
-   * Sends the emits one after another, settling each as its answer arrives. A failed emit does not stop the ones after
-   * it — unless the session is gone (an authentication failure), when nothing more is sent.
+   * Sends the emits one after another, settling each as its answer arrives. A failure the server answered (its error came
+   * back in the acknowledgement) does not stop the ones after it; anything else — an authentication failure, a timeout, a
+   * lost connection — does, since the next emit would only fail the same way.
    */
   async #dispatchInBatches(batches: DispatchBatch[], epoch: number): Promise<BatchedDispatchResult> {
     let answered = 0;
@@ -496,7 +498,8 @@ export class ClientDispatcher {
       } catch (error) {
         if (epoch !== this.#epoch) return { isStopped: true, answered, failures };
         failures.push({ error, states: batch.states });
-        if (error instanceof AuthenticationError) break;
+        // Only an error the server sent back (nexus rebuilds it as the common Error) means the connection still works
+        if (error instanceof AuthenticationError || !(error instanceof AnsweredError)) break;
         continue;
       }
       if (epoch !== this.#epoch) return { isStopped: true, answered, failures };

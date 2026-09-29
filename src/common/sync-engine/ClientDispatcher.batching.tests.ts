@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import '@anupheaus/common';
-import { to, type Logger } from '@anupheaus/common';
+import { Error as AnsweredError, to, type Logger } from '@anupheaus/common';
+import { SocketIOParser } from '@anupheaus/nexus/common';
 import { auditor } from '../auditor';
 
 vi.mock('../auditor/hash', () => ({
@@ -34,11 +35,14 @@ const recordOf = (id: string, bytes: number) => ({ id, body: 'x'.repeat(bytes) }
 /** A record carrying `bytes` of quotes — each costs four bytes on the wire, once nexus and socket.io have both encoded it. */
 const quotesRecordOf = (id: string, bytes: number) => ({ id, body: '"'.repeat(bytes) });
 
-/**
- * What an emit really costs on the socket: nexus sends `to.serialise(request)` (a JSON string) and socket.io's parser
- * JSON-encodes it again — measured here with the real encoders, not with the estimator under test.
- */
-const wireBytes = (request: ClientDispatcherRequest): number => new TextEncoder().encode(JSON.stringify(to.serialise(request))).length;
+/** nexus's own socket parser — what really encodes an emit. */
+const { Encoder } = new SocketIOParser({ logger });
+
+/** What an emit really costs on the socket, measured with nexus's encoder (not with the estimator under test). */
+const wireBytes = (request: ClientDispatcherRequest): number => {
+  const [encoded] = new Encoder().encode({ type: 2, id: 1, nsp: '/', data: ['nexus.actions.mxdbClientToServerSyncAction', request] });
+  return new TextEncoder().encode(String(encoded)).length;
+};
 
 type DispatchOutcome = (request: ClientDispatcherRequest) => Promise<MXDBSyncEngineResponse>;
 const acknowledgeAll: DispatchOutcome = async request => request.map(({ collectionName, records }) => ({ collectionName, successfulRecordIds: records.map(record => record.id) }));
@@ -136,20 +140,54 @@ describe('ClientDispatcher — dispatching a large backlog in socket-sized emits
     expect(harness.dispatches.length).toBe(dispatchCount);
   });
 
-  it('counts the double encoding: an escape-heavy record that looks under the limit but is not on the wire is refused', async () => {
-    // 3 MB of quotes: about 6 MB serialised once, about 12 MB on the wire — past the socket's 10 MB
-    const records = { quotes: quotesRecordOf('quotes', 3 * 1024 * 1024), plain: recordOf('plain', 100) };
+  it('sends an escape-heavy record that fits on the wire, alone, and refuses one that does not', async () => {
+    // 3 MB of quotes is about 6 MB on the wire (each quote escaped once); 5 MB of quotes is about 10 MB — past the limit
+    const records = { fits: quotesRecordOf('fits', 3 * 1024 * 1024), tooBig: quotesRecordOf('tooBig', 5 * 1024 * 1024), plain: recordOf('plain', 100) };
     const harness = await startHarness({ records });
 
     for (const id of Object.keys(records)) harness.cd.enqueue({ collectionName: 'photos', recordId: id });
     await vi.advanceTimersByTimeAsync(TIMER_INTERVAL_MS * 2);
 
-    const whatWouldBeSent = [{ collectionName: 'photos', records: [{ id: 'quotes', hash: 'mock-hash-quotes', entries: auditor.createAuditFrom(records.quotes).entries }] }];
-    expect(new TextEncoder().encode(JSON.stringify(whatWouldBeSent)).length).toBeLessThan(MAX_RECORD_DISPATCH_BYTES);
-    expect(wireBytes(whatWouldBeSent)).toBeGreaterThan(SOCKET_LIMIT_BYTES);
-    expect(harness.dispatches.flatMap(idsIn)).not.toContain('quotes');
-    expect(harness.onTooLarge).toHaveBeenCalledWith(expect.objectContaining({ recordId: 'quotes' }));
-    expect(harness.updated).toEqual(['plain']);
+    const sentWithFits = harness.dispatches.find(request => idsIn(request).includes('fits'))!;
+    expect(idsIn(sentWithFits)).toEqual(['fits']);
+    expect(wireBytes(sentWithFits)).toBeGreaterThan(MAX_DISPATCH_BYTES);
+    expect(wireBytes(sentWithFits)).toBeLessThan(MAX_RECORD_DISPATCH_BYTES);
+    expect(harness.dispatches.flatMap(idsIn)).not.toContain('tooBig');
+    expect(harness.onTooLarge.mock.calls.map(([refusal]) => refusal.recordId)).toEqual(['tooBig']);
+    expect(harness.updated.sort()).toEqual(['fits', 'plain']);
+  });
+
+  it('stops sending the rest of a dispatch after a timeout or lost connection — they wait for the next tick, not backed off', async () => {
+    const records = { a: recordOf('a', 800), b: recordOf('b', 800), c: recordOf('c', 800) };
+    const harness = await startHarness({ records, limits: { maxDispatchBytes: 1_500, maxRecordDispatchBytes: 10_000 } });
+    let isDown = true;
+    harness.setOutcome(async request => {
+      if (isDown && request.length > 0) { isDown = false; throw new globalThis.Error('mxdbClientToServerSyncAction timed out after 5000ms'); }
+      return acknowledgeAll(request);
+    });
+
+    for (const id of Object.keys(records)) harness.cd.enqueue({ collectionName: 'photos', recordId: id });
+    await vi.advanceTimersByTimeAsync(TIMER_INTERVAL_MS + 1);
+
+    // Only the first emit went out before the timeout stopped the dispatch
+    expect(harness.dispatches.map(idsIn).filter(ids => ids.length > 0)).toEqual([['a']]);
+    await vi.advanceTimersByTimeAsync(TIMER_INTERVAL_MS * 10);
+    expect(harness.updated.sort()).toEqual(['a', 'b', 'c']);
+  });
+
+  it('carries on past an emit the server answered with an error', async () => {
+    const records = { a: recordOf('a', 800), b: recordOf('b', 800) };
+    const harness = await startHarness({ records, limits: { maxDispatchBytes: 1_500, maxRecordDispatchBytes: 10_000 } });
+    harness.setOutcome(async request => {
+      if (idsIn(request).includes('a')) throw new AnsweredError({ message: 'the server could not write this one' });
+      return acknowledgeAll(request);
+    });
+
+    for (const id of Object.keys(records)) harness.cd.enqueue({ collectionName: 'photos', recordId: id });
+    await vi.advanceTimersByTimeAsync(TIMER_INTERVAL_MS + 1);
+
+    expect(harness.dispatches.map(idsIn).filter(ids => ids.length > 0)).toEqual([['a'], ['b']]);
+    expect(harness.updated).toEqual(['b']);
   });
 
   it('reports a too-large change once, not on every retry of the start-up sweep', async () => {
@@ -177,7 +215,7 @@ describe('ClientDispatcher — dispatching a large backlog in socket-sized emits
   it('never lets one emit that keeps failing in the start-up sweep starve the ones after it', async () => {
     const records = { bad: recordOf('bad', 800), a: recordOf('a', 800), b: recordOf('b', 800) };
     const failsOnBad: DispatchOutcome = async request => {
-      if (idsIn(request).includes('bad')) throw new Error('the server cannot take this one');
+      if (idsIn(request).includes('bad')) throw new AnsweredError({ message: 'the server cannot take this one' });
       return acknowledgeAll(request);
     };
     const harness = await startHarness({ records, startUpIds: ['bad', 'a', 'b'], limits: { maxDispatchBytes: 1_500, maxRecordDispatchBytes: 10_000 }, startUpOutcome: failsOnBad });
@@ -249,8 +287,7 @@ describe('batchDispatchRecords', () => {
   });
 
   it('measures UTF-8 bytes, not characters', () => {
-    // serialised once: "é" (4 bytes); encoded again: "\"é\"" (8 bytes)
-    expect(estimateDispatchBytes('é')).toBe(8);
-    expect(estimateDispatchBytes({ note: 'a"b' })).toBe(new TextEncoder().encode(JSON.stringify(to.serialise({ note: 'a"b' }))).length);
+    expect(estimateDispatchBytes('é')).toBe(4); // "é": two quotes and a two-byte character
+    expect(estimateDispatchBytes({ note: 'a"b', at: 'ü' })).toBe(new TextEncoder().encode(to.serialise({ note: 'a"b', at: 'ü' })).length);
   });
 });

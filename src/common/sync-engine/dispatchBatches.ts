@@ -69,18 +69,11 @@ function utf8Length(text: string): number {
 }
 
 /**
- * What a value costs on the wire, in bytes. nexus sends a payload as `to.serialise(...)` — a JSON string — and
- * socket.io's parser JSON-encodes that string again, so every `"` and `\` in it costs one byte more: an escaped or
- * embedded-JSON string can come close to twice its single-encoded size.
+ * What a value costs on the wire, in bytes: its JSON (`to.serialise`, so dates count as the strings they are sent as) in
+ * UTF-8. The dispatch request is an array, which the socket parser encodes once — it is not JSON-encoded twice.
  */
 export function estimateDispatchBytes(value: unknown): number {
-  const serialised = to.serialise(value) ?? '';
-  let escaped = 0;
-  for (let index = 0; index < serialised.length; index += 1) {
-    const code = serialised.charCodeAt(index);
-    if (code === 0x22 || code === 0x5c) escaped += 1;
-  }
-  return utf8Length(serialised) + escaped + 2;
+  return utf8Length(to.serialise(value) ?? '');
 }
 
 /**
