@@ -11,6 +11,7 @@ import {
   type MXDBRecordStatesRequest,
   type MXDBSyncEngineResponse,
   type MXDBSyncStall,
+  type MXDBSyncTooLarge,
   type MXDBUpdateRequest,
 } from '../../../common/sync-engine';
 import { ClientToServerSynchronisation } from './ClientToServerSynchronisation';
@@ -38,6 +39,18 @@ function toSyncStalledError({ attempts, reason, collectionName, recordId }: MXDB
     code: 'SYNC_STALLED',
     message: `${subject} failed to sync ${attempts} times in a row (${reason}); still retrying.`,
     severity: 'warning',
+    collection: collectionName,
+    recordId,
+  };
+}
+
+/** A change too large to ever sync, as the `SYNC_TOO_LARGE` error the app's `onError` receives. */
+function toSyncTooLargeError({ collectionName, recordId, bytes, limitBytes }: MXDBSyncTooLarge): MXDBError {
+  const megabytes = (value: number) => `${(value / (1024 * 1024)).toFixed(1)} MB`;
+  return {
+    code: 'SYNC_TOO_LARGE',
+    message: `A change to "${recordId}" in "${collectionName}" is too large to sync (${megabytes(bytes)}; the limit is ${megabytes(limitBytes)}). It was not sent and will not be retried.`,
+    severity: 'error',
     collection: collectionName,
     recordId,
   };
@@ -135,6 +148,7 @@ export const ClientToServerSyncProvider = createComponent('ClientToServerSyncPro
       onUnauthorized,
       onRejected: rejections => onSyncRejectedRef.current?.(rejections),
       onStalled: stall => onErrorRef.current?.(toSyncStalledError(stall)),
+      onTooLarge: refusal => onErrorRef.current?.(toSyncTooLargeError(refusal)),
     });
     return { cr, c2s };
     // Rebuilt per Db instance: DbsProvider swaps the Db whenever the encryption key changes (it can be

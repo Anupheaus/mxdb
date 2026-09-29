@@ -16,7 +16,8 @@ import type {
   MXDBSyncEngineResponse,
 } from './sync-engine';
 
-export const mxdbClientToServerSyncAction = defineAction<ClientDispatcherRequest, MXDBSyncEngineResponse>()('mxdbClientToServerSyncAction');
+// Socket only: an emit can be up to 4 MB (sc-623), far past the REST transport's 512 KB body limit
+export const mxdbClientToServerSyncAction = defineAction<ClientDispatcherRequest, MXDBSyncEngineResponse>()('mxdbClientToServerSyncAction', { transport: ['socket'] });
 export const mxdbServerToClientSyncAction = defineAction<MXDBRecordCursors, MXDBSyncEngineResponse>()('mxdbServerToClientSyncAction');
 export const mxdbReconcileAction = defineAction<ReconcileRequest, ReconcileResponse>()('mxdbReconcileAction');
 export const mxdbGetAction = defineAction<GetRequest, GetResponse>()('mxdbGetAction');
