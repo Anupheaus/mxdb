@@ -104,8 +104,17 @@ export abstract class AuthCollection<TRecord extends NexusAuthRecord> implements
       await this.createIndexes(coll);
       return coll;
     }
-    return db.collection<AuthDoc<TRecord>>(COLLECTION_NAME);
+    const coll = db.collection<AuthDoc<TRecord>>(COLLECTION_NAME);
+    await this.upgradeExisting(coll);
+    return coll;
   }
+
+  /**
+   * Brings a collection an earlier version created up to date: runs once per database per process, the first time this
+   * instance opens it. Non-abstract no-op, so subclasses override only what they need. An override must not throw for
+   * work that can wait: a failure here fails every auth query on that database until the next attempt.
+   */
+  protected async upgradeExisting(_coll: Collection<AuthDoc<TRecord>>): Promise<void> { /* nothing to upgrade */ }
 
   // Non-abstract so subclasses can call super.createIndexes() before adding their own.
   protected async createIndexes(coll: Collection<AuthDoc<TRecord>>): Promise<void> {
