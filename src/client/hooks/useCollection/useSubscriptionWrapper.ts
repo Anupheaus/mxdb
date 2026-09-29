@@ -85,14 +85,14 @@ export function useSubscriptionWrapper<RecordType extends Record, Request extend
 
     const execute = async () => {
       if (disable) {
-        return onDefaultResponse();
+        return freezeInDevelopment(onDefaultResponse());
       }
       const requestId = lastRequestIdRef.current = Math.uniqueId();
       const startTime = DateTime.now();
       const response = await onExecute(request);
       if (lastRequestIdRef.current !== requestId) return RequestCancelled;
       const timeTaken = DateTime.now().diff(startTime).milliseconds;
-      if (disable) return onDefaultResponse();
+      if (disable) return freezeInDevelopment(onDefaultResponse());
       if (slowThreshold != null && timeTaken > slowThreshold) {
         logger.warn(`[${requestId}] Query on collection "${collection.name}" took ${timeTaken}ms`, props);
       }
@@ -174,7 +174,7 @@ export function useSubscriptionWrapper<RecordType extends Record, Request extend
     }
 
     let result = await execute();
-    if (result === RequestCancelled) result = onDefaultResponse();
+    if (result === RequestCancelled) result = freezeInDevelopment(onDefaultResponse());
     if (!remoteQueryCalledRef.current) {
       validateAndUpdate(result);
     }

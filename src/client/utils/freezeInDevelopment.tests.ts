@@ -1,6 +1,6 @@
 import '@anupheaus/common';
 import { DateTime } from 'luxon';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { freezeInDevelopment } from './freezeInDevelopment';
 
 describe('freezeInDevelopment', () => {
@@ -29,6 +29,18 @@ describe('freezeInDevelopment', () => {
     const result = freezeInDevelopment(delivered());
     result.records[0]!.name = 'Changed';
     expect(result.records[0]!.name).toBe('Changed');
+  });
+
+  it('never walks into a record frozen before — the freeze is deep, so unchanged records cost nothing', () => {
+    process.env.NODE_ENV = 'development';
+    const record = freezeInDevelopment({ id: 'a', tags: ['x'] });
+    const entries = vi.spyOn(Object, 'values');
+
+    freezeInDevelopment({ records: [record, record], total: 2 });
+
+    // The new result object and its array are walked; the already-frozen record is not
+    expect(entries.mock.calls.map(([walked]) => walked)).not.toContain(record);
+    entries.mockRestore();
   });
 
   it('copes with a value that refers to itself', () => {

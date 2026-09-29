@@ -71,7 +71,9 @@ both as immutable: to change a record, copy it (`{ ...record, name }`) and upser
 collection's `upsert` returns early when the record is deep-equal to the stored one, and a live request compares each
 re-run with the last result it delivered — so a record changed in place would never be saved, or never be delivered.
 In a development build (`NODE_ENV` `development`) delivered arrays and records are frozen (`freezeInDevelopment`), so
-such a change throws where it is made; DateTimes and other class instances inside are left alone.
+such a change throws where it is made; DateTimes and other class instances inside are left alone. The same goes for a
+hook's props: `useQuery` / `useGetAll` compare them by value against the last props they saw (`useDeepEqualValue`), so a
+props object changed in place is never noticed — pass a new one.
 
 ### 2c. Raw hooks for bespoke logic
 When a hook needs custom querying/side-effects, use `useCollection` / `useRecord` from `@anupheaus/mxdb/client` directly, composing them with other hooks as needed.

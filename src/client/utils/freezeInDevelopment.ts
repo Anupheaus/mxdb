@@ -1,7 +1,9 @@
 import { is } from '@anupheaus/common';
 
 function deepFreeze(value: unknown, seen: WeakSet<object>): void {
-  if (value == null || typeof value !== 'object' || seen.has(value)) return;
+  // Already frozen: the freeze is always deep, so everything under it is too — a record the collection has delivered
+  // before costs nothing on each later change burst
+  if (value == null || typeof value !== 'object' || Object.isFrozen(value) || seen.has(value)) return;
   // Only plain data: a class instance (a luxon DateTime caches what it works out on itself) is left alone
   if (!Array.isArray(value) && !is.plainObject(value)) return;
   seen.add(value);
