@@ -1,6 +1,6 @@
 import type { DataFilters, Record as MXDBRecord } from '@anupheaus/common';
 import type { MXDBCollection } from '../../common';
-import { auditor, type AnyAuditOf, type AuditEntry, type ServerAuditOf } from '../../common/auditor';
+import { auditor, AuditEntryType, type AnyAuditOf, type AuditEntry, type ServerAuditOf } from '../../common/auditor';
 import { isActiveRecordState, type MXDBActiveRecordState, type MXDBDeletedRecordState, type MXDBSyncRejectedRecord } from '../../common/sync-engine';
 import { useQueryGate } from '../collections/useQueryGate';
 
@@ -68,20 +68,41 @@ export async function rejectWritesOutsideReadGate({ collection, states }: Reject
   const readableIds = liveIds.length === 0 ? [] : await queryIds({ $and: [{ id: { $in: liveIds } }, gateFilters] });
 
   const refusedLiveIds = liveIds.filter(id => !readableIds.includes(id));
+  const heldBackIds = [...refusedLiveIds, ...deletedIds];
+  if (heldBackIds.length === 0) return result;
+
+  const storedStates = await loadStoredStates({ get, getAudit, liveIds: refusedLiveIds, auditedIds, refusedIds: heldBackIds });
+  const incomingById = new Map(states.map(state => [stateIdOf(state), state] as const));
   const refusals = [
     ...refusedLiveIds.map(id => ({ id, reason: OUTSIDE_READ_GATE_REASON })),
-    ...deletedIds.map(id => ({ id, reason: DELETED_RECORD_REASON })),
+    // Deleting a record that is already deleted (two people deleting it, or a delete resent after a lost ack) changes
+    // nothing, so it is acknowledged quietly; any other change to a deleted record is refused.
+    ...deletedIds
+      .filter(id => !isOnlyARepeatedDelete({ incoming: incomingById.get(id), stored: storedStates.get(id) }))
+      .map(id => ({ id, reason: DELETED_RECORD_REASON })),
   ];
-  if (refusals.length === 0) return result;
 
-  const storedStates = await loadStoredStates({ get, getAudit, liveIds: refusedLiveIds, auditedIds, refusedIds: refusals.map(({ id }) => id) });
   states.forEach((state, index) => {
     const stored = storedStates.get(stateIdOf(state));
     if (stored != null) states[index] = stored;
   });
   result.rejectedRecords.push(...refusals);
-  result.unpersistedIds.push(...refusals.map(({ id }) => id));
+  result.unpersistedIds.push(...heldBackIds);
   return result;
+}
+
+interface IsOnlyARepeatedDeleteProps {
+  incoming: SyncState | undefined;
+  stored: SyncState | undefined;
+}
+
+/** True when the client's change to a deleted record adds nothing but another delete (its new entries are only `Deleted`/`Branched`). */
+function isOnlyARepeatedDelete({ incoming, stored }: IsOnlyARepeatedDeleteProps): boolean {
+  if (incoming == null || isActiveRecordState(incoming)) return false;
+  const storedEntryIds = new Set((stored?.audit ?? []).map(({ id }) => id));
+  return incoming.audit
+    .filter(({ id }) => !storedEntryIds.has(id))
+    .every(({ type }) => type === AuditEntryType.Deleted || type === AuditEntryType.Branched);
 }
 
 function stateIdOf(state: SyncState): string {

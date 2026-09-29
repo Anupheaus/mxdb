@@ -8,6 +8,7 @@ import {
   type MXDBActiveRecordCursor,
   type MXDBDeletedRecordCursor,
   type MXDBRecordCursors,
+  type MXDBRecordStatesRequest,
   type MXDBSyncEngineResponse,
 } from '../common/sync-engine';
 import type { ServerDb } from './providers/db/ServerDb';
@@ -32,8 +33,21 @@ export interface ServerToClientSynchronisationProps {
   logger: Logger;
   /** Identifies the connected client (socket id) for diagnostics. */
   clientId?: string;
+  /**
+   * The connected client's read gate: of the given record ids, those it may read (each collection's `onQuery`).
+   * Called for every change-stream upsert, outside any request, so it must run in the connection's own context
+   * (see `startAuthenticatedServer`). A record outside it is never pushed; a record the client holds is evicted.
+   * Absent: every record is readable.
+   */
+  filterReadable?(request: MXDBRecordStatesRequest): Promise<MXDBRecordStatesRequest>;
   /** When true, all outward S2C effects are skipped (server-startup no-op instance). */
   noOp?: boolean;
+}
+
+/** Changed records split by the client's read gate. */
+interface ReadGateSplit {
+  readable: MXDBRecord[];
+  unreadableIds: string[];
 }
 
 export class ServerToClientSynchronisation {
@@ -43,12 +57,14 @@ export class ServerToClientSynchronisation {
   readonly #disableAuditByCollection: Map<string, boolean>;
   readonly #sd: ServerDispatcher | null;
   readonly #noOp: boolean;
+  readonly #filterReadable: ServerToClientSynchronisationProps['filterReadable'];
   #closed = false;
 
   constructor(props: ServerToClientSynchronisationProps) {
     this.#logger = props.logger;
     this.#getDb = props.noOp === true ? null : props.getDb;
     this.#noOp = props.noOp === true;
+    this.#filterReadable = props.filterReadable;
     this.#collectionNames = new Set(props.collections.map(c => c.name));
     this.#disableAuditByCollection = new Map(
       props.collections.map(c => [c.name, configRegistry.getOrError(c).disableAudit === true]),
@@ -137,7 +153,11 @@ export class ServerToClientSynchronisation {
     if (!this.#collectionNames.has(event.collectionName)) return;
 
     if (event.type === 'upsert') {
-      await this.#buildAndPush(event.collectionName, event.records, /* addToFilter */ false);
+      const { readable, unreadableIds } = await this.#splitByReadGate(event.collectionName, event.records);
+      await this.#buildAndPush(event.collectionName, readable, /* addToFilter */ false);
+      // Left the client's read gate (a reassigned task, a capability removed): evict it from the client if it holds
+      // it. Change-stream style, so the SD only sends it for a record in its filter.
+      if (unreadableIds.length > 0) this.#sd.push([{ collectionName: event.collectionName, records: unreadableIds.map(evictionOf) }], /* addToFilter */ false);
     } else {
       const cursors = await this.#buildDeleteCursors(event.collectionName, event.recordIds);
       if (cursors.length > 0) {
@@ -167,6 +187,16 @@ export class ServerToClientSynchronisation {
    * Dispatched as change-stream-style (`addToFilter=false`) so the SD drops
    * deletes for records the CR never knew about.
    */
+  /**
+   * Push evictions (see `MXDBDeletedRecordCursor.isEviction`) for records the client may no longer hold. Change-stream
+   * style (`addToFilter=false`): the SD only sends one for a record the client holds.
+   */
+  pushEvictions(collectionName: string, recordIds: string[]): void {
+    if (this.#noOp || this.#closed || this.#sd == null) return;
+    if (recordIds.length === 0 || !this.#collectionNames.has(collectionName)) return;
+    this.#sd.push([{ collectionName, records: recordIds.map(evictionOf) }], /* addToFilter */ false);
+  }
+
   async pushDeletes(collectionName: string, recordIds: string[]): Promise<void> {
     if (this.#noOp || this.#closed || this.#sd == null) return;
     if (recordIds.length === 0) return;
@@ -178,6 +208,22 @@ export class ServerToClientSynchronisation {
   }
 
   // ─── Private: cursor construction ─────────────────────────────────────────
+
+  /**
+   * Splits changed records by the client's read gate. Fails closed on a gate that throws: nothing is pushed, but
+   * nothing is evicted either — a lookup failure must not wipe the device; the next change or sync tries again.
+   */
+  async #splitByReadGate(collectionName: string, records: MXDBRecord[]): Promise<ReadGateSplit> {
+    if (this.#filterReadable == null || records.length === 0) return { readable: records, unreadableIds: [] };
+    try {
+      const [result] = await this.#filterReadable([{ collectionName, recordIds: records.ids() }]);
+      const readableIds = new Set(result?.recordIds ?? []);
+      return { readable: records.filter(({ id }) => readableIds.has(id)), unreadableIds: records.ids().filter(id => !readableIds.has(id)) };
+    } catch (error) {
+      this.#logger.error('[s2c] read gate failed for a change-stream push — pushing nothing for it', { collectionName, recordCount: records.length, error: error as Record<string, unknown> });
+      return { readable: [], unreadableIds: [] };
+    }
+  }
 
   async #buildAndPush(collectionName: string, records: MXDBRecord[], addToFilter: boolean): Promise<void> {
     if (records.length === 0 || this.#sd == null) return;
@@ -351,4 +397,9 @@ export class ServerToClientSynchronisation {
 
     return cursors;
   }
+}
+
+/** An eviction cursor for a record the client may no longer hold (see `MXDBDeletedRecordCursor.isEviction`). */
+function evictionOf(recordId: string): MXDBDeletedRecordCursor {
+  return { recordId, lastAuditEntryId: '', isEviction: true };
 }

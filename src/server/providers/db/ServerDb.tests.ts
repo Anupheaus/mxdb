@@ -445,7 +445,12 @@ describe('ServerDb', () => {
       const collection = makeCollection();
       const seenDbs: unknown[] = [];
       extendCollection(collection, {
-        onAfterUpsert: () => { seenDbs.push(useDb()); },
+        onAfterUpsert: async () => {
+          seenDbs.push(useDb());
+          // Still this database after the hook awaits a timer continuation — the scope is async, not just the first tick.
+          await new Promise(resolve => setTimeout(resolve, 1));
+          seenDbs.push(useDb());
+        },
         onAfterDelete: () => { seenDbs.push(useDb()); },
       });
       const controllerDb = { name: 'controller' } as unknown as ServerDb;
@@ -458,10 +463,11 @@ describe('ServerDb', () => {
         setDb(controllerDb);
         emit(changeEvent('insert', collection.name, { _id: 'a', name: 'A' }));
         emit({ operationType: 'delete', ns: { db: DB_NAME, coll: collection.name }, documentKey: { _id: 'gone' } });
-        await vi.advanceTimersByTimeAsync(DEBOUNCE_MS);
+        await vi.advanceTimersByTimeAsync(DEBOUNCE_MS + 1);
       });
 
-      expect(seenDbs).toEqual([serverDb, serverDb]);
+      expect(seenDbs).toHaveLength(3);
+      seenDbs.forEach(seenDb => expect(seenDb).toBe(serverDb));
     });
 
     it('still notifies change callbacks when an onAfter hook throws', async () => {

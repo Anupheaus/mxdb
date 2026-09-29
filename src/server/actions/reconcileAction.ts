@@ -1,6 +1,7 @@
 import { createServerActionHandler, useLogger } from '@anupheaus/nexus/server';
 import { mxdbReconcileAction } from '../../common';
 import { useDb, useServerToClientSynchronisation } from '../providers';
+import { useQueryGate } from '../collections/useQueryGate';
 import type { ReconcileRequest, ReconcileResponse } from '../../common/models';
 
 export async function handleReconcile(request: ReconcileRequest): Promise<ReconcileResponse> {
@@ -21,16 +22,21 @@ export async function handleReconcile(request: ReconcileRequest): Promise<Reconc
       continue;
     }
 
-    const deletedIds: string[] = [];
-    for (const localId of item.localIds) {
-      const serverRecord = await dbCollection.get(localId);
-      if (serverRecord == null) deletedIds.push(localId);
-    }
+    // Which of the ids the client holds are stored, and which of those it may still read (its collection's gate).
+    const storedIds = await dbCollection.queryIds({ id: { $in: item.localIds } });
+    const gateFilters = await useQueryGate(dbCollection.collection).getGateFilters();
+    const readableIds = gateFilters == null || storedIds.length === 0 ? storedIds : await dbCollection.queryIds({ $and: [{ id: { $in: storedIds } }, gateFilters] });
+    const goneIds = item.localIds.filter(id => !storedIds.includes(id));
+    // Stored, but no longer the client's to hold: evicted (no tombstone). Reported exactly as a deleted record is, so the
+    // answer never tells a client which of the ids it names exist outside its gate (sc-608).
+    const evictedIds = storedIds.filter(id => !readableIds.includes(id));
+    const deletedIds = item.localIds.filter(id => goneIds.includes(id) || evictedIds.includes(id));
 
-    if (deletedIds.length > 0) {
-      logger.debug(`Reconcile: pushing ${deletedIds.length} stale deletions for "${item.collectionName}"`);
+    if (evictedIds.length > 0) s2c.pushEvictions(item.collectionName, evictedIds);
+    if (goneIds.length > 0) {
+      logger.debug(`Reconcile: pushing ${goneIds.length} stale deletions for "${item.collectionName}"`);
       // Fire-and-forget: S2C wrapper enqueues delete cursors; SD dispatches asynchronously.
-      void s2c.pushDeletes(item.collectionName, deletedIds).catch(
+      void s2c.pushDeletes(item.collectionName, goneIds).catch(
         error => logger.error(`Reconcile: pushDeletes failed for "${item.collectionName}"`, { error }),
       );
     }

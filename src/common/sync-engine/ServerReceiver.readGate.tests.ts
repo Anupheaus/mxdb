@@ -68,8 +68,13 @@ function pushedRecordIds(): string[] {
   return dispatched.flatMap(payload => payload.flatMap(({ records }) => records.flatMap(cursor => ('record' in cursor ? [cursor.record.id] : []))));
 }
 
-function pushedDeleteIds(): string[] {
-  return dispatched.flatMap(payload => payload.flatMap(({ records }) => records.flatMap(cursor => ('record' in cursor ? [] : [cursor.recordId]))));
+/** Ids the client was told to drop, as real deletes and as evictions. */
+function pushedRemovals(): { deleted: string[]; evicted: string[] } {
+  const removals = dispatched.flatMap(payload => payload.flatMap(({ records }) => records.flatMap(cursor => ('record' in cursor ? [] : [cursor]))));
+  return {
+    deleted: removals.filter(({ isEviction }) => isEviction !== true).map(({ recordId }) => recordId),
+    evicted: removals.filter(({ isEviction }) => isEviction === true).map(({ recordId }) => recordId),
+  };
 }
 
 const storedStates: MXDBRecordStates = [{
@@ -116,21 +121,23 @@ describe('ServerReceiver and the read gate', () => {
     onUpdate.mockClear();
   });
 
-  it('answers a branch-only probe for a gated record with nothing', async () => {
+  it('answers a branch-only probe for a gated record with an eviction, never its content', async () => {
     const response = await receiver().process([{ collectionName: COLLECTION, records: [probe(gated.id), probe(readable.id)] }]);
     await drain();
     expect(pushedRecordIds()).toEqual([readable.id]);
+    expect(pushedRemovals()).toEqual({ deleted: [], evicted: [gated.id] });
     // The probe is still acknowledged, so a client that legitimately held the record stops resending it.
     expect(response[0]!.successfulRecordIds).toEqual(expect.arrayContaining([gated.id, readable.id]));
   });
 
-  it('persists an update to a gated record but never pushes the merged record back', async () => {
+  it('persists an update to a gated record but never pushes the merged record back — the device drops its copy', async () => {
     const clientEntries = auditor.updateAuditWith({ ...gated, text: 'edited' }, gatedAudit).entries.filter(({ type }) => type !== AuditEntryType.Created);
     await receiver().process([{ collectionName: COLLECTION, records: [{ id: gated.id, hash: 'stale-hash', entries: clientEntries }] }]);
     await drain();
     // Write authorisation is the before-write hooks' job; the gate governs what is read back.
     expect(onUpdate).toHaveBeenCalledOnce();
     expect(pushedRecordIds()).toEqual([]);
+    expect(pushedRemovals()).toEqual({ deleted: [], evicted: [gated.id] });
   });
 
   it('judges readability after the write, so a record the client creates inside its gate is pushed back', async () => {
@@ -155,10 +162,38 @@ describe('ServerReceiver and the read gate', () => {
     expect(pushedRecordIds()).toEqual([readable.id]);
   });
 
-  it('still tells the client a record it holds is gone — a delete carries no content', async () => {
-    await receiver().process([{ collectionName: COLLECTION, records: [probe('long-gone')] }]);
+  it('evicts a record the client already holds at the current version once it may no longer read it (e.g. a lost capability)', async () => {
+    // The meta fast-path confirms the client is up to date without a retrieve; that must not keep a gated record on it.
+    const onRetrieveMeta = async (request: MXDBRecordStatesRequest) => request.map(({ collectionName, recordIds }) => ({ collectionName, records: recordIds.map(id => ({ id, hash: 'current' })) }));
+    const sr = new ServerReceiver(logger, { onRetrieve, onRetrieveMeta, onUpdate, onFilterReadable, serverDispatcher: sd });
+    await sr.process([{ collectionName: COLLECTION, records: [{ ...probe(gated.id), hash: 'current' }, { ...probe(readable.id), hash: 'current' }] }]);
     await drain();
-    expect(pushedDeleteIds()).toEqual(['long-gone']);
+    expect(pushedRemovals()).toEqual({ deleted: [], evicted: [gated.id] });
+    expect(pushedRecordIds()).toEqual([]);
+  });
+
+  it('answers a missing record exactly as a gated one, so a probe cannot tell them apart (sc-608)', async () => {
+    await receiver().process([{ collectionName: COLLECTION, records: [probe('long-gone'), probe(gated.id)] }]);
+    await drain();
+    const cursors = dispatched.flatMap(payload => payload.flatMap(({ records }) => records));
+    expect(cursors).toEqual([
+      { recordId: 'long-gone', lastAuditEntryId: '', isEviction: true },
+      { recordId: gated.id, lastAuditEntryId: '', isEviction: true },
+    ]);
+  });
+
+  it('still tombstones a record the server holds as deleted, while answering it with an eviction', async () => {
+    const deletedAudit = auditor.deleteAfterLatest(gatedAudit);
+    const onRetrieveTombstone = async (): Promise<MXDBRecordStates> => [{ collectionName: COLLECTION, records: [{ recordId: gated.id, audit: auditor.entriesOf(deletedAudit) as AuditEntry[] }] }];
+    const sr = new ServerReceiver(logger, { onRetrieve: onRetrieveTombstone, onUpdate, onFilterReadable, serverDispatcher: sd });
+    await sr.process([{ collectionName: COLLECTION, records: [probe(gated.id)] }]);
+    await drain();
+    expect(pushedRemovals()).toEqual({ deleted: [], evicted: [gated.id] });
+    // Delete-is-final for this connection: even an authoritative push of the id is withheld now.
+    dispatched = [];
+    sd.push([{ collectionName: COLLECTION, records: [{ record: gated, lastAuditEntryId: auditor.generateUlid() }] }]);
+    await drain();
+    expect(pushedRecordIds()).toEqual([]);
   });
 
   it('pushes everything when the server supplies no gate (unchanged behaviour)', async () => {

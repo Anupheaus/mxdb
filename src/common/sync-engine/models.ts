@@ -17,7 +17,17 @@ export type MXDBRecordMetas = { collectionName: string; records: MXDBRecordMeta[
 
 // Cursors (lightweight, no full audit)
 export interface MXDBActiveRecordCursor<T extends MXDBRecord = MXDBRecord> { record: T; lastAuditEntryId: string; }
-export interface MXDBDeletedRecordCursor { recordId: string; lastAuditEntryId: string; }
+export interface MXDBDeletedRecordCursor {
+  recordId: string;
+  lastAuditEntryId: string;
+  /**
+   * An EVICTION, not a delete: the record still exists, but this client may no longer hold it (it has left the
+   * collection's read gate for them). The client drops its local copy without a tombstone, so the record can come
+   * back when the gate lets it in again, and declines it while it has changes still to sync. The server dispatcher
+   * forgets the record without tombstoning it. Never carries record content. Absent: a real delete.
+   */
+  isEviction?: true;
+}
 export interface MXDBRecordCursorsByCollection<T extends MXDBRecord = MXDBRecord> { collectionName: string; records: (MXDBActiveRecordCursor<T> | MXDBDeletedRecordCursor)[]; }
 export type MXDBRecordCursors<T extends MXDBRecord = MXDBRecord> = MXDBRecordCursorsByCollection<T>[];
 

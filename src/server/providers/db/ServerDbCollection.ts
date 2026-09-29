@@ -191,6 +191,9 @@ export class ServerDbCollection<RecordType extends Record = Record> {
   public async getAudit(ids: string[]): Promise<ServerAuditOf<RecordType>[]>;
   @bind
   public async getAudit(ids: string | string[]): Promise<ServerAuditOf<RecordType> | ServerAuditOf<RecordType>[] | undefined> {
+    // A collection that keeps no audit has none to read — not even a leftover audit collection from before it was
+    // switched to `disableAudit`, whose tombstones would disagree with `getAuditIds` (sc-612).
+    if (this.#config.disableAudit === true) return Array.isArray(ids) ? [] : undefined;
     const collection = await this.#getAuditCollection();
     const isArray = Array.isArray(ids);
     const justIds = (isArray ? ids : [ids]) as any[];

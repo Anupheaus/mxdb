@@ -31,8 +31,11 @@ describe('handleReconcile', () => {
     mockWarn = vi.fn();
     mockDebug = vi.fn();
     mockError = vi.fn();
-    mockUseDb.mockReturnValue({ use: () => ({ get: mockGet }) });
-    mockUseServerToClientSynchronisation.mockReturnValue({ pushDeletes: mockPushDeletes });
+    // `queryIds` answers from `mockGet`, so each test says which ids are stored the one way.
+    const queryIds = async ({ id: { $in: ids } }: { id: { $in: string[] } }) =>
+      (await Promise.all(ids.map(async id => ((await mockGet(id)) != null ? id : undefined)))).filter((id): id is string => id != null);
+    mockUseDb.mockReturnValue({ use: () => ({ get: mockGet, queryIds }) });
+    mockUseServerToClientSynchronisation.mockReturnValue({ pushDeletes: mockPushDeletes, pushEvictions: vi.fn() });
     mockUseLogger.mockReturnValue({
       warn: mockWarn,
       debug: mockDebug,
@@ -48,7 +51,7 @@ describe('handleReconcile', () => {
     expect(result).toEqual([]);
   });
 
-  it('skips items with empty localIds and makes no get calls', async () => {
+  it('skips items with empty localIds and makes no lookups', async () => {
     const request: ReconcileRequest = [{ collectionName: 'items', localIds: [] }];
     const result = await handleReconcile(request);
     expect(mockGet).not.toHaveBeenCalled();

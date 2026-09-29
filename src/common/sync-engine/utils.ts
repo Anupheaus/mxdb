@@ -34,6 +34,13 @@ export function isDeletedCursor<T extends MXDBRecord = MXDBRecord>(
   return !('record' in cursor);
 }
 
+/** True for an eviction cursor (see {@link MXDBDeletedRecordCursor.isEviction}) — a delete cursor that is not a delete. */
+export function isEvictionCursor<T extends MXDBRecord = MXDBRecord>(
+  cursor: MXDBActiveRecordCursor<T> | MXDBDeletedRecordCursor,
+): cursor is MXDBDeletedRecordCursor {
+  return isDeletedCursor(cursor) && cursor.isEviction === true;
+}
+
 // ─── ID helpers ───────────────────────────────────────────────────────────────
 
 export function getCursorId<T extends MXDBRecord = MXDBRecord>(
