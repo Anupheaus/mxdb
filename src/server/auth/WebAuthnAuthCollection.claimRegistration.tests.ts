@@ -94,6 +94,12 @@ describe('WebAuthnAuthCollection.claimRegistration', () => {
     expect({ claimed, after: await authColl.findById('r1') }).toEqual({ claimed: undefined, after: before });
   });
 
+  it('treats fields stored as explicit nulls as absent, as isPendingWebAuthnInvite does: the invite is still pending', async () => {
+    await openedInvite({ keyHash: null, deviceDetails: null, lastConnectedAt: null } as unknown as Partial<WebAuthnAuthRecord>);
+
+    expect((await authColl.claimRegistration('tok', registration))?.requestId).toBe('r1');
+  });
+
   it('claims nothing for a token no invite holds', async () => {
     await openedInvite();
 
@@ -109,6 +115,8 @@ describe('WebAuthnAuthCollection.claimRegistration', () => {
   it.each([
     ['created before it', { createdAt: NOW - 1 }],
     ['with no creation time (it cannot be dated, so it fails closed)', { createdAt: undefined }],
+    ['whose creation time is stored as a string, however recent', { createdAt: String(NOW + 1) as unknown as number }],
+    ['whose creation time is stored as a date', { createdAt: new Date(NOW + 1) as unknown as number }],
   ])('with createdSince, claims nothing, and changes nothing, on an invite %s', async (_label, dated) => {
     await openedInvite(dated);
     const before = await authColl.findById('r1');

@@ -12,6 +12,7 @@ import type { Collection } from 'mongodb';
 import type { NexusAuthRecord, NexusAuthStore } from '@anupheaus/nexus/common';
 import type { ServerDb } from '../providers';
 import { useDb } from '../providers';
+import { isAuthKey } from './isAuthKey';
 
 const COLLECTION_NAME = 'mxdb_authentication';
 
@@ -39,6 +40,10 @@ export function toAuthRecordUpdate(patch: object): { $set?: Record<string, unkno
     ...(Object.keys(setFields).length > 0 ? { $set: setFields } : {}),
     ...(Object.keys(unsetFields).length > 0 ? { $unset: unsetFields } : {}),
   };
+}
+
+function assertAuthKeyForWrite(requestId: unknown, operation: string): asserts requestId is string {
+  if (!isAuthKey(requestId)) throw new Error(`Refusing to ${operation} an auth record: the request id must be a non-empty string.`);
 }
 
 export abstract class AuthCollection<TRecord extends NexusAuthRecord> implements NexusAuthStore<TRecord> {
@@ -113,19 +118,25 @@ export abstract class AuthCollection<TRecord extends NexusAuthRecord> implements
     await coll.insertOne(toDoc(record) as any);
   }
 
+  // Every key below comes, directly or not, from a REST body or socket handshake. A key that is not a non-empty string
+  // (an object like `{ "$ne": null }` is a MongoDB operator) finds nothing and writes nothing: see isAuthKey (sc-620).
+
   async findById(requestId: string): Promise<TRecord | undefined> {
+    if (!isAuthKey(requestId)) return undefined;
     const coll = await this.getColl();
     const doc = await coll.findOne({ _id: requestId } as any);
     return doc ? fromDoc(doc as AuthDoc<TRecord>) : undefined;
   }
 
   async findBySessionToken(token: string): Promise<TRecord | undefined> {
+    if (!isAuthKey(token)) return undefined;
     const coll = await this.getColl();
     const doc = await coll.findOne({ sessionToken: token } as any);
     return doc ? fromDoc(doc as AuthDoc<TRecord>) : undefined;
   }
 
   async findByDevice(userId: string, deviceId: string): Promise<TRecord | undefined> {
+    if (!isAuthKey(userId) || !isAuthKey(deviceId)) return undefined;
     const coll = await this.getColl();
     const doc = await coll.findOne({ userId, deviceId } as any);
     return doc ? fromDoc(doc as AuthDoc<TRecord>) : undefined;
@@ -133,6 +144,7 @@ export abstract class AuthCollection<TRecord extends NexusAuthRecord> implements
 
   /** Not part of NexusAuthStore. Used by device management to list all records for a user regardless of auth mode. */
   async findAllByUserId(userId: string): Promise<TRecord[]> {
+    if (!isAuthKey(userId)) return [];
     const coll = await this.getColl();
     const docs = await coll.find({ userId } as any).toArray();
     return docs.map(doc => fromDoc(doc as AuthDoc<TRecord>));
@@ -140,6 +152,7 @@ export abstract class AuthCollection<TRecord extends NexusAuthRecord> implements
 
   /** Pending invites that were created before `createdBeforeMs` (unix ms). */
   async findStalePendingInvites(createdBeforeMs: number): Promise<TRecord[]> {
+    if (typeof createdBeforeMs !== 'number' || !Number.isFinite(createdBeforeMs)) return [];
     const coll = await this.getColl();
     const docs = await coll.find({
       isEnabled: false,
@@ -150,7 +163,9 @@ export abstract class AuthCollection<TRecord extends NexusAuthRecord> implements
     return docs.map(doc => fromDoc(doc as AuthDoc<TRecord>));
   }
 
+  /** Throws for a key that is not a non-empty string, rather than update whichever record an operator matches. */
   async update(requestId: string, patch: Partial<TRecord>): Promise<void> {
+    assertAuthKeyForWrite(requestId, 'update');
     const coll = await this.getColl();
     const update: Record<string, unknown> = toAuthRecordUpdate(patch);
     if (Object.keys(update).length > 0) {
@@ -158,7 +173,9 @@ export abstract class AuthCollection<TRecord extends NexusAuthRecord> implements
     }
   }
 
+  /** Throws for a key that is not a non-empty string, rather than delete whichever record an operator matches. */
   async delete(requestId: string): Promise<void> {
+    assertAuthKeyForWrite(requestId, 'delete');
     const coll = await this.getColl();
     await coll.deleteOne({ _id: requestId } as any);
   }

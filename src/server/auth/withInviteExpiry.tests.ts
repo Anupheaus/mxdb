@@ -40,6 +40,12 @@ function storeWith(held: WebAuthnAuthRecord, extra: Partial<WebAuthnAuthStore> =
 const redeemed = async (store: WebAuthnAuthStore) => [await store.findById('r1'), await store.findByRegistrationToken('t')];
 
 describe('withInviteExpiry', () => {
+  it('redeems a pending invite whose registration fields are stored as explicit nulls', async () => {
+    const { store } = storeWith(record({ keyHash: null, deviceDetails: null, lastConnectedAt: null } as unknown as Partial<WebAuthnAuthRecord>));
+
+    expect((await redeemed(store)).map(found => found?.requestId)).toEqual(['r1', 'r1']);
+  });
+
   it('redeems a pending invite younger than the lifetime', async () => {
     const { store } = storeWith(record({ createdAt: NOW - TTL_MS + 1 }));
 
@@ -49,6 +55,8 @@ describe('withInviteExpiry', () => {
   it.each([
     ['older than the lifetime', NOW - TTL_MS - 1],
     ['with no creation time (cannot be dated, so fails closed)', undefined],
+    ['whose creation time is a string, however recent (JavaScript would coerce it)', String(NOW) as unknown as number],
+    ['whose creation time is a date', new Date(NOW) as unknown as number],
   ])('treats a pending invite %s as not found, when opened and when registering', async (_label, createdAt) => {
     const { store } = storeWith(record({ createdAt }));
 

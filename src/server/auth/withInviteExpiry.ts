@@ -19,7 +19,7 @@ export function assertInviteTtlMs(inviteTtlMs: number): void {
  *   but finished after it is refused. A store without `claimRegistration` stays without it, and nexus falls back to a
  *   find (gated as above) then an update.
  *
- * So an older invite, or one with no `createdAt` (it cannot be dated), cannot be redeemed, even before
+ * So an older invite, or one with no numeric `createdAt` (it cannot be dated), cannot be redeemed, even before
  * `expireStalePendingInvites` deletes it. A registered device can never be redeemed again, however it is disabled: its
  * record keeps the invite's `requestId` (the `?requestId=` in the emailed link), so returning it would let whoever holds
  * the old link register over it after a sign-out or an admin disable.
@@ -32,7 +32,8 @@ export function withInviteExpiry<TStore extends WebAuthnAuthStore>(store: TStore
   const createdSince = () => now() - inviteTtlMs;
   const asRedeemableInvite = (record: WebAuthnAuthRecord | undefined): WebAuthnAuthRecord | undefined => {
     if (record == null || !isPendingWebAuthnInvite(record)) return undefined;
-    return record.createdAt != null && record.createdAt >= createdSince() ? record : undefined;
+    // Only a numeric creation time dates an invite: JavaScript would compare a string one by coercing it.
+    return typeof record.createdAt === 'number' && record.createdAt >= createdSince() ? record : undefined;
   };
   return new Proxy(store, {
     get(target, property) {

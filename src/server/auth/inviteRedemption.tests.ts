@@ -177,6 +177,36 @@ describe('invite redemption through nexus, with an invite lifetime', () => {
     expect([reauthed.status, reauthed.body.userId, reauthed.sessionToken != null]).toEqual([200, 'u-veteran', true]);
   });
 
+  // sc-620: nexus hands parsed JSON to these handlers, so a key can arrive as a MongoDB operator. The store must match
+  // nothing for it, or `{ "$ne": null }` signs the caller in as the first registered device.
+  it.each([
+    ['{ $ne: null }', { $ne: null }],
+    ['{ $gt: "" }', { $gt: '' }],
+    ['{ $exists: true }', { $exists: true }],
+  ])('refuses %s in place of a key hash, registration token or invite id, issuing no session', async (_label, operator) => {
+    // Only these records, so the operator's first match is an enabled device: the one it would sign the caller in as.
+    await db.collection('mxdb_authentication').deleteMany({});
+    const requestId = await invite('u-target');
+    const opened = await openInvite(requestId);
+    await register(String(opened.body.registrationToken), 'hash-target');
+    const pendingId = await invite('u-pending');
+    await openInvite(pendingId);
+
+    const replies = [
+      await call('POST', 'webauthn/reauth', { keyHash: operator, deviceDetails }),
+      await call('POST', 'webauthn/register', { registrationToken: operator, keyHash: 'hash-attacker', deviceDetails }),
+      await call('GET', 'webauthn/invite?requestId[$ne]=x'),
+    ];
+    const pending = await stored(pendingId);
+
+    expect({
+      outcomes: replies.map(reply => reply.status < 300),
+      sessions: replies.filter(reply => reply.sessionToken != null).length,
+      pendingStillPending: [pending?.isEnabled, pending?.keyHash],
+      attackerRegistered: await db.collection('mxdb_authentication').countDocuments({ keyHash: 'hash-attacker' }),
+    }).toEqual({ outcomes: [false, false, false], sessions: 0, pendingStillPending: [false, undefined], attackerRegistered: 0 });
+  });
+
   // Two requests sent together: exactly one device registers. (Over HTTP they may not interleave, so the atomic claim
   // itself is proven in WebAuthnAuthCollection.claimRegistration.tests.ts, where the two writes race on MongoDB.)
   it('registers exactly one device when two registrations are sent together with one token', async () => {

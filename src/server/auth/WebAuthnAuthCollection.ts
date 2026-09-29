@@ -10,6 +10,7 @@ import type { Collection } from 'mongodb';
 import type { WebAuthnAuthRecord, WebAuthnAuthStore } from '@anupheaus/nexus/common';
 import type { ServerDb } from '../providers';
 import { AuthCollection, toAuthRecordUpdate } from './AuthCollection';
+import { isAuthKey } from './isAuthKey';
 
 type WebAuthnDoc = Omit<WebAuthnAuthRecord, 'requestId'> & { _id: string };
 
@@ -33,7 +34,10 @@ export class WebAuthnAuthCollection
     await coll.createIndex({ keyHash: 1 }, { sparse: true });
   }
 
+  // As in AuthCollection: a key that is not a non-empty string (an object is a MongoDB operator) finds and claims nothing.
+
   async findByRegistrationToken(registrationToken: string): Promise<WebAuthnAuthRecord | undefined> {
+    if (!isAuthKey(registrationToken)) return undefined;
     const coll = await this.getColl() as unknown as Collection<WebAuthnDoc>;
     const doc = await coll.findOne({ registrationToken } as any);
     if (doc == null) return undefined;
@@ -50,6 +54,8 @@ export class WebAuthnAuthCollection
    * or the invite has expired.
    */
   async claimRegistration(registrationToken: string, patch: Partial<WebAuthnAuthRecord>, { createdSince }: ClaimRegistrationOptions = {}): Promise<WebAuthnAuthRecord | undefined> {
+    if (!isAuthKey(registrationToken)) return undefined;
+    if (createdSince != null && (typeof createdSince !== 'number' || !Number.isFinite(createdSince))) return undefined;
     const coll = await this.getColl() as unknown as Collection<WebAuthnDoc>;
     // `field: null` matches a field that is missing or null, as `== null` does in isPendingWebAuthnInvite.
     const doc = await coll.findOneAndUpdate({
@@ -66,6 +72,7 @@ export class WebAuthnAuthCollection
   }
 
   async findByKeyHash(keyHash: string): Promise<WebAuthnAuthRecord | undefined> {
+    if (!isAuthKey(keyHash)) return undefined;
     const coll = await this.getColl() as unknown as Collection<WebAuthnDoc>;
     const doc = await coll.findOne({ keyHash } as any);
     if (doc == null) return undefined;
