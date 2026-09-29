@@ -161,6 +161,8 @@ beforeEach(() => {
   db.s2cRegistrations.length = 0;
   signInAs(undefined);
   vi.mocked(seedCollections).mockClear();
+  // The auth collection's db is a stub here; the deletion itself is tested against MongoDB in AuthCollection.devSignIn.tests.
+  vi.spyOn(WebAuthnAuthCollection.prototype, 'deleteDevSignInRecords').mockResolvedValue(0);
 });
 
 afterEach(() => {
@@ -312,6 +314,23 @@ describe('startAuthenticatedServer — server wiring', () => {
   });
 
   describe('startup', () => {
+    // A session the dev sign-in route issued stays live (handshake session token) until its record is gone.
+    it.each([[undefined], [false]])('deletes the sessions the dev sign-in route issued when devSignIn is %s', async devSignIn => {
+      const { socketServerConfig } = await start({ devSignIn });
+
+      await socketServerConfig.onStartup();
+
+      expect(WebAuthnAuthCollection.prototype.deleteDevSignInRecords).toHaveBeenCalledOnce();
+    });
+
+    it('keeps them while devSignIn is on, so a restarted test server keeps its signed-in clients', async () => {
+      const { socketServerConfig } = await start({ devSignIn: true });
+
+      await socketServerConfig.onStartup();
+
+      expect(WebAuthnAuthCollection.prototype.deleteDevSignInRecords).not.toHaveBeenCalled();
+    });
+
     it.each([
       [true, 1],
       [false, 0],
@@ -352,14 +371,32 @@ describe('startAuthenticatedServer — server wiring', () => {
       return { routes, router: { get: register('GET'), post: register('POST') } };
     }
 
-    it.each(['development', 'test', undefined])('exposes the dev sign-in route when NODE_ENV=%s', async nodeEnv => {
+    // The dev sign-in route signs anyone in as any user id, with no credential. A server that is merely "not production"
+    // (a dev server behind a public tunnel, a staging box) must not expose it, so it is opt-in only.
+    it.each(['development', 'test', undefined])('does not expose the dev sign-in route unless the app turns it on (NODE_ENV=%s)', async nodeEnv => {
       vi.stubEnv('NODE_ENV', nodeEnv as string);
       const { socketServerConfig } = await start();
       const { routes, router } = makeRouter();
 
       await socketServerConfig.onRegisterRoutes(router);
 
+      expect(routes.filter(route => route.includes('/dev/'))).toEqual([]);
+    });
+
+    it.each(['development', 'test', undefined])('exposes the dev sign-in route when the app turns it on (devSignIn) and NODE_ENV=%s', async nodeEnv => {
+      vi.stubEnv('NODE_ENV', nodeEnv as string);
+      const { socketServerConfig } = await start({ devSignIn: true });
+      const { routes, router } = makeRouter();
+
+      await socketServerConfig.onRegisterRoutes(router);
+
       expect(routes).toContain('POST /my-app/dev/signin');
+    });
+
+    it('refuses to start in production with the dev sign-in route turned on', async () => {
+      vi.stubEnv('NODE_ENV', 'production');
+
+      await expect(start({ devSignIn: true })).rejects.toThrow('devSignIn must never be turned on in production');
     });
 
     it('never exposes the dev sign-in route in production', async () => {

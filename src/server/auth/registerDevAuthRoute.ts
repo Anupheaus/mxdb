@@ -6,6 +6,8 @@ import type { ServerAuthConfig } from '../internalModels';
 
 const COOKIE_NAME = 'socketapi_session';
 const DEV_SESSION_TOKEN_PREFIX = 'dev-bypass-';
+/** The request id of every record the dev sign-in route creates: `dev-bypass-<userId>`. */
+export const DEV_SIGN_IN_REQUEST_ID_PREFIX = 'dev-bypass-';
 
 function buildSetCookieHeader(token: string): string {
   return `${COOKIE_NAME}=${token}; HttpOnly; SameSite=Strict; Path=/`;
@@ -25,7 +27,7 @@ export function registerDevAuthRoute(
       ctx.status = 400;
       return;
     }
-    const requestId = `dev-bypass-${userId}`;
+    const requestId = `${DEV_SIGN_IN_REQUEST_ID_PREFIX}${userId}`;
     const sessionToken = `${DEV_SESSION_TOKEN_PREFIX}${crypto.randomBytes(24).toString('base64url')}`;
     const existing = await authColl.findById(requestId);
 
