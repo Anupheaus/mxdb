@@ -1,10 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import type { WebAuthnAuthRecord, WebAuthnAuthStore } from '@anupheaus/nexus/common';
-import { withInviteExpiry } from './withInviteExpiry';
+import { assertInviteTtlMs, withInviteExpiry } from './withInviteExpiry';
 
-// An invite link must stop working once it is older than the invite lifetime, even before the nightly sweep deletes
-// it: nexus redeems through `findById` (opening the link) and `findByRegistrationToken` (finishing registration), so an
-// expired pending invite must look absent to both. Registered devices, and every other lookup, are untouched.
+// nexus redeems an invite through `findById` (opening the link) and `findByRegistrationToken` (finishing registration).
+// Both must see ONLY a pending invite younger than the invite lifetime: an old invite must not work before the nightly
+// sweep deletes it, and a registered device must never be redeemable again — its record keeps the invite's requestId,
+// so after a sign-out or an admin disable, whoever holds the old link could otherwise register over it. Every other
+// lookup is untouched.
 
 const TTL_MS = 24 * 60 * 60 * 1000;
 const NOW = 1_800_000_000_000;
@@ -13,7 +15,11 @@ function record(overrides: Partial<WebAuthnAuthRecord>): WebAuthnAuthRecord {
   return { requestId: 'r1', sessionToken: '', userId: 'u1', deviceId: '', isEnabled: false, createdAt: NOW - 1_000, ...overrides };
 }
 
-/** An in-memory store holding one record, found by id, registration token, session token or key hash alike. */
+/** A registered device, long since created: it has a key hash and device details. */
+const registered = (overrides: Partial<WebAuthnAuthRecord> = {}) =>
+  record({ isEnabled: true, keyHash: 'k1', deviceDetails: { name: 'Pixel' } as never, createdAt: NOW - 30 * TTL_MS, ...overrides });
+
+/** An in-memory store holding one record, found by any lookup alike. */
 function storeWith(held: WebAuthnAuthRecord) {
   const calls: string[] = [];
   const store: WebAuthnAuthStore & { findByUserId(userId: string): Promise<WebAuthnAuthRecord[]>; } = {
@@ -30,11 +36,13 @@ function storeWith(held: WebAuthnAuthRecord) {
   return { store: withInviteExpiry(store, TTL_MS, () => NOW), calls };
 }
 
+const redeemed = async (store: WebAuthnAuthStore) => [await store.findById('r1'), await store.findByRegistrationToken('t')];
+
 describe('withInviteExpiry', () => {
   it('redeems a pending invite younger than the lifetime', async () => {
     const { store } = storeWith(record({ createdAt: NOW - TTL_MS + 1 }));
 
-    expect([await store.findById('r1'), await store.findByRegistrationToken('t')].map(found => found?.requestId)).toEqual(['r1', 'r1']);
+    expect((await redeemed(store)).map(found => found?.requestId)).toEqual(['r1', 'r1']);
   });
 
   it.each([
@@ -43,24 +51,42 @@ describe('withInviteExpiry', () => {
   ])('treats a pending invite %s as not found, when opened and when registering', async (_label, createdAt) => {
     const { store } = storeWith(record({ createdAt }));
 
-    expect([await store.findById('r1'), await store.findByRegistrationToken('t')]).toEqual([undefined, undefined]);
+    expect(await redeemed(store)).toEqual([undefined, undefined]);
   });
 
-  it('never hides a registered device, however old', async () => {
-    const registered = record({ isEnabled: true, createdAt: NOW - 30 * TTL_MS, deviceDetails: { name: 'Pixel' } as never });
-    const { store } = storeWith(registered);
+  it.each([
+    ['signed out (disabled, with its device details)', registered({ isEnabled: false })],
+    ['disabled by an admin (only a key hash left)', registered({ isEnabled: false, deviceDetails: undefined })],
+    ['enabled', registered()],
+    ['registered only moments ago, inside the invite lifetime', registered({ isEnabled: false, createdAt: NOW - 1_000 })],
+  ])('never lets a registered device be redeemed again: %s', async (_label, device) => {
+    const { store } = storeWith(device);
 
-    expect(await store.findById('r1')).toEqual(registered);
+    expect(await redeemed(store)).toEqual([undefined, undefined]);
   });
 
-  it('leaves every other lookup alone, and still runs it against the store', async () => {
-    const expired = record({ createdAt: NOW - TTL_MS - 1 });
-    const { store, calls } = storeWith(expired);
+  it('still finds an old registered device by its key hash and session token, so re-authentication works', async () => {
+    const device = registered();
+    const { store } = storeWith(device);
 
-    expect({
-      bySession: await store.findBySessionToken('s'),
-      byUser: await (store as unknown as { findByUserId(userId: string): Promise<WebAuthnAuthRecord[]>; }).findByUserId('u1'),
-      calls,
-    }).toEqual({ bySession: expired, byUser: [expired], calls: ['bound'] });
+    expect([await store.findByKeyHash('k1'), await store.findBySessionToken('s')]).toEqual([device, device]);
+  });
+
+  it('leaves the other lookups running against the store itself', async () => {
+    const { store, calls } = storeWith(record({}));
+
+    await (store as unknown as { findByUserId(userId: string): Promise<WebAuthnAuthRecord[]>; }).findByUserId('u1');
+
+    expect(calls).toEqual(['bound']);
+  });
+});
+
+describe('assertInviteTtlMs', () => {
+  it.each([0, -1, Number.NaN, Number.POSITIVE_INFINITY])('refuses %s', ttl => {
+    expect(() => assertInviteTtlMs(ttl)).toThrow('inviteTtlMs must be a positive, finite number of milliseconds');
+  });
+
+  it('accepts a positive lifetime', () => {
+    expect(() => assertInviteTtlMs(TTL_MS)).not.toThrow();
   });
 });

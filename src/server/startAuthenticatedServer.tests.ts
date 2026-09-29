@@ -190,6 +190,10 @@ describe('startAuthenticatedServer — authentication configuration', () => {
     }).toEqual({ redeemed: undefined, direct: expiredInvite });
   });
 
+  it('refuses to start with an inviteTtlMs that is not a positive, finite number', async () => {
+    await expect(start({ auth: { mode: 'webauthn', inviteTtlMs: 0 } })).rejects.toThrow('inviteTtlMs must be a positive, finite number of milliseconds');
+  });
+
   it('backs google-oauth authentication with a Google auth store and passes the OAuth client settings through', async () => {
     const { configuredAuth } = await start({ auth: GOOGLE_AUTH });
 
