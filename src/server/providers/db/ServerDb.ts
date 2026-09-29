@@ -5,6 +5,7 @@ import { getCollectionExtensions } from '../../collections/extendCollection';
 import { ServerDbCollection } from './ServerDbCollection';
 import { ServerDbCollectionEvents } from './ServerDbCollectionEvents';
 import type { ServerDbChangeEvent } from './server-db-models';
+import { runInDbScope, setDb } from './DbContext';
 import { is, type Logger, type Record, type Unsubscribe } from '@anupheaus/common';
 import { AsyncLocalStorage } from 'async_hooks';
 
@@ -291,7 +292,13 @@ export class ServerDb {
     };
 
     try {
-      await Promise.resolve(run());
+      // Scoped to THIS database: the driver emits the change in whatever context the change stream was started in,
+      // which for a pooled tenant database is the process default (the controller). A hook calling useDb() or
+      // useCollection() must reach the database that saw the change (sc-621).
+      await runInDbScope(() => {
+        setDb(this);
+        return Promise.resolve(run());
+      });
     } catch (error) {
       this.#logger.error('Extension onAfter hook failed', { collectionName: event.collectionName, type: event.type, error });
     }
