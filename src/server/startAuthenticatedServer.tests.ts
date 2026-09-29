@@ -87,7 +87,7 @@ function makeLogger(): Logger {
   return logger as unknown as Logger;
 }
 
-const WEBAUTHN_AUTH: ServerAuthConfig = { mode: 'webauthn' };
+const WEBAUTHN_AUTH: ServerAuthConfig = { mode: 'webauthn', rpIds: ['app.example'], isAllowedOrigin: origin => origin === 'https://app.example' };
 
 const GOOGLE_AUTH: ServerAuthConfig = {
   mode: 'google-oauth',
@@ -186,7 +186,7 @@ describe('startAuthenticatedServer — authentication configuration', () => {
   });
 
   it('with inviteTtlMs, gives nexus a store that refuses an invite older than it, while the returned store still sees it', async () => {
-    const { configuredAuth, authColl } = await start({ auth: { mode: 'webauthn', inviteTtlMs: 1_000 } });
+    const { configuredAuth, authColl } = await start({ auth: { ...WEBAUTHN_AUTH, inviteTtlMs: 1_000 } });
     const expiredInvite = { requestId: 'r1', sessionToken: '', userId: 'u1', deviceId: '', isEnabled: false, createdAt: Date.now() - 60_000 };
     vi.spyOn(authColl, 'findById').mockResolvedValue(expiredInvite);
 
@@ -196,8 +196,17 @@ describe('startAuthenticatedServer — authentication configuration', () => {
     }).toEqual({ redeemed: undefined, direct: expiredInvite });
   });
 
+  // sc-627: nexus verifies passkeys against the app's relying parties and origins, with its challenge secret.
+  it('passes the passkey verification settings to nexus', async () => {
+    const rpIds = (origin: string) => [new URL(origin).host];
+    const isAllowedOrigin = (origin: string) => origin.startsWith('https://');
+    const { configuredAuth } = await start({ auth: { mode: 'webauthn', rpIds, isAllowedOrigin, challengeSecret: 'secret' } });
+
+    expect(configuredAuth).toEqual(expect.objectContaining({ rpIds, isAllowedOrigin, challengeSecret: 'secret' }));
+  });
+
   it('refuses to start with an inviteTtlMs that is not a positive, finite number', async () => {
-    await expect(start({ auth: { mode: 'webauthn', inviteTtlMs: 0 } })).rejects.toThrow('inviteTtlMs must be a positive, finite number of milliseconds');
+    await expect(start({ auth: { ...WEBAUTHN_AUTH, inviteTtlMs: 0 } })).rejects.toThrow('inviteTtlMs must be a positive, finite number of milliseconds');
   });
 
   it('backs google-oauth authentication with a Google auth store and passes the OAuth client settings through', async () => {
@@ -225,7 +234,7 @@ describe('startAuthenticatedServer — authentication configuration', () => {
 
   describe('invite details (webauthn)', () => {
     it('refuses to issue invites when the host app has not supplied onGetInviteDetails', async () => {
-      const { configuredAuth } = await start({ auth: { mode: 'webauthn' } });
+      const { configuredAuth } = await start({ auth: WEBAUTHN_AUTH });
       await expect(configuredAuth.onGetInviteDetails('user-1')).rejects.toThrow('onGetInviteDetails is required for WebAuthn servers');
     });
 
@@ -245,14 +254,14 @@ describe('startAuthenticatedServer — authentication configuration', () => {
 
     it('returns the host app\'s user details', async () => {
       const onGetUserDetails = vi.fn(async (id: string) => ({ id, name: 'Alice' }) as MXDBUser);
-      const { configuredAuth } = await start({ auth: { mode: 'webauthn', onGetUserDetails } });
+      const { configuredAuth } = await start({ auth: { ...WEBAUTHN_AUTH, onGetUserDetails } });
 
       await expect(configuredAuth.onGetUser('user-1')).resolves.toEqual({ id: 'user-1', name: 'Alice' });
     });
 
     it('treats a failing host user lookup as an unknown user rather than an error', async () => {
       const onGetUserDetails = vi.fn(async () => { throw new Error('users service down'); });
-      const { configuredAuth } = await start({ auth: { mode: 'webauthn', onGetUserDetails } });
+      const { configuredAuth } = await start({ auth: { ...WEBAUTHN_AUTH, onGetUserDetails } });
 
       await expect(configuredAuth.onGetUser('user-1')).resolves.toBeUndefined();
     });

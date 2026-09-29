@@ -29,7 +29,7 @@ function storeWith(held: WebAuthnAuthRecord, extra: Partial<WebAuthnAuthStore> =
     findByRegistrationToken: async () => held,
     findBySessionToken: async () => held,
     findByDevice: async () => held,
-    findByKeyHash: async () => held,
+    findByCredentialId: async () => held,
     // Proves unfiltered methods still run against the store itself (`this`).
     async findByUserId(this: unknown) { calls.push(this === store ? 'bound' : 'unbound'); return [held]; },
     ...extra,
@@ -74,11 +74,11 @@ describe('withInviteExpiry', () => {
     expect(await redeemed(store)).toEqual([undefined, undefined]);
   });
 
-  it('still finds an old registered device by its key hash and session token, so re-authentication works', async () => {
+  it('still finds an old registered device by its passkey and session token, so re-authentication works', async () => {
     const device = registered();
     const { store } = storeWith(device);
 
-    expect([await store.findByKeyHash('k1'), await store.findBySessionToken('s')]).toEqual([device, device]);
+    expect([await store.findByCredentialId('cred-1'), await store.findBySessionToken('s')]).toEqual([device, device]);
   });
 
   it('claims a registration only inside the invite lifetime: the store is asked for invites created since then', async () => {

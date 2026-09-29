@@ -19,6 +19,9 @@ type WebAuthnDoc = Omit<WebAuthnAuthRecord, 'requestId'> & { _id: string };
 const KEY_HASH_INDEX = 'keyHash_1';
 /** One key hash, one device (sc-613), over the records that have one: any number of pending invites have none. */
 const UNIQUE_KEY_HASH_INDEX = { name: KEY_HASH_INDEX, unique: true, partialFilterExpression: { keyHash: { $type: 'string' } } };
+const CREDENTIAL_ID_INDEX = 'credentialId_1';
+/** One passkey, one device (sc-627), over the records that have one: any number of pending invites have none. */
+const UNIQUE_CREDENTIAL_ID_INDEX = { name: CREDENTIAL_ID_INDEX, unique: true, partialFilterExpression: { credentialId: { $type: 'string' } } };
 /** The prefix nexus puts on the digest it stores (`toStoredKeyHash`); a key hash without it predates digests. */
 const STORED_KEY_HASH_PREFIX = 'sha256:';
 
@@ -31,8 +34,10 @@ const PASSKEY_ALREADY_REGISTERED = 'Passkey already registered';
  */
 function asPasskeyAlreadyRegistered(error: unknown): unknown {
   const { code, keyPattern, message } = (error ?? {}) as { code?: number; keyPattern?: Record<string, unknown>; message?: string; };
-  const isKeyHashDuplicate = code === 11000 && (keyPattern != null ? 'keyHash' in keyPattern : String(message).includes(KEY_HASH_INDEX));
-  return isKeyHashDuplicate ? new Error(PASSKEY_ALREADY_REGISTERED) : error;
+  const isPasskeyDuplicate = code === 11000 && (keyPattern != null
+    ? 'keyHash' in keyPattern || 'credentialId' in keyPattern
+    : String(message).includes(KEY_HASH_INDEX) || String(message).includes(CREDENTIAL_ID_INDEX));
+  return isPasskeyDuplicate ? new Error(PASSKEY_ALREADY_REGISTERED) : error;
 }
 
 /** Extra conditions a wrapper adds to `claimRegistration`. Not part of nexus's `WebAuthnAuthStore`. */
@@ -53,6 +58,7 @@ export class WebAuthnAuthCollection
     await super.createIndexes(coll as any);
     await coll.createIndex({ registrationToken: 1 }, { sparse: true });
     await coll.createIndex({ keyHash: 1 }, UNIQUE_KEY_HASH_INDEX);
+    await coll.createIndex({ credentialId: 1 }, UNIQUE_CREDENTIAL_ID_INDEX);
   }
 
   /**
@@ -63,6 +69,12 @@ export class WebAuthnAuthCollection
    */
   protected override async upgradeExisting(coll: Collection<WebAuthnDoc>): Promise<void> {
     const logger = !is.browser() ? Logger.getCurrent()?.createSubLogger('WebAuthnAuthCollection') : undefined;
+    try {
+      // sc-627: one device per passkey. No record had a credential id before, so the index cannot conflict.
+      await coll.createIndex({ credentialId: 1 }, UNIQUE_CREDENTIAL_ID_INDEX);
+    } catch (error) {
+      logger?.error('Could not add the unique passkey index to the auth collection', { error });
+    }
     try {
       const raw = await coll.find({ keyHash: { $type: 'string', $not: new RegExp(`^${STORED_KEY_HASH_PREFIX}`) } } as any, { projection: { keyHash: 1 } }).toArray();
       if (raw.length > 0) {
@@ -126,6 +138,7 @@ export class WebAuthnAuthCollection
       registrationToken,
       isEnabled: { $ne: true },
       keyHash: null,
+      credentialId: null,
       deviceDetails: null,
       lastConnectedAt: null,
       ...(createdSince != null ? { createdAt: { $gte: createdSince } } : {}),
@@ -134,6 +147,31 @@ export class WebAuthnAuthCollection
     if (doc == null) return undefined;
     const { _id, ...rest } = doc;
     return { requestId: _id, ...rest };
+  }
+
+  /** Finds the device whose passkey has this credential id (sc-627). A key that is not a string finds nothing. */
+  async findByCredentialId(credentialId: string): Promise<WebAuthnAuthRecord | undefined> {
+    if (!isAuthKey(credentialId)) return undefined;
+    const coll = await this.getColl() as unknown as Collection<WebAuthnDoc>;
+    const doc = await coll.findOne({ credentialId } as any);
+    if (doc == null) return undefined;
+    const { _id, ...rest } = doc;
+    return { requestId: _id, ...rest };
+  }
+
+  /**
+   * Records a verified sign-in (sc-627) in ONE atomic write: applies `patch` and sets `lastChallengeIssuedAt`, only while the
+   * device's last challenge is missing or older than `challengeIssuedAt`. Resolves whether it wrote, so of two identical
+   * sign-ins sent together only one is recorded, and the challenge time and counter never go backwards.
+   */
+  async recordSignIn(requestId: string, challengeIssuedAt: number, patch: Partial<WebAuthnAuthRecord>): Promise<boolean> {
+    if (!isAuthKey(requestId) || typeof challengeIssuedAt !== 'number' || !Number.isFinite(challengeIssuedAt)) return false;
+    const coll = await this.getColl() as unknown as Collection<WebAuthnDoc>;
+    const { matchedCount } = await coll.updateOne(
+      { _id: requestId, $or: [{ lastChallengeIssuedAt: null }, { lastChallengeIssuedAt: { $lt: challengeIssuedAt } }] } as any,
+      toAuthRecordUpdate({ ...patch, lastChallengeIssuedAt: challengeIssuedAt }),
+    ).catch(error => { throw asPasskeyAlreadyRegistered(error); });
+    return matchedCount === 1;
   }
 
   async findByKeyHash(keyHash: string): Promise<WebAuthnAuthRecord | undefined> {

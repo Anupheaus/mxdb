@@ -28,6 +28,8 @@ export async function enableDevice(
   authColl: AuthCollection<NexusAuthRecord>,
   requestId: string,
 ): Promise<void> {
+  // Already enabled: nothing to do, and its current session stays valid.
+  if ((await authColl.findById(requestId))?.isEnabled === true) return;
   // The old session token goes (sc-613): a disabled device keeps it so its connections are told why, but re-enabling
   // must not bring it back to life. The device signs in again with its passkey for a new one.
   await authColl.update(requestId, { isEnabled: true, sessionToken: undefined });

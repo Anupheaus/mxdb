@@ -45,6 +45,9 @@ async function start() {
       auth: {
         mode: 'webauthn',
         onGetUserDetails: async (userId) => ({ id: userId }),
+        // The local test app runs on localhost (sc-627: passkeys are verified).
+        rpIds: ['localhost'],
+        isAllowedOrigin: origin => /^https?:\/\/localhost(:\d+)?$/.test(origin),
       },
     });
     configureStaticFiles(app as any);

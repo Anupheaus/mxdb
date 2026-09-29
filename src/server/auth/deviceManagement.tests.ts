@@ -4,10 +4,11 @@ import type { NexusAuthRecord } from '@anupheaus/nexus/common';
 import type { AuthCollection } from './AuthCollection';
 import { deleteDevice, disableDevice, enableDevice, expireStalePendingInvites } from './deviceManagement';
 
-function makeAuthColl(): AuthCollection<NexusAuthRecord> {
+function makeAuthColl(isEnabled = false): AuthCollection<NexusAuthRecord> {
   return {
     delete: vi.fn().mockResolvedValue(undefined),
     update: vi.fn().mockResolvedValue(undefined),
+    findById: vi.fn().mockResolvedValue({ requestId: 'req-1', isEnabled }),
     findStalePendingInvites: vi.fn(),
   } as unknown as AuthCollection<NexusAuthRecord>;
 }
@@ -24,6 +25,13 @@ describe('deviceManagement', () => {
     await enableDevice(authColl, 'req-1');
     // Strict: `sessionToken: undefined` is what removes the field (AuthCollection.update $unsets it).
     expect(vi.mocked(authColl.update).mock.calls).toStrictEqual([['req-1', { isEnabled: true, sessionToken: undefined }]]);
+  });
+
+  // Enabling a device that is already enabled changes nothing: its current session stays valid.
+  it('enableDevice leaves an already-enabled device, and its session, alone', async () => {
+    const authColl = makeAuthColl(true);
+    await enableDevice(authColl, 'req-1');
+    expect(authColl.update).not.toHaveBeenCalled();
   });
 
   it('disableDevice disables the device, keeping its token so its connections are told why', async () => {
