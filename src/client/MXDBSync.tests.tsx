@@ -8,6 +8,7 @@ type PrfHandler = (userId: string, prfOutput: ArrayBuffer, accountId?: string) =
 
 interface NexusProps {
   host?: string;
+  rpId?: string;
   onPrf?: PrfHandler;
   onSignedIn?: (user: unknown) => void;
   children?: ReactNode;
@@ -109,6 +110,16 @@ describe('MXDBSync — auth wiring', () => {
     captured.nexus!.onSignedIn!({ id: 'alice' });
 
     expect(onSignedIn).toHaveBeenCalledWith({ id: 'alice' });
+  });
+
+  // A native app serves its page from a subdomain of the passkeys' domain (Capacitor's server.hostname), and passes that
+  // domain as the relying party; without it nexus uses the page's own host (Vision sc-507).
+  it('passes the relying party the app configures (rpId) to nexus, and none when it configures none', async () => {
+    await render({ rpId: 'vision.lintex.co.uk' });
+    const configured = captured.nexus?.rpId;
+    await render({});
+
+    expect([configured, captured.nexus?.rpId]).toEqual(['vision.lintex.co.uk', undefined]);
   });
 
   it('does not subscribe to sign-in notifications when the host app has no onSignedIn', async () => {
