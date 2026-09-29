@@ -14,6 +14,9 @@ import { SYNC_ATTEMPTS_BEFORE_STALLED, syncRetryDelayMs } from './syncRetryPolic
 import type { ClientReceiver } from './ClientReceiver';
 import type { MXDBSyncRejection } from '../models';
 import { isActiveRecordState, getStateId } from './utils';
+import {
+  MAX_DISPATCH_BYTES, MAX_RECORD_DISPATCH_BYTES, batchDispatchRecords, estimateDispatchBytes, type DispatchBatch, type DispatchRecord,
+} from './dispatchBatches';
 
 interface ClientDispatcherProps {
   clientReceiver: ClientReceiver;
@@ -32,6 +35,18 @@ interface ClientDispatcherProps {
   /** Called once when a change has failed {@link SYNC_ATTEMPTS_BEFORE_STALLED} times in a row. It keeps
    *  retrying with backoff (see `syncRetryPolicy.ts`); this only lets the app tell the user. */
   onStalled?(stall: MXDBSyncStall): void;
+  /** The most one sync emit may carry (default {@link MAX_DISPATCH_BYTES}); a backlog is sent in several (sc-623). */
+  maxDispatchBytes?: number;
+  /** The most one record may be (default {@link MAX_RECORD_DISPATCH_BYTES}); a bigger one is refused locally. */
+  maxRecordDispatchBytes?: number;
+}
+
+/** What sending a dispatch's emits came to. */
+interface BatchedDispatchResult {
+  /** stop() ran while it was in flight: nothing more may be touched. */
+  isStopped: boolean;
+  /** The emit that failed (those before it were settled; those after it were not sent), with its states and error. */
+  failure?: { error: unknown; states: MXDBRecordStates };
 }
 
 /** Why a record the server answered for, but did not acknowledge, is being retried. */
@@ -181,19 +196,19 @@ export class ClientDispatcher {
       const dispatchEpoch = this.#epoch;
       this.#inFlight = true;
 
-      const dispatchRequest = await this.#buildRequest(states);
+      const batches = await this.#buildBatches(states);
       this.#props.onDispatching(true);
       this.#props.clientReceiver.pause();
 
       try {
-        const response = await this.#props.onDispatch(dispatchRequest);
+        // A large backlog goes in several emits; each one the server answers is settled as it comes back
+        const { isStopped, failure } = await this.#dispatchInBatches(batches, dispatchEpoch);
 
-        if (this.#epoch !== dispatchEpoch) {
+        if (isStopped) {
           // stop() was called mid-flight — discard response
           return;
         }
-
-        this.#processSuccessResponse(response, states);
+        if (failure != null) throw failure.error;
 
         // Start timer if queue has items
         if (this.#queue.length > 0 && this.#epoch === startEpoch) {
@@ -349,33 +364,24 @@ export class ClientDispatcher {
     const epoch = this.#epoch;
     this.#inFlight = true;
 
-    // Step 3: Build dispatch request
-    const dispatchRequest = await this.#buildRequest(states);
+    // Step 3: Build the dispatch — in emits small enough for the socket (sc-623)
+    const batches = await this.#buildBatches(states);
     this.#props.onDispatching(true);
     this.#props.clientReceiver.pause();
 
     try {
-      const response = await this.#props.onDispatch(dispatchRequest);
+      const { isStopped, failure } = await this.#dispatchInBatches(batches, epoch);
 
-      if (epoch !== this.#epoch) {
+      if (isStopped) {
         // stop() was called — skip steps 6-7
         return;
       }
 
-      this.#processSuccessResponse(response, states);
+      // Only the emit that failed backs off: those before it are settled, those after it simply wait for the next tick
+      if (failure != null && this.#handleTimerDispatchFailure(failure.error, failure.states, epoch)) return;
 
     } catch (err) {
-      const msg = (err as any)?.message ?? String(err);
-      const stack = (err as any)?.stack;
-      const name = (err as any)?.name;
-      if (err instanceof AuthenticationError) {
-        this.#logger.warn('[CD] timer dispatch failed: Unauthorized — signing out', { error: msg });
-        this.stop();
-        this.#props.onUnauthorized?.();
-        return;
-      }
-      this.#logger.warn(`[CD] timer dispatch failed: ${name ?? 'Error'}: ${msg}`, { error: msg, stack });
-      if (epoch === this.#epoch) this.#recordFailures(states, describeError(err));
+      if (this.#handleTimerDispatchFailure(err, states, epoch)) return;
     } finally {
       // Only mutate shared state if this tick still owns the current epoch.
       // A stop() → start() cycle may have launched a new #doStart whose
@@ -394,30 +400,85 @@ export class ClientDispatcher {
     }
   }
 
-  async #buildRequest(states: MXDBRecordStates): Promise<ClientDispatcherRequest> {
-    const result: ClientDispatcherRequest = [];
-
+  /**
+   * The dispatch for these states, as emits of at most `maxDispatchBytes` each (sc-623): nexus closes a socket whose
+   * message passes 10 MB, and an oversize payload would be retried forever, so nothing on the device would sync again.
+   * Each record goes whole into one emit (its changes stay in order); a record too big to ever get through is refused
+   * here instead of being sent.
+   */
+  async #buildBatches(states: MXDBRecordStates): Promise<DispatchBatch[]> {
+    const records: DispatchRecord[] = [];
     for (const col of states) {
-      const colName = col.collectionName;
-      const records: ClientDispatcherRequest[0]['records'] = [];
-
       for (const state of col.records) {
         const id = getStateId(state);
-        if (isActiveRecordState(state)) {
-          const hash = await hashRecord(state.record);
-          records.push({ id, hash, entries: state.audit });
-        } else {
+        const entry: ClientDispatcherRequest[number]['records'][number] = isActiveRecordState(state)
+          ? { id, hash: await hashRecord(state.record), entries: state.audit }
           // Deleted — no hash
-          records.push({ id, entries: state.audit });
-        }
-      }
-
-      if (records.length > 0) {
-        result.push({ collectionName: colName, records });
+          : { id, entries: state.audit };
+        records.push({ collectionName: col.collectionName, state, entry, bytes: estimateDispatchBytes(entry) });
       }
     }
+    const { batches, oversize } = batchDispatchRecords(records, {
+      maxBatchBytes: this.#props.maxDispatchBytes ?? MAX_DISPATCH_BYTES,
+      maxRecordBytes: this.#props.maxRecordDispatchBytes ?? MAX_RECORD_DISPATCH_BYTES,
+    });
+    this.#refuseOversize(oversize);
+    // Nothing to send is still one (empty) dispatch: the start-up sweep's answer is how the server learns the client is
+    // ready, and the dispatch was always sent, empty or not
+    return batches.length > 0 ? batches : [{ states: [], request: [], bytes: 0 }];
+  }
 
-    return result;
+  /**
+   * A record too big to send: taken off the queue (so it never blocks the others) and reported as stalled with the
+   * reason. It stays in the local database; a later, smaller edit queues it again, and each fresh session's sweep reports
+   * it again until then.
+   */
+  #refuseOversize(oversize: DispatchRecord[]): void {
+    if (oversize.length === 0) return;
+    const limit = this.#props.maxRecordDispatchBytes ?? MAX_RECORD_DISPATCH_BYTES;
+    const refused = new Set(oversize.map(({ collectionName, entry }) => queueKeyOf(collectionName, entry.id)));
+    this.#queue = this.#queue.filter(item => !refused.has(queueKeyOf(item.collectionName, item.recordId)));
+    this.#queueSet = new Set(this.#queue.map(item => queueKeyOf(item.collectionName, item.recordId)));
+    for (const { collectionName, entry, bytes } of oversize) {
+      const key = queueKeyOf(collectionName, entry.id);
+      this.#retries.delete(key);
+      this.#pendingReEnqueue.delete(key);
+      const reason = `the change is too large to sync (${formatMegabytes(bytes)}; the limit is ${formatMegabytes(limit)})`;
+      this.#logger.error('[CD] a change is too large to sync and was not sent', { collectionName, recordId: entry.id, bytes, limit });
+      this.#props.onStalled?.({ collectionName, recordId: entry.id, attempts: 1, reason });
+    }
+  }
+
+  /** Sends the emits one after another, settling each as its answer arrives; stops at the first that fails. */
+  async #dispatchInBatches(batches: DispatchBatch[], epoch: number): Promise<BatchedDispatchResult> {
+    for (const batch of batches) {
+      let response: MXDBSyncEngineResponse;
+      try {
+        response = await this.#props.onDispatch(batch.request);
+      } catch (error) {
+        if (epoch !== this.#epoch) return { isStopped: true };
+        return { isStopped: false, failure: { error, states: batch.states } };
+      }
+      if (epoch !== this.#epoch) return { isStopped: true };
+      this.#processSuccessResponse(response, batch.states);
+    }
+    return { isStopped: false };
+  }
+
+  /** A timer dispatch that failed: signs out on an authentication error (returns true), else backs the records off. */
+  #handleTimerDispatchFailure(err: unknown, failedStates: MXDBRecordStates, epoch: number): boolean {
+    const msg = (err as any)?.message ?? String(err);
+    const stack = (err as any)?.stack;
+    const name = (err as any)?.name;
+    if (err instanceof AuthenticationError) {
+      this.#logger.warn('[CD] timer dispatch failed: Unauthorized — signing out', { error: msg });
+      this.stop();
+      this.#props.onUnauthorized?.();
+      return true;
+    }
+    this.#logger.warn(`[CD] timer dispatch failed: ${name ?? 'Error'}: ${msg}`, { error: msg, stack });
+    if (epoch === this.#epoch) this.#recordFailures(failedStates, describeError(err));
+    return false;
   }
 
   /** Acknowledged records start afresh; dispatched records the server did not acknowledge back off. */
@@ -528,6 +589,11 @@ export class ClientDispatcher {
       }
     }
   }
+}
+
+/** A byte count as megabytes, for people. */
+function formatMegabytes(bytes: number): string {
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
 /** A thrown value's message, for reporting why a change keeps failing. */

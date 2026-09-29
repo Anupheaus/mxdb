@@ -20,6 +20,7 @@ One SR + SD pair per connected client on the server. One CD + CR pair per client
 ## Contents
 
 - `ClientDispatcher.ts` / `.tests.ts`
+- `dispatchBatches.ts` — splits a C2S dispatch into socket-sized emits (sc-623, see below)
 - `ServerReceiver.ts` / `.tests.ts`
 - `ServerDispatcher.ts` / `.tests.ts`
 - `ClientReceiver.ts` / `.tests.ts` (delete-is-final; diagnostic logging only in hot path)
@@ -45,6 +46,8 @@ The record is still acknowledged in `successfulRecordIds`. (On the server, an up
 **Pauses nest.** `ServerDispatcher.pause()` is re-entrant (a depth count): overlapping C2S syncs on one socket each pause it, and dispatch resumes only when the last one resumes — otherwise the first to finish would release a claim the other had mirrored but not yet vetted.
 
 ## Retry backoff (C2S)
+
+A C2S dispatch goes in emits of at most `MAX_DISPATCH_BYTES` (4 MB, estimated as serialised UTF-8) — nexus closes a socket whose message passes 10 MB, and an oversize payload would be retried forever, so a big offline backlog would stop the device syncing at all (sc-623). `dispatchBatches.ts` fills emits in order, each record whole (its audit entries never split, so its changes stay in order); a record bigger than an emit goes alone. A record bigger than `MAX_RECORD_DISPATCH_BYTES` (9 MB) could never get through: it is taken off the queue, not sent, and reported through `onStalled` ("too large to sync") — it never blocks the others. The emits go one after another and each is settled as its answer arrives; the first that fails backs off only its own records, and the rest wait for the next tick. Nothing to send is still one empty dispatch (the start-up sweep's). Both limits are props (`maxDispatchBytes`, `maxRecordDispatchBytes`).
 
 The `ClientDispatcher` tracks consecutive failures per queued record — a dispatch that throws, or a response that does not acknowledge the record. The first `SYNC_FAST_RETRY_ATTEMPTS` retries run at the normal timer interval (transient blips); after that the delay doubles from `SYNC_RETRY_BASE_DELAY_MS` up to `SYNC_RETRY_MAX_DELAY_MS` (`syncRetryPolicy.ts`). A backing-off record is left out of dispatches until its retry is due and never holds up other records (an enqueue of a due record brings a long wait forward). After `SYNC_ATTEMPTS_BEFORE_STALLED` attempts it is reported once through `onStalled` (the client surfaces it as an `onError` `SYNC_STALLED` error) — and keeps retrying; nothing is ever dropped. The start-up sweep backs off the same way and reports without a record id. `stop()` forgets all backoff state (a new session re-sweeps).
 
