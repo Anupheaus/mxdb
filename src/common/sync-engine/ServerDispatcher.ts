@@ -9,7 +9,7 @@ import {
   type ServerDispatcherFilterRecord,
   SyncPausedError,
 } from './models';
-import { isActiveCursor, isDeletedCursor, getCursorId } from './utils';
+import { isActiveCursor, isDeletedCursor, isEvictionCursor, getCursorId } from './utils';
 
 interface ServerDispatcherProps {
   onDispatch<T extends MXDBRecord>(payload: MXDBRecordCursors<T>): Promise<MXDBSyncEngineResponse>;
@@ -223,7 +223,12 @@ export class ServerDispatcher {
           }
           // OR the flags — authoritative wins over change-stream.
           const mergedFlag = existing.addToFilter || batch.addToFilter;
-          if (isDeletedCursor(cursor)) {
+          if (isEvictionCursor(cursor) || isEvictionCursor(existing.cursor)) {
+            // An eviction is not a delete: it never beats a real delete, and whichever of an eviction and an
+            // active cursor was enqueued LATER wins — the record left the gate, or came back into it.
+            if (isDeletedCursor(existing.cursor) && !isEvictionCursor(existing.cursor)) existing.addToFilter = mergedFlag;
+            else colMap.set(id, { cursor, addToFilter: mergedFlag });
+          } else if (isDeletedCursor(cursor)) {
             colMap.set(id, { cursor, addToFilter: mergedFlag });
           } else if (isActiveCursor(cursor) && !isDeletedCursor(existing.cursor)) {
             // `>=` so the LATER-enqueued cursor wins on ties. See method doc: concurrent
@@ -267,6 +272,19 @@ export class ServerDispatcher {
         const id = getCursorId(cursor);
         const filterRec = filterRecordsMap?.get(id);
         const inDeletedSet = deletedSet?.has(id) === true;
+
+        // An eviction carries no content, so it is safe to send for any id, tombstoned or not. A change-stream
+        // eviction only goes to a client that holds the record (it is in the filter); an authoritative one (the
+        // ServerReceiver answering a client's claim) always goes.
+        if (isEvictionCursor(cursor)) {
+          if (filterRec == null && !addToFilter) {
+            skippedChangeStreamUnknown++;
+            continue;
+          }
+          freshRecords.push(cursor);
+          colFlags.set(id, addToFilter);
+          continue;
+        }
 
         // Delete-is-final: anything targeting a confirmed-deleted id is skipped.
         if (inDeletedSet) {
@@ -396,7 +414,12 @@ export class ServerDispatcher {
           const id = getCursorId(cursor);
           const addToFilter = colFlags.get(id) ?? true;
 
-          if (isDeletedCursor(cursor)) {
+          if (isEvictionCursor(cursor)) {
+            // Not a delete: forget the record (no tombstone), whether the client dropped it or declined because it
+            // still has changes to sync — either way its later changes must not reach this client, and an
+            // authoritative push brings it back if the gate lets it in again.
+            filterRecordsMap?.delete(id);
+          } else           if (isDeletedCursor(cursor)) {
             if (successSet.has(id)) {
               // Delete-is-final: permanently block future cursors for this id, regardless
               // of whether the record was previously in the filter or how the delete was

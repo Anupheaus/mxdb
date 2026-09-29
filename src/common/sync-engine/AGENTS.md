@@ -35,14 +35,21 @@ A C2S response item may carry `rejectedRecords: { id, reason }[]` — records a 
 
 A sync request can name any record id — a branch-only probe claiming a stale hash, or an update — and the `ServerReceiver` answers a disparity with the stored (or merged) record. So the server passes `onFilterReadable`: of the request's ids, those this client may read (the collection's `onQuery` gate, see `src/server/collections/AGENTS.md`). The receiver calls it **after** persisting (a record the client just created is judged as stored) and then, for every id outside it:
 
-- sends **no active cursor** — its content never reaches the client. Delete cursors still go: they carry no content, and a missing record must still leave the device.
-- **removes it from the `ServerDispatcher` filter** (`removeFromFilter`) that the mirror seeded from the client's claim, so claiming an id does not subscribe the client to its change-stream updates. This is not a delete: no tombstone, and the client's own copy is left alone (revoking it is sc-584).
+- answers it only with an **eviction** (a delete cursor with `isEviction: true`) when the client claimed it — never its content, and never a plain delete — whether it is live, deleted or was never stored, so the client cannot tell those apart (sc-608). A record the server holds as a tombstone is still tombstoned in the SD, so the delete stays final for the connection. A refused write to a live record outside the gate is evicted too, so the device drops its edit (sc-612).
+- **removes it from the `ServerDispatcher` filter** (`removeFromFilter`) that the mirror seeded from the client's claim, so claiming an id does not subscribe the client to its change-stream updates. This is not a delete: no tombstone.
 
 The record is still acknowledged in `successfulRecordIds`. (On the server, an update or delete to a record whose STORED version is outside the gate is refused before it is persisted — `server/actions/rejectWritesOutsideReadGate.ts`.) Without `onFilterReadable` (unit tests, ungated servers) every record is readable.
 
 **Fail closed.** The mirror subscribes the client to every id it claims before any await. If `process` throws before the gate has vetted those claims (a failed retrieve, a gate that throws), the `finally` removes every claimed id of the request from the filter before resuming; the client re-claims them on its retry. The pause and the mirror sit inside the `try`, so a request that cannot even be mirrored still reaches the `finally` and never leaves the SD paused.
 
 **Pauses nest.** `ServerDispatcher.pause()` is re-entrant (a depth count): overlapping C2S syncs on one socket each pause it, and dispatch resumes only when the last one resumes — otherwise the first to finish would release a claim the other had mirrored but not yet vetted.
+
+## Evictions (S2C)
+
+An eviction (`MXDBDeletedRecordCursor.isEviction`) tells a client to drop a record it may no longer hold. It is NOT a delete:
+
+- **ServerDispatcher.** A change-stream eviction is sent only to a client that holds the record (it is in the filter); an authoritative one always is, even for a tombstoned id — it carries nothing. On an answer (acknowledged or declined) the record is removed from the filter WITHOUT a tombstone, so an authoritative push under the new gate delivers it again. Squashed with other cursors for the same record, it never beats a real delete, and the later of an eviction and an active cursor wins.
+- **ClientReceiver.** With nothing pending it is applied like a delete (the local copy goes, no tombstone is kept); with local changes still to sync it is declined — those changes reach the server first.
 
 ## Retry backoff (C2S)
 

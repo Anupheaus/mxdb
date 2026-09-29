@@ -35,8 +35,8 @@ interface ServerReceiverProps {
   /**
    * The server's read gate (the collection's `onQuery`): of the given record ids, those this client may read.
    * Called after persisting, so a record the client just wrote is judged as it is now stored. A record outside
-   * it is never pushed to the client — delete cursors still are, they carry no content — and is removed from
-   * the dispatcher's filter, so a client claiming an id it may not read is not subscribed to its changes.
+   * it is answered only with an eviction (never its content, never a plain delete) and is removed from the
+   * dispatcher's filter, so a client claiming an id it may not read is not subscribed to its changes.
    * Absent: every record is readable.
    */
   onFilterReadable?(request: MXDBRecordStatesRequest): Promise<MXDBRecordStatesRequest>;
@@ -66,7 +66,7 @@ interface ServerReceiverProps {
  *         is not Created and the server has no state are treated as server-origin
  *         ghosts and receive a delete cursor — client Created records are excluded.
  * 4b. Read gate: resolve which of the request's records this client may read ({@link ServerReceiverProps.onFilterReadable}).
- *    A record outside it gets no active cursor, and is removed from the SD filter the mirror seeded.
+ *    A record outside it gets only an eviction (if the client claimed it), and is removed from the SD filter the mirror seeded.
  * 5. All disparity pushes go through `sd.push(payload)` with the default
  *    `addToFilter=true`. Since the mirror set in step 2 has the client's old
  *    hash and the cursor carries the new (server/merged) hash, the SD's filter
@@ -353,6 +353,20 @@ export class ServerReceiver {
         if (col == null) { col = { collectionName: colName, records: [] }; pushPayload.push(col); }
         return col;
       };
+      // A record outside the read gate is answered only with an EVICTION — never its content, and never a plain delete —
+      // whether it is live, deleted or was never stored: the client drops its copy (without a tombstone), and cannot
+      // tell those cases apart. A record the server holds as a tombstone is still tombstoned in the SD, so the delete
+      // stays final for this connection.
+      const tombstonedUnreadable = new Map<string, string[]>();
+      const evict = (collectionName: string, recordId: string, serverState: MXDBActiveRecordState | MXDBDeletedRecordState | undefined): void => {
+        const cursor: MXDBDeletedRecordCursor = { recordId, lastAuditEntryId: '', isEviction: true };
+        ensureCol(collectionName).records.push(cursor);
+        if (serverState != null && !isActiveRecordState(serverState)) tombstonedUnreadable.set(collectionName, [...(tombstonedUnreadable.get(collectionName) ?? []), recordId]);
+      };
+      // Held at the server's current hash (confirmed from `_meta`), but no longer readable: e.g. the caller lost access.
+      for (const [colName, ids] of metaMatched) {
+        for (const id of ids) if (!isReadable(colName, id)) evict(colName, id, undefined);
+      }
 
       // Parallelise hashRecord across all records that need hashing — this is
       // pure CPU work per record but JS scheduling lets us batch them so we don't
@@ -376,6 +390,12 @@ export class ServerReceiver {
       // Branched-only disparities (and server-missing ghosts — branched or updated records with no server state).
       let branchedActiveIdx = 0;
       for (const d of branchOnlyDisparities) {
+        // Consumed for every active server state, readable or not, so the index stays aligned with `branchedActive`.
+        const serverHash = d.serverState != null && isActiveRecordState(d.serverState) ? branchedHashByIdx.get(branchedActiveIdx++)! : undefined;
+        if (!isReadable(d.collectionName, d.recordId)) {
+          if (d.clientHash != null) evict(d.collectionName, d.recordId, d.serverState);
+          continue;
+        }
         if (d.serverState == null) {
           // Server has no record or audit tombstone. Only push a delete when the client still
           // considers the record active — never for client Created records (handled above).
@@ -385,14 +405,12 @@ export class ServerReceiver {
           continue;
         }
         if (isActiveRecordState(d.serverState)) {
-          const serverHash = branchedHashByIdx.get(branchedActiveIdx++)!;
-          if (!isReadable(d.collectionName, d.recordId)) continue; // outside the read gate: never send its content
           if (serverHash === d.clientHash) continue; // already consistent
           const serverLastId = this.#getLastAuditEntryId(d.serverState.audit);
           const cursor: MXDBActiveRecordCursor & { hash: string } = {
             record: d.serverState.record,
             lastAuditEntryId: serverLastId,
-            hash: serverHash,
+            hash: serverHash!,
           };
           ensureCol(d.collectionName).records.push(cursor);
         } else {
@@ -412,8 +430,16 @@ export class ServerReceiver {
 
         const lastAuditEntryId = this.#getLastAuditEntryId(item.mergedEntries);
 
+        if (!isReadable(colName, item.recordId)) {
+          // E.g. a change the write gate refused (its state is what the server holds): the device drops its local edit
+          // rather than keep a version the server does not have.
+          if (item.liveRecord != null || item.clientHash != null) {
+            evict(colName, item.recordId, item.liveRecord != null ? { record: item.liveRecord, audit: item.mergedEntries } : { recordId: item.recordId, audit: item.mergedEntries });
+          }
+          continue;
+        }
+
         if (item.liveRecord != null) {
-          if (!isReadable(colName, item.recordId)) continue; // outside the read gate: never send its content
           const mergedHash = persistedHashByKey.get(`${colName}::${item.recordId}`)!;
           if (mergedHash === item.clientHash) continue; // client already matches the merged state
           const cursor: MXDBActiveRecordCursor & { hash: string } = {
@@ -430,6 +456,9 @@ export class ServerReceiver {
         }
       }
 
+      if (tombstonedUnreadable.size > 0) {
+        serverDispatcher.updateFilter([...tombstonedUnreadable].map(([collectionName, deletedRecordIds]) => ({ collectionName, records: [], deletedRecordIds })));
+      }
       if (pushPayload.length > 0) {
         serverDispatcher.push(pushPayload);
       }

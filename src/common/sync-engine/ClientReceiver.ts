@@ -10,6 +10,7 @@ import {
 } from './models';
 import {
   isActiveCursor,
+  isEvictionCursor,
   isActiveRecordState,
   getCursorId,
   addIdsToResponse,
@@ -133,6 +134,13 @@ export class ClientReceiver {
 
         if (!branchOnly) {
           // Has pending local changes.
+          // An eviction is not a delete: the record still exists and the local changes still have to reach the
+          // server (which judges them), so decline it — the server forgets the record for this client either way,
+          // and the next sync of the local copy is answered with another eviction once nothing is pending.
+          if (isEvictionCursor(cursor)) {
+            declineRecord(colName, id);
+            continue;
+          }
           // Delete-is-final: a delete cursor always wins, even over pending C2S changes —
           // once the server tombstones a record, the client's pending updates are moot
           // (the SR would reject them anyway). Write a local tombstone so subsequent

@@ -15,6 +15,9 @@ import type { TLSCertificate } from '@anupheaus/nexus/server';
 import { internalSubscriptions } from './subscriptions';
 import { addClientWatches, removeClientWatches } from './clientDbWatches';
 import { ServerToClientSynchronisation } from './ServerToClientSynchronisation';
+import { filterReadableRecordIds } from './actions/filterReadableRecordIds';
+import type { MXDBRecordStatesRequest } from '../common/sync-engine';
+import { AsyncResource } from 'async_hooks';
 import { WebAuthnAuthCollection } from './auth/WebAuthnAuthCollection';
 import { withInviteExpiry } from './auth/withInviteExpiry';
 import { GoogleOAuthAuthCollection } from './auth/GoogleOAuthAuthCollection';
@@ -240,6 +243,9 @@ export async function startAuthenticatedServer({
         collections,
         logger: s2cLogger,
         clientId: client.id,
+        // The change stream calls this outside any request, so it is bound to THIS connection's async context: its
+        // scoped tenant database and its authentication (read live, so a sign-in or sign-out later is honoured).
+        filterReadable: AsyncResource.bind((request: MXDBRecordStatesRequest) => filterReadableRecordIds(request)),
       });
       clientS2CInstances.set(client, {
         s2c,

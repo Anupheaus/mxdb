@@ -71,6 +71,7 @@ const ctx = vi.hoisted(() => ({
   changeListeners: [] as ((event: unknown) => void)[],
   pushedActive: [] as { collectionName: string; ids: string[] }[],
   pushedDeletes: [] as { collectionName: string; ids: string[] }[],
+  pushedEvictions: [] as { collectionName: string; ids: string[] }[],
   /** The client connection's S2C dispatcher (a real one; set per test), for the C2S sync path. */
   dispatcher: undefined as unknown,
   dispatched: [] as MXDBRecordCursors[],
@@ -107,6 +108,7 @@ vi.mock('./providers', () => ({
     dispatcher: ctx.dispatcher,
     pushActive: async (collectionName: string, records: Record[]) => { ctx.pushedActive.push({ collectionName, ids: records.map(({ id }) => id) }); },
     pushDeletes: async (collectionName: string, ids: string[]) => { ctx.pushedDeletes.push({ collectionName, ids }); },
+    pushEvictions: (collectionName: string, ids: string[]) => { ctx.pushedEvictions.push({ collectionName, ids }); },
   }),
 }));
 
@@ -183,6 +185,7 @@ beforeEach(async () => {
   ctx.changeListeners = [];
   ctx.pushedActive = [];
   ctx.pushedDeletes = [];
+  ctx.pushedEvictions = [];
   ctx.dispatched = [];
   ctx.dispatcher = new ServerDispatcher(logger, {
     onDispatch: async payload => {
@@ -316,13 +319,15 @@ describe('distinct', () => {
 });
 
 describe('reconcile', () => {
-  it('confirms a deletion but never pushes a record, so a gated record cannot be read through it', async () => {
+  it('answers a gated record exactly as a deleted one, and evicts it rather than tombstoning it (sc-608)', async () => {
     ctx.userId = ALICE;
-    const response = await handleReconcile([{ collectionName: gatedNotes.name, localIds: [bobGreen.id, 'long-gone'] }]);
-    expect(response).toEqual([{ collectionName: gatedNotes.name, deletedIds: ['long-gone'] }]);
+    const response = await handleReconcile([{ collectionName: gatedNotes.name, localIds: [bobGreen.id, 'long-gone', aliceRed.id] }]);
+    // The client cannot tell Bob's existing note from one that is gone.
+    expect(response).toEqual([{ collectionName: gatedNotes.name, deletedIds: [bobGreen.id, 'long-gone'] }]);
     expect(ctx.pushedActive).toEqual([]);
-    // Bob's note still exists: telling the client it was deleted would tombstone it on the device, and a
-    // tombstone refuses the record for good (delete-is-final) — even after the gate later lets it through.
+    // Bob's note still exists: it is evicted, not deleted — a tombstone would refuse it for good (delete-is-final),
+    // even once the gate lets it through again.
+    expect(ctx.pushedEvictions).toEqual([{ collectionName: gatedNotes.name, ids: [bobGreen.id] }]);
     await vi.waitFor(() => expect(ctx.pushedDeletes).toEqual([{ collectionName: gatedNotes.name, ids: ['long-gone'] }]));
   });
 });
@@ -412,6 +417,11 @@ describe('client-to-server sync', () => {
     return ctx.dispatched.flatMap(payload => payload.flatMap(({ records }) => records.flatMap(cursor => ('record' in cursor ? [cursor.record.id] : [])))).sort();
   }
 
+  /** Every record id the client was told to evict. */
+  function dispatchedEvictionIds(): string[] {
+    return ctx.dispatched.flatMap(payload => payload.flatMap(({ records }) => records.flatMap(cursor => (!('record' in cursor) && cursor.isEviction === true ? [cursor.recordId] : [])))).sort();
+  }
+
   /** Audits are written after the record (fire-and-forget); the sync path merges against them, so wait for them. */
   async function auditsWritten(collectionName: string): Promise<void> {
     await vi.waitFor(async () => expect(await client.db('readgatedb').collection(`${collectionName}_sync`).countDocuments()).toBe(ALL_NOTES.length), WAIT_FOR_PUSH);
@@ -426,6 +436,8 @@ describe('client-to-server sync', () => {
     ctx.userId = ALICE;
     await handleClientToServerSync([{ collectionName: gatedNotes.name, records: [probe(bobGreen.id), probe(aliceRed.id)] }]);
     await vi.waitFor(() => expect(dispatchedRecordIds()).toEqual([aliceRed.id]), WAIT_FOR_PUSH);
+    // Answered with an eviction: a device still holding Bob's note (from before it left Alice's gate) drops it.
+    expect(dispatchedEvictionIds()).toEqual([bobGreen.id]);
 
     // Both notes change: only the one Alice may read reaches her through the change stream.
     ctx.dispatched = [];
@@ -472,7 +484,20 @@ describe('client-to-server sync', () => {
 
       expect(response).toEqual([{ collectionName: gatedNotes.name, successfulRecordIds: [bobGreen.id], rejectedRecords: [{ id: bobGreen.id, reason: OUTSIDE_READ_GATE_REASON }] }]);
       expect(await notesIn(gatedNotes.name).get(bobGreen.id)).toEqual(bobGreen);
+      // The device drops its refused edit rather than keep a version the server does not have (sc-612).
+      await vi.waitFor(() => expect(dispatchedEvictionIds()).toEqual([bobGreen.id]), WAIT_FOR_PUSH);
       expect(dispatchedRecordIds()).toEqual([]);
+    });
+
+    it('acknowledges a repeated delete of an already deleted record quietly (sc-612)', async () => {
+      ctx.userId = BOB;
+      await auditsWritten(gatedNotes.name);
+      await notesIn(gatedNotes.name).remove(bobGreen.id);
+      await vi.waitFor(async () => expect((await auditOf(bobGreen.id)).entries.some(({ type }) => type === AuditEntryType.Deleted)).toBe(true), WAIT_FOR_PUSH);
+      // Bob's device deleted it too, offline, and now syncs its own delete (or resends one after a lost ack).
+      const entries = auditor.entriesOf(auditor.deleteAfterLatest(await auditOf(bobGreen.id)));
+      const response = await handleClientToServerSync([{ collectionName: gatedNotes.name, records: [{ id: bobGreen.id, entries }] }]);
+      expect(response).toEqual([{ collectionName: gatedNotes.name, successfulRecordIds: [bobGreen.id] }]);
     });
 
     it('refuses a delete of a record the caller may not read', async () => {
@@ -558,5 +583,20 @@ describe('an $or gate', () => {
     await notesIn(eitherNotes.name).upsert({ id: 'bob-yellow', ownerId: BOB, colour: 'yellow' });
     await handleDistinct({ collectionName: eitherNotes.name, field: 'colour', filters: { $or: [{ ownerId: BOB }, { ownerId: ALICE }] } as DataFilters<Note> });
     expect(pushedIds(eitherNotes.name)).not.toContain('bob-yellow');
+  });
+});
+
+// ─── A collection that keeps no audit (sc-612) ─────────────────────────────────────────────────────────────
+
+describe('a collection with disableAudit', () => {
+  it('reads no audit — not even a leftover audit collection from before it stopped keeping one', async () => {
+    const noAudit = defineCollection<Note>({ name: 'read_gate_no_audit_notes', indexes: [], disableAudit: true });
+    const db = client.db('readgatedb');
+    await db.collection(`${noAudit.name}_sync`).insertOne({ _id: 'stale' as never, entries: [{ type: AuditEntryType.Deleted, id: 'x' }] });
+    const collection = new ServerDbCollection<Note>({
+      getDb: () => Promise.resolve(db), collection: noAudit, collectionNames: Promise.resolve(new Set([`${noAudit.name}_sync`])), logger,
+    });
+    // Were a stale tombstone read here, the write gate and getAuditIds (which reports none) would disagree.
+    expect({ audits: await collection.getAudit(['stale']), auditIds: await collection.getAuditIds(['stale']) }).toEqual({ audits: [], auditIds: [] });
   });
 });
