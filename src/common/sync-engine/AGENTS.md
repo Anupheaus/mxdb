@@ -30,7 +30,7 @@ One SR + SD pair per connected client on the server. One CD + CR pair per client
 
 ## Rejected records (C2S)
 
-A C2S response item may carry `rejectedRecords: { id, reason }[]` — records a server collection before-write hook refused. They are ALSO in `successfulRecordIds`: the `ClientDispatcher` settles them like any acknowledged record (so they are never resent) and reports them through its `onRejected` prop. The server reverts them (the `ServerReceiver` reads the states `onUpdate` persisted back — `onUpdate` may amend a state in place or replace it with a state for the same record — and pushes the reverted record, or a delete for a rejected create, to the client). Older clients ignore the field and still settle the records.
+A C2S response item may carry `rejectedRecords: { id, reason, kind }[]` — records a server collection before-write hook (or the read gate) refused; `kind` (`validation` | `access` | `error`, see `MXDBSyncRejectionKind`) says whether `reason` is a message for the user, and is passed through to `onRejected` unchanged (absent from older servers). They are ALSO in `successfulRecordIds`: the `ClientDispatcher` settles them like any acknowledged record (so they are never resent) and reports them through its `onRejected` prop. The server reverts them (the `ServerReceiver` reads the states `onUpdate` persisted back — `onUpdate` may amend a state in place or replace it with a state for the same record — and pushes the reverted record, or a delete for a rejected create, to the client). Older clients ignore the field and still settle the records.
 
 ## The read gate (C2S)
 

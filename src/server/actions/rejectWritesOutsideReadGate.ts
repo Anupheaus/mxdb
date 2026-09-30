@@ -74,12 +74,12 @@ export async function rejectWritesOutsideReadGate({ collection, states }: Reject
   const storedStates = await loadStoredStates({ get, getAudit, liveIds: refusedLiveIds, auditedIds, refusedIds: heldBackIds });
   const incomingById = new Map(states.map(state => [stateIdOf(state), state] as const));
   const refusals = [
-    ...refusedLiveIds.map(id => ({ id, reason: OUTSIDE_READ_GATE_REASON })),
+    ...refusedLiveIds.map(id => ({ id, reason: OUTSIDE_READ_GATE_REASON, kind: 'access' as const })),
     // Deleting a record that is already deleted (two people deleting it, or a delete resent after a lost ack) changes
     // nothing, so it is acknowledged quietly; any other change to a deleted record is refused.
     ...deletedIds
       .filter(id => !isOnlyARepeatedDelete({ incoming: incomingById.get(id), stored: storedStates.get(id) }))
-      .map(id => ({ id, reason: DELETED_RECORD_REASON })),
+      .map(id => ({ id, reason: DELETED_RECORD_REASON, kind: 'access' as const })),
   ];
 
   states.forEach((state, index) => {

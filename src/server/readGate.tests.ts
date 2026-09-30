@@ -482,7 +482,7 @@ describe('client-to-server sync', () => {
       const entries = auditor.entriesOf(auditor.updateAuditWithAfterLatest({ ...bobGreen, ownerId: ALICE }, await auditOf(bobGreen.id), bobGreen));
       const response = await handleClientToServerSync([{ collectionName: gatedNotes.name, records: [{ id: bobGreen.id, hash: 'stale-hash', entries }] }]);
 
-      expect(response).toEqual([{ collectionName: gatedNotes.name, successfulRecordIds: [bobGreen.id], rejectedRecords: [{ id: bobGreen.id, reason: OUTSIDE_READ_GATE_REASON }] }]);
+      expect(response).toEqual([{ collectionName: gatedNotes.name, successfulRecordIds: [bobGreen.id], rejectedRecords: [{ id: bobGreen.id, reason: OUTSIDE_READ_GATE_REASON, kind: 'access' }] }]);
       expect(await notesIn(gatedNotes.name).get(bobGreen.id)).toEqual(bobGreen);
       // The device drops its refused edit rather than keep a version the server does not have (sc-612).
       await vi.waitFor(() => expect(dispatchedEvictionIds()).toEqual([bobGreen.id]), WAIT_FOR_PUSH);
@@ -506,7 +506,7 @@ describe('client-to-server sync', () => {
       const entries = auditor.entriesOf(auditor.deleteAfterLatest(await auditOf(bobGreen.id)));
       const response = await handleClientToServerSync([{ collectionName: gatedNotes.name, records: [{ id: bobGreen.id, entries }] }]);
 
-      expect(response[0]!.rejectedRecords).toEqual([{ id: bobGreen.id, reason: OUTSIDE_READ_GATE_REASON }]);
+      expect(response[0]!.rejectedRecords).toEqual([{ id: bobGreen.id, reason: OUTSIDE_READ_GATE_REASON, kind: 'access' }]);
       expect(await notesIn(gatedNotes.name).get(bobGreen.id)).toEqual(bobGreen);
     });
 
@@ -529,7 +529,7 @@ describe('client-to-server sync', () => {
         { collectionName: openNotes.name, records: [probe(aliceBlue.id)] },
       ]);
 
-      expect(response.find(({ collectionName }) => collectionName === gatedNotes.name)?.rejectedRecords).toEqual([{ id: bobGreen.id, reason: DELETED_RECORD_REASON }]);
+      expect(response.find(({ collectionName }) => collectionName === gatedNotes.name)?.rejectedRecords).toEqual([{ id: bobGreen.id, reason: DELETED_RECORD_REASON, kind: 'access' }]);
       expect(await notesIn(gatedNotes.name).get(bobGreen.id)).toBeUndefined();
       await vi.waitFor(() => expect(dispatchedRecordIds()).toEqual([aliceBlue.id]), WAIT_FOR_PUSH);
     });

@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { monotonicFactory } from 'ulidx';
 import '@anupheaus/common'; // installs array extensions (.ids()) and Object.clone used by the sync engine
-import type { Logger, Record as MXDBRecord } from '@anupheaus/common';
+import { ValidationError, type Logger, type Record as MXDBRecord } from '@anupheaus/common';
 import { AuditEntryType, OperationType, auditor, defineCollection, type MXDBCollection } from '../../common';
 import type { AuditEntry, AuditOf } from '../../common/auditor';
 import { hashRecord } from '../../common/auditor/hash';
@@ -449,7 +449,7 @@ describe('handleClientToServerSync — a before-write hook rejects a synced reco
     it('is acknowledged and reported as rejected with the hook\'s reason, so the client stops resending it', async () => {
       const response = await syncRejectedUpdate();
 
-      expect(response).toEqual([{ collectionName: HOOKED, successfulRecordIds: ['i1'], rejectedRecords: [{ id: 'i1', reason: REJECTION }] }]);
+      expect(response).toEqual([{ collectionName: HOOKED, successfulRecordIds: ['i1'], rejectedRecords: [{ id: 'i1', reason: REJECTION, kind: 'error' }] }]);
     });
 
     it('leaves the stored record as it was', async () => {
@@ -498,7 +498,7 @@ describe('handleClientToServerSync — a before-write hook rejects a synced reco
     it('is acknowledged and reported as rejected', async () => {
       const response = await syncRejectedCreate();
 
-      expect(response).toEqual([{ collectionName: HOOKED, successfulRecordIds: ['n1'], rejectedRecords: [{ id: 'n1', reason: REJECTION }] }]);
+      expect(response).toEqual([{ collectionName: HOOKED, successfulRecordIds: ['n1'], rejectedRecords: [{ id: 'n1', reason: REJECTION, kind: 'error' }] }]);
     });
 
     it('is recorded as deleted, keeping the client\'s entry, and never stored live', async () => {
@@ -520,7 +520,7 @@ describe('handleClientToServerSync — a before-write hook rejects a synced reco
     it('is acknowledged and reported as rejected', async () => {
       const response = await syncRejectedDelete();
 
-      expect(response).toEqual([{ collectionName: HOOKED, successfulRecordIds: ['i1'], rejectedRecords: [{ id: 'i1', reason: 'still referenced' }] }]);
+      expect(response).toEqual([{ collectionName: HOOKED, successfulRecordIds: ['i1'], rejectedRecords: [{ id: 'i1', reason: 'still referenced', kind: 'error' }] }]);
     });
 
     it('leaves the record and its audit on the server untouched', async () => {
@@ -549,23 +549,51 @@ describe('handleClientToServerSync — a before-write hook rejects a synced reco
     }]);
 
     expect([response, harness.collection.records.get('ok')]).toEqual([
-      [{ collectionName: HOOKED, successfulRecordIds: ['n1', 'ok'], rejectedRecords: [{ id: 'n1', reason: REJECTION }] }],
+      [{ collectionName: HOOKED, successfulRecordIds: ['n1', 'ok'], rejectedRecords: [{ id: 'n1', reason: REJECTION, kind: 'error' }] }],
       accepted,
     ]);
   });
 
-  const thrownValues: Array<[string, unknown, string]> = [
-    ['an Error', new Error('nope'), 'nope'],
-    ['a string', 'plain refusal', 'plain refusal'],
-    ['an object', { code: 42 }, '{"code":42}'],
+  // `kind` tells the app whether the reason is a message meant for the user (a ValidationError) or not.
+  const thrownValues: Array<[string, unknown, string, string]> = [
+    ['a ValidationError', new ValidationError('Postcode is required.', 'postcode'), 'Postcode is required.', 'validation'],
+    ['an Error', new Error('nope'), 'nope', 'error'],
+    ['a string', 'plain refusal', 'plain refusal', 'error'],
+    ['an object', { code: 42 }, '{"code":42}', 'error'],
   ];
 
-  it.each(thrownValues)('reports %s thrown by the hook as the reason', async (_label, thrown, reason) => {
+  it.each(thrownValues)('reports %s thrown by the hook as the reason, with its kind', async (_label, thrown, reason, kind) => {
     hooks.onBeforeUpsert.mockRejectedValue(thrown);
 
     const response = await syncRejectedCreate();
 
-    expect(response[0]!.rejectedRecords).toEqual([{ id: 'n1', reason }]);
+    expect(response[0]!.rejectedRecords).toEqual([{ id: 'n1', reason, kind }]);
+  });
+
+  it('reports a ValidationError refusing an update as a validation rejection', async () => {
+    hooks.onBeforeUpsert.mockRejectedValue(new ValidationError('That name is taken.', 'name'));
+
+    const response = await syncRejectedUpdate();
+
+    expect(response[0]!.rejectedRecords).toEqual([{ id: 'i1', reason: 'That name is taken.', kind: 'validation' }]);
+  });
+
+  it('reports a ValidationError refusing a delete as a validation rejection', async () => {
+    harness.seed(stored, [createdEntry(stored, 1)]);
+    hooks.onBeforeDelete.mockRejectedValue(new ValidationError('Remove its ranges first.', 'id'));
+
+    const response = await handleClientToServerSync(request(HOOKED, 'i1', [branchedEntry(1), deletedEntry(2)]));
+
+    expect(response[0]!.rejectedRecords).toEqual([{ id: 'i1', reason: 'Remove its ranges first.', kind: 'validation' }]);
+  });
+
+  it('recognises a ValidationError from another copy of @anupheaus/common by its name', async () => {
+    const foreignValidationError = Object.assign(new Error('Enter a postcode.'), { name: 'ValidationError' });
+    hooks.onBeforeUpsert.mockRejectedValue(foreignValidationError);
+
+    const response = await syncRejectedCreate();
+
+    expect(response[0]!.rejectedRecords).toEqual([{ id: 'n1', reason: 'Enter a postcode.', kind: 'validation' }]);
   });
 
   it('logs the rejection', async () => {

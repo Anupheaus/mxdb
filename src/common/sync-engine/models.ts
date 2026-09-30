@@ -1,5 +1,6 @@
 import type { Record as MXDBRecord } from '@anupheaus/common';
 import type { AuditEntry } from '../auditor';
+import type { MXDBSyncRejectionKind } from '../models/collectionsModels';
 
 export interface MXDBRecordStatesByCollectionRequest { collectionName: string; recordIds: string[]; }
 export type MXDBRecordStatesRequest = MXDBRecordStatesByCollectionRequest[];
@@ -55,6 +56,8 @@ export interface MXDBSyncEngineResponseItem {
 export interface MXDBSyncRejectedRecord {
   id: string;
   reason: string;
+  /** Absent from a server older than mxdb 0.2.5 — treat as unknown, i.e. not a message for the user. */
+  kind?: MXDBSyncRejectionKind;
 }
 export type MXDBSyncEngineResponse = MXDBSyncEngineResponseItem[];
 

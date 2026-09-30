@@ -111,6 +111,15 @@ export interface MXDBError {
 }
 
 /**
+ * What kind of refusal a synced record met, so the app knows whether `reason` is written for the user:
+ * - `validation` — a before-write hook threw a `ValidationError` (from `@anupheaus/common`): `reason` is the hook's
+ *   message, meant to be shown to the user;
+ * - `access` — the read gate refused it (the caller may not change that record, or it has been deleted);
+ * - `error` — a hook threw anything else: `reason` is technical detail for the log, not for the user.
+ */
+export type MXDBSyncRejectionKind = 'validation' | 'access' | 'error';
+
+/**
  * A local change the server refused to keep because one of the collection's before-write hooks
  * (`onBeforeUpsert` / `onBeforeDelete`) threw. The device has already been brought back in line: a
  * rejected create or update is reverted to the server's version; a rejected delete stays deleted on the
@@ -119,8 +128,10 @@ export interface MXDBError {
 export interface MXDBSyncRejection {
   collectionName: string;
   recordId: string;
-  /** The throwing hook's message — suitable for showing to the user. */
+  /** Why it was refused. Show it to the user only when `kind` is `validation`; otherwise it is detail for the log. */
   reason: string;
+  /** What kind of refusal it was (see `MXDBSyncRejectionKind`); absent when the server predates it. */
+  kind?: MXDBSyncRejectionKind;
 }
 
 // ─── Unified collection change event ────────────────────────────────────────
