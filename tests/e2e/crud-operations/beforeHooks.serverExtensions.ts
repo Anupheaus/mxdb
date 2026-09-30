@@ -1,6 +1,7 @@
 // Server-only collection extensions for `beforeHooks.crud.e2e.tests.ts`. Imported by the forked e2e server
 // (via `setupE2E({ serverExtensionsModule })`) before it starts — never by the test worker.
 
+import { ValidationError } from '@anupheaus/common';
 import { extendCollection, useCollection } from '../../../src/server/index.js';
 import { e2eTestCollection } from '../setup/types.js';
 import {
@@ -8,15 +9,18 @@ import {
   AMENDED_BY_SERVER_VALUE,
   DELETE_REJECTION_REASON,
   NOTIFY_ON_DELETE_TAG_PREFIX,
+  REFUSE_FOR_USER_VALUE,
   REJECT_ON_UPSERT_VALUE,
   UNDELETABLE_NAME,
   UPSERT_REJECTION_REASON,
+  VALIDATION_REJECTION_REASON,
   deletedNotice,
 } from './beforeHooks.constants.js';
 
 extendCollection(e2eTestCollection, {
   onBeforeUpsert({ records }) {
     if (records.some(record => record.value === REJECT_ON_UPSERT_VALUE)) throw new Error(UPSERT_REJECTION_REASON);
+    if (records.some(record => record.value === REFUSE_FOR_USER_VALUE)) throw new ValidationError(VALIDATION_REJECTION_REASON, 'value');
     for (const record of records) {
       if (record.value === AMEND_ON_UPSERT_VALUE) record.value = AMENDED_BY_SERVER_VALUE;
     }

@@ -49,7 +49,7 @@ function createHarness(response: MXDBSyncEngineResponse, initialStates: MXDBReco
 const rejectingResponse: MXDBSyncEngineResponse = [{
   collectionName: 'items',
   successfulRecordIds: ['r1', 'r2'],
-  rejectedRecords: [{ id: 'r1', reason: 'not allowed' }],
+  rejectedRecords: [{ id: 'r1', reason: 'not allowed', kind: 'validation' }],
 }];
 
 describe('ClientDispatcher — records the server rejected', () => {
@@ -65,7 +65,7 @@ describe('ClientDispatcher — records the server rejected', () => {
     cd.enqueue({ collectionName: 'items', recordId: 'r2' });
     await vi.advanceTimersByTimeAsync(TIMER_INTERVAL_MS);
 
-    expect(onRejected.mock.calls).toEqual([[[{ collectionName: 'items', recordId: 'r1', reason: 'not allowed' }]]]);
+    expect(onRejected.mock.calls).toEqual([[[{ collectionName: 'items', recordId: 'r1', reason: 'not allowed', kind: 'validation' }]]]);
   });
 
   it('reports rejections from the start-up sweep too', async () => {
@@ -74,7 +74,7 @@ describe('ClientDispatcher — records the server rejected', () => {
     cd.start();
     await vi.runOnlyPendingTimersAsync();
 
-    expect(onRejected.mock.calls).toEqual([[[{ collectionName: 'items', recordId: 'r1', reason: 'not allowed' }]]]);
+    expect(onRejected.mock.calls).toEqual([[[{ collectionName: 'items', recordId: 'r1', reason: 'not allowed', kind: 'validation' }]]]);
   });
 
   it('settles a rejected record like any acknowledged one and does not resend it', async () => {
@@ -89,6 +89,15 @@ describe('ClientDispatcher — records the server rejected', () => {
 
     expect([onDispatch.mock.calls.length, onUpdate.mock.lastCall![0][0].records.map((settled: { record: { id: string } }) => settled.record.id)])
       .toEqual([1, ['r1', 'r2']]);
+  });
+
+  it('reports a rejection from a server that sends no kind without one, so the app can treat it as unknown', async () => {
+    const { cd, onRejected } = createHarness([{ collectionName: 'items', successfulRecordIds: ['r1', 'r2'], rejectedRecords: [{ id: 'r1', reason: 'not allowed' }] }], statesFor('r1', 'r2'));
+
+    cd.start();
+    await vi.runOnlyPendingTimersAsync();
+
+    expect(onRejected.mock.calls).toEqual([[[{ collectionName: 'items', recordId: 'r1', reason: 'not allowed' }]]]);
   });
 
   it('reports nothing when the server rejects nothing', async () => {

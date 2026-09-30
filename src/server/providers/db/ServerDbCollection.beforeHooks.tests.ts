@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeAll, afterAll, beforeEach } from 'vitest';
 import { MongoClient } from 'mongodb';
 import { MongoMemoryReplSet } from 'mongodb-memory-server';
-import type { Logger, Record } from '@anupheaus/common';
+import { ValidationError, type Logger, type Record } from '@anupheaus/common';
 import { defineCollection } from '../../../common/defineCollection';
 import { auditor } from '../../../common/auditor';
 import { extendCollection, type OnClearPayload, type OnDeletePayload, type OnUpsertPayload } from '../../collections/extendCollection';
@@ -187,6 +187,25 @@ describe('ServerDbCollection before-write hooks — upsert', () => {
 
     await expect(places.upsert([{ id: 'p1', name: 'Nottingham' }, { id: 'p2', name: 'Leicester' }])).rejects.toThrow('name is not allowed');
     expect(await places.getAll()).toEqual([{ id: 'p1', name: 'Derby' }]);
+  });
+});
+
+describe('ServerDbCollection before-write hooks — a ValidationError reaches the server caller as itself', () => {
+  // A server write has no rejection record: the call fails with the hook's own error, so an action can tell a
+  // ValidationError (a message for the user) from any other failure exactly as a synced client's `kind` does.
+  it('rejects an upsert with the hook\'s ValidationError', async () => {
+    const refusal = new ValidationError('Enter a postcode.', 'postcode');
+    hooks.onBeforeUpsert.mockRejectedValue(refusal);
+
+    await expect(places.upsert({ id: 'p1', name: 'Derby' })).rejects.toBe(refusal);
+  });
+
+  it('rejects a delete with the hook\'s ValidationError', async () => {
+    await seed({ id: 'p1', name: 'Derby' });
+    const refusal = new ValidationError('Remove its ranges first.', 'id');
+    hooks.onBeforeDelete.mockRejectedValue(refusal);
+
+    await expect(places.remove('p1')).rejects.toBe(refusal);
   });
 });
 

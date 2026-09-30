@@ -547,8 +547,8 @@ export class ClientDispatcher {
     for (const { collectionName, rejectedRecords } of response) {
       if (rejectedRecords == null || rejectedRecords.length === 0) continue;
       const dispatchedIds = new Set(states.find(col => col.collectionName === collectionName)?.records.map(getStateId) ?? []);
-      for (const { id, reason } of rejectedRecords) {
-        if (dispatchedIds.has(id)) rejections.push({ collectionName, recordId: id, reason });
+      for (const { id, reason, kind } of rejectedRecords) {
+        if (dispatchedIds.has(id)) rejections.push({ collectionName, recordId: id, reason, ...(kind != null ? { kind } : {}) });
       }
     }
     if (rejections.length === 0) return;

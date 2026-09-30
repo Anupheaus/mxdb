@@ -1,4 +1,4 @@
-import { is, type Record as MXDBRecord } from '@anupheaus/common';
+import { ValidationError, is, type Record as MXDBRecord } from '@anupheaus/common';
 import { auditor } from '../../common';
 import type { MXDBCollection } from '../../common';
 import type { AuditOf } from '../../common/auditor';
@@ -80,7 +80,7 @@ export async function runBeforeWriteHooksOnSyncStates({ collection, states, excl
         await runBeforeDeleteHook({ collection: definition, recordIds: [id], getStoredIds: async ids => ids.filter(storedId => storedById.has(storedId)) });
       }
     } catch (error) {
-      result.rejectedRecords.push({ id, reason: describeRejection(error) });
+      result.rejectedRecords.push({ id, reason: describeRejection(error), kind: isValidationError(error) ? 'validation' : 'error' });
       if (isActiveRecordState(state)) states[index] = revertRejectedState(state, stored);
       else result.unpersistedIds.push(id);
     }
@@ -122,7 +122,15 @@ function auditOf(state: MXDBActiveRecordState): AuditOf<MXDBRecord> {
   return { id: state.record.id, entries: state.audit } as AuditOf<MXDBRecord>;
 }
 
-/** The hook's thrown value as a message the client can show. */
+/**
+ * Whether a hook refused with a `ValidationError` — a message written for the user. Checked by name as well as by
+ * class, because the app's hooks may throw it from a different copy of `@anupheaus/common` than mxdb's own.
+ */
+function isValidationError(error: unknown): boolean {
+  return error instanceof ValidationError || (error instanceof globalThis.Error && error.name === 'ValidationError');
+}
+
+/** The hook's thrown value as the rejection's reason (shown to the user only for a validation rejection). */
 function describeRejection(error: unknown): string {
   if (error instanceof Error) return error.message;
   if (typeof error === 'string') return error;
