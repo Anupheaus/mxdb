@@ -57,9 +57,8 @@ A live request (`query` / `getAll` / `distinct` with callbacks) re-runs after ev
 delivers the result only if it changed. The last delivered result is kept and compared with `is.deepEqual` (DateTimes by
 instant, in arrays too; two invalid DateTimes alike are equal); `onSameResponse` fires otherwise. Never hash a result to
 compare it: `Object.hash` (object-hash) walks every record and each DateTime's prototype chain, and on a screen of live
-lists it was most of the CPU the page spent (Vision's Pipeline, 29 Sep 2026: about 60% of opening it and a lead). The
-same goes for a hook's props: `useQuery` / `useGetAll` keep them by value (`useDeepEqualValue`), never hashing them per
-render.
+lists it was most of the CPU the page spent (Vision's Pipeline, 29 Sep 2026: about 60% of opening it and a lead).
+`useQuery` / `useGetAll` keep their props the same way (`useDeepEqualValue`), never hashing them per render.
 
 - **A change of zone alone is not a change.** A DateTime moved to another zone at the same instant compares equal, so the
   result is not delivered again. Anything that must show a new zone reads it from somewhere else (a setting, the user's
