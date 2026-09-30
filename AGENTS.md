@@ -128,6 +128,10 @@ Located in `tests/sync-test/`, this is a comprehensive data integrity test suite
 - Server restart mid-session
 - Concurrent operations from multiple clients
 
+## Dependencies
+
+- **`react` / `react-dom`** are **peer dependencies** (`^18.2.0 || ^19.0.0`) and are also devDependencies for mxdb's own build and tests. Never move them back to `dependencies`. A private React copy makes consumers install a second `@anupheaus/react-ui` / `@anupheaus/nexus`, and their providers stop matching (Vision sc-497 / sc-775). `tests/manifest/package-manifest.unit.tests.ts` enforces this.
+
 ## Critical Design Principles
 
 **Data Integrity is Paramount**: This library's primary purpose is maintaining data consistency across distributed clients. Any changes must prioritize:

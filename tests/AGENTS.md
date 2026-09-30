@@ -8,6 +8,7 @@ All e2e tests live under `tests/e2e/`. They are distinct from the unit tests in 
 
 ## Contents
 
+- **`tests/manifest/`**: `package-manifest.unit.tests.ts` checks `package.json` itself. `react` / `react-dom` must be peer dependencies (`^18.2.0 || ^19.0.0`), absent from `dependencies`, and present in `devDependencies`. It runs with the unit suite (`pnpm test:ci`) because it matches `**/*.unit.tests.ts`.
 - **`tests/e2e/`** — all e2e specs and infrastructure. See [e2e/README.md](e2e/README.md) for the full layout.
   - **`tests/e2e/setup/`** — shared infrastructure: `setupE2E`, `useClient`, `useServer`, `SyncClient`, TLS certs, logging. See [e2e/setup/README.md](e2e/setup/README.md).
   - **`tests/e2e/crud-operations/`** — CRUD and data integrity specs
