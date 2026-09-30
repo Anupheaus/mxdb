@@ -16,6 +16,12 @@ export const REJECT_ON_UPSERT_VALUE = 'reject-me';
 /** …with this reason. */
 export const UPSERT_REJECTION_REASON = 'the value "reject-me" is not allowed';
 
+/** The server's `onBeforeUpsert` hook refuses any record written with this `value` with a `ValidationError`… */
+export const REFUSE_FOR_USER_VALUE = 'refuse-for-user';
+
+/** …whose message, written for the user, is this. */
+export const VALIDATION_REJECTION_REASON = 'Enter a value other than "refuse-for-user".';
+
 /** The server's `onBeforeDelete` hook rejects deleting any record with this `name`… */
 export const UNDELETABLE_NAME = 'undeletable';
 

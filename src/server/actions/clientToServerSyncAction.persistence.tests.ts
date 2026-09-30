@@ -599,7 +599,7 @@ describe('handleClientToServerSync — a before-write hook rejects a synced reco
   it('logs the rejection', async () => {
     await syncRejectedCreate();
 
-    expect(harness.logger.warn).toHaveBeenCalledWith(expect.stringContaining('rejected'), expect.objectContaining({ collectionName: HOOKED, recordId: 'n1', reason: REJECTION }));
+    expect(harness.logger.warn).toHaveBeenCalledWith(expect.stringContaining('rejected'), expect.objectContaining({ collectionName: HOOKED, recordId: 'n1', reason: REJECTION, kind: 'error' }));
   });
 });
 

@@ -200,8 +200,8 @@ export async function handleClientToServerSync(request: ClientDispatcherRequest)
             logger.warn('C2S write refused: the caller may not read the stored record (outside its read gate)', { collectionName: col.collectionName, recordId: id });
           }
           const hooked = await runBeforeWriteHooksOnSyncStates({ collection, states: col.records, excludedIds: new Set(outsideGate.unpersistedIds) });
-          for (const { id, reason } of hooked.rejectedRecords) {
-            logger.warn('C2S write rejected by a before-write hook — reverting it on the client', { collectionName: col.collectionName, recordId: id, reason });
+          for (const { id, reason, kind } of hooked.rejectedRecords) {
+            logger.warn('C2S write rejected by a before-write hook — reverting it on the client', { collectionName: col.collectionName, recordId: id, reason, kind });
           }
           const rejectedRecords = [...outsideGate.rejectedRecords, ...hooked.rejectedRecords];
           const unpersistedIds = [...outsideGate.unpersistedIds, ...hooked.unpersistedIds];

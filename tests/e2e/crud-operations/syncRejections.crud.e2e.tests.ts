@@ -6,9 +6,11 @@ import { resetE2E, setupE2E, teardownE2E, useClient, useServer, waitForAllClient
 import { getServerAudit, newRecordId } from './utils';
 import {
   DELETE_REJECTION_REASON,
+  REFUSE_FOR_USER_VALUE,
   REJECT_ON_UPSERT_VALUE,
   UNDELETABLE_NAME,
   UPSERT_REJECTION_REASON,
+  VALIDATION_REJECTION_REASON,
 } from './beforeHooks.constants';
 
 /**
@@ -73,12 +75,24 @@ describe('e2e sync rejections by before-write hooks', () => {
       expect((await serverRecord(id))?.value).toBe('original');
     }, 120_000);
 
-    it('is reported to the app with the hook\'s reason', async () => {
+    it('is reported to the app with the hook\'s reason, as an error (the hook threw a plain Error)', async () => {
       const { client, id } = await rejectUpdate();
 
       await waitForRejection(client, id);
 
-      expect(client.getSyncRejections()).toEqual([{ collectionName: e2eTestCollection.name, recordId: id, reason: UPSERT_REJECTION_REASON }]);
+      expect(client.getSyncRejections()).toEqual([{ collectionName: e2eTestCollection.name, recordId: id, reason: UPSERT_REJECTION_REASON, kind: 'error' }]);
+    }, 120_000);
+
+    it('is reported as a validation rejection, its message meant for the user, when the hook threw a ValidationError', async () => {
+      const client = await connectedClient();
+      const id = newRecordId('e2e-reject-validation');
+      await createOnServer(client, { id, clientId: 'a', value: 'original' });
+
+      await client.upsert({ id, clientId: 'a', value: REFUSE_FOR_USER_VALUE });
+      await waitForRejection(client, id);
+      await waitForClientValue(client, id, 'original');
+
+      expect(client.getSyncRejections()).toEqual([{ collectionName: e2eTestCollection.name, recordId: id, reason: VALIDATION_REJECTION_REASON, kind: 'validation' }]);
     }, 120_000);
 
     it('is not resent once reverted', async () => {
@@ -114,7 +128,7 @@ describe('e2e sync rejections by before-write hooks', () => {
     await waitForRejection(client, id);
 
     expect([client.getSyncRejections(), (await serverRecord(id))?.name]).toEqual([
-      [{ collectionName: e2eTestCollection.name, recordId: id, reason: DELETE_REJECTION_REASON }],
+      [{ collectionName: e2eTestCollection.name, recordId: id, reason: DELETE_REJECTION_REASON, kind: 'error' }],
       UNDELETABLE_NAME,
     ]);
   }, 120_000);
