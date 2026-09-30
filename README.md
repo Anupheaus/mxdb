@@ -24,6 +24,14 @@ Deeper design and sync specifications: **`docs/plans/`** (see the index in **`do
 
 **[AGENTS.md](AGENTS.md)** (repo root) — short orientation for contributors and AI assistants.
 
+## Installation
+
+```bash
+npm install @anupheaus/mxdb react react-dom
+```
+
+> `react` and `react-dom` are peer dependencies (18.2+ or 19). mxdb uses your app's React instead of installing its own copy. A second React would give mxdb its own `@anupheaus/react-ui` / `@anupheaus/nexus` contexts, so its hooks would not see your providers.
+
 ## Package exports
 
 - **`@anupheaus/mxdb/common`** – Shared types and collection definitions.
