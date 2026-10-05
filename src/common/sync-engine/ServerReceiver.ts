@@ -19,6 +19,7 @@ import {
 } from './models';
 import type { ServerDispatcher } from './ServerDispatcher';
 import { isActiveRecordState } from './utils';
+import { toOutsideReadGateRejection } from './outsideReadGateRejection';
 
 interface ServerReceiverProps {
   onRetrieve(request: MXDBRecordStatesRequest): Promise<MXDBRecordStates>;
@@ -67,7 +68,8 @@ interface ServerReceiverProps {
  *         hash, or the merged result is a deletion that the client didn't know
  *         about, push the disparity cursor. Records whose first non-Branched entry
  *         is not Created and the server has no state are treated as server-origin
- *         ghosts and receive a delete cursor — client Created records are excluded.
+ *         ghosts and receive a delete cursor — client Created records are excluded. Outside the read gate such an
+ *         edit is instead refused and evicted, exactly as an edit to an unreadable or deleted record is (sc-998).
  * 4b. Read gate: read the request's records this client may read ({@link ServerReceiverProps.onReadReadable}).
  *    A record outside it gets only an eviction (if the client claimed it), and is removed from the SD filter the mirror seeded.
  * 5. All disparity pushes go through `sd.push(payload)` with the default
@@ -77,6 +79,14 @@ interface ServerReceiverProps {
  * 6. Resume the SD.
  */
 let srIdCounter = 0;
+
+/** An edit (not a create, not a delete) to a record the server holds no state for. */
+interface UnheldWrite {
+  collectionName: string;
+  recordId: string;
+  clientHash?: string;
+  lastAuditEntryId: string;
+}
 
 /** What the read gate returned for a sync request: the readable records by collection and id, and the ungated collections. */
 interface ReadableRecords {
@@ -187,6 +197,9 @@ export class ServerReceiver {
         serverState: MXDBActiveRecordState | MXDBDeletedRecordState | undefined;
       }> = [];
       const branchOnlySuccessIds = new Map<string, string[]>();
+      // Settled once the read gate has been read (step 5b): outside it, an edit to an id the server never held is
+      // refused exactly as one to an unreadable or deleted record is (sc-998).
+      const unheldWrites: UnheldWrite[] = [];
 
       for (const item of request) {
         const colName = item.collectionName;
@@ -241,21 +254,8 @@ export class ServerReceiver {
               if (isClientDeletion) {
                 if (!branchOnlySuccessIds.has(colName)) branchOnlySuccessIds.set(colName, []);
                 branchOnlySuccessIds.get(colName)!.push(recordId);
-              } else if (rec.hash != null) {
-                // Existing / updated record the server no longer has — tell the client to drop it.
-                branchOnlyDisparities.push({
-                  collectionName: colName,
-                  recordId,
-                  clientHash: rec.hash,
-                  lastAuditEntryId: this.#getLastAuditEntryId(rec.entries),
-                  serverState: undefined,
-                });
-                if (!branchOnlySuccessIds.has(colName)) branchOnlySuccessIds.set(colName, []);
-                branchOnlySuccessIds.get(colName)!.push(recordId);
               } else {
-                this.#logger.error('[SR] ORPHAN: record has no server state and is not a client Created or Deleted — skipping', {
-                  srId, collectionName: colName, recordId, clientEntryTypes: strippedEntries.map(e => e.type),
-                });
+                unheldWrites.push({ collectionName: colName, recordId, clientHash: rec.hash, lastAuditEntryId: this.#getLastAuditEntryId(rec.entries) });
               }
               continue;
             }
@@ -336,6 +336,26 @@ export class ServerReceiver {
       if (unreadable.length > 0) serverDispatcher.removeFromFilter(unreadable);
       areClaimsVetted = true;
 
+      const refusedUnheldWrites: UnheldWrite[] = [];
+      for (const write of unheldWrites) {
+        const { collectionName, recordId, clientHash, lastAuditEntryId } = write;
+        if (isGated(collectionName) && !isReadable(collectionName, recordId)) {
+          // Answered like an edit to a record the caller may not read, or to a deleted one: otherwise the different
+          // answer would tell the caller that those exist. The cause stays in the server's log.
+          this.#logger.warn('[SR] C2S write refused: the server holds no record with this id (outside the read gate)', { srId, collectionName, recordId });
+          refusedUnheldWrites.push(write);
+          continue;
+        }
+        if (clientHash == null) {
+          this.#logger.error('[SR] ORPHAN: record has no server state and is not a client Created or Deleted — skipping', { srId, collectionName, recordId });
+          continue;
+        }
+        // Existing / updated record the server no longer has — tell the client to drop it.
+        branchOnlyDisparities.push({ collectionName, recordId, clientHash, lastAuditEntryId, serverState: undefined });
+        if (!branchOnlySuccessIds.has(collectionName)) branchOnlySuccessIds.set(collectionName, []);
+        branchOnlySuccessIds.get(collectionName)!.push(recordId);
+      }
+
       const persistSuccessMap = new Map<string, Set<string>>();
       for (const item of updateResponse) persistSuccessMap.set(item.collectionName, new Set(item.successfulRecordIds));
 
@@ -355,6 +375,14 @@ export class ServerReceiver {
         if (existing) existing.successfulRecordIds.push(...ids);
         else successResponse.push({ collectionName: colName, successfulRecordIds: [...ids] });
       }
+      // Acknowledged (so the client stops resending) and refused, as `onUpdate` answers a refused write.
+      for (const { collectionName, recordId } of refusedUnheldWrites) {
+        let existing = successResponse.find(r => r.collectionName === collectionName);
+        if (existing == null) { existing = { collectionName, successfulRecordIds: [] }; successResponse.push(existing); }
+        existing.successfulRecordIds.push(recordId);
+        existing.rejectedRecords = [...(existing.rejectedRecords ?? []), toOutsideReadGateRejection(recordId)];
+      }
+      const rejectedIdsByCollection = new Map(successResponse.map(({ collectionName, rejectedRecords }) => [collectionName, new Set((rejectedRecords ?? []).map(({ id }) => id))] as const));
 
       // Step 7: Build disparity push payload — both branched-only and persisted.
       const disparityT0 = performance.now();
@@ -378,6 +406,7 @@ export class ServerReceiver {
       for (const [colName, ids] of metaMatched) {
         for (const id of ids) if (!isReadable(colName, id)) evict(colName, id, undefined);
       }
+      for (const { collectionName, recordId } of refusedUnheldWrites) evict(collectionName, recordId, undefined);
 
       // Parallelise hashRecord across all records that need hashing — this is
       // pure CPU work per record but JS scheduling lets us batch them so we don't
@@ -455,8 +484,10 @@ export class ServerReceiver {
 
         if (!isReadable(colName, item.recordId)) {
           // E.g. a change the write gate refused (its state is what the server holds): the device drops its local edit
-          // rather than keep a version the server does not have.
-          if (item.liveRecord != null || item.clientHash != null) {
+          // rather than keep a version the server does not have. A refused change is always evicted, whatever the
+          // client claimed, so a refused edit to a deleted record is answered as one to a live record is (sc-998).
+          const isRefused = rejectedIdsByCollection.get(colName)?.has(item.recordId) === true;
+          if (item.liveRecord != null || item.clientHash != null || isRefused) {
             evict(colName, item.recordId, item.liveRecord != null ? { record: item.liveRecord, audit: item.mergedEntries } : { recordId: item.recordId, audit: item.mergedEntries });
           }
           continue;

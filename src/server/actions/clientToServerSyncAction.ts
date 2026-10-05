@@ -197,8 +197,9 @@ export async function handleClientToServerSync(request: ClientDispatcherRequest)
           // in place; the receiver reads them back to push what was persisted to the client. A rejected record is
           // still acknowledged (so the client stops resending it) and reported back with the reason.
           const outsideGate = await rejectWritesOutsideReadGate({ collection, states: col.records });
-          for (const { id } of outsideGate.rejectedRecords) {
-            logger.warn('C2S write refused: the caller may not read the stored record (outside its read gate)', { collectionName: col.collectionName, recordId: id });
+          // The cause is logged here only: the client is told the same thing whatever it was (sc-998).
+          for (const { id, cause } of outsideGate.refusedWrites) {
+            logger.warn('C2S write refused: the caller may not read the stored record (outside its read gate, or deleted)', { collectionName: col.collectionName, recordId: id, cause });
           }
           const hooked = await runBeforeWriteHooksOnSyncStates({ collection, states: col.records, excludedIds: new Set(outsideGate.unpersistedIds) });
           for (const { id, reason, kind } of hooked.rejectedRecords) {

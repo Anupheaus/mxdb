@@ -4,6 +4,7 @@ import type { Logger, Record } from '@anupheaus/common';
 import { auditor, AuditEntryType } from '../auditor';
 import type { AuditEntry } from '../auditor';
 import {
+  OUTSIDE_READ_GATE_REASON,
   ServerReceiver,
   ServerDispatcher,
   type ClientDispatcherRequest,
@@ -195,6 +196,31 @@ describe('ServerReceiver and the read gate', () => {
       { recordId: 'long-gone', lastAuditEntryId: '', isEviction: true },
       { recordId: gated.id, lastAuditEntryId: '', isEviction: true },
     ]);
+  });
+
+  describe('an edit to an id the server never held (sc-998)', () => {
+    const NEVER_HELD_ID = 'never-held';
+    const neverHeld: Note = { id: NEVER_HELD_ID, text: 'made up' };
+    const editEntries = auditor.updateAuditWith({ ...neverHeld, text: 'edited' }, auditor.createAuditFrom(neverHeld)).entries.filter(({ type }) => type !== AuditEntryType.Created);
+
+    it.each([
+      ['claiming a hash', 'stale-hash'],
+      ['claiming no hash', undefined],
+    ])('is refused with the read-gate reason and evicted, persisting nothing, %s', async (_label, hash) => {
+      const response = await receiver().process([{ collectionName: COLLECTION, records: [{ id: NEVER_HELD_ID, ...(hash != null ? { hash } : {}), entries: editEntries }] }]);
+      await drain();
+      expect(response).toEqual([{ collectionName: COLLECTION, successfulRecordIds: [NEVER_HELD_ID], rejectedRecords: [{ id: NEVER_HELD_ID, reason: OUTSIDE_READ_GATE_REASON, kind: 'access' }] }]);
+      expect(pushedRemovals()).toEqual({ deleted: [], evicted: [NEVER_HELD_ID] });
+      expect(onUpdate).not.toHaveBeenCalled();
+    });
+
+    it('is answered with a plain delete, and no refusal, when the server supplies no gate (unchanged behaviour)', async () => {
+      const sr = new ServerReceiver(logger, { onRetrieve, onUpdate, serverDispatcher: sd });
+      const response = await sr.process([{ collectionName: COLLECTION, records: [{ id: NEVER_HELD_ID, hash: 'stale-hash', entries: editEntries }] }]);
+      await drain();
+      expect(response).toEqual([{ collectionName: COLLECTION, successfulRecordIds: [NEVER_HELD_ID] }]);
+      expect(pushedRemovals()).toEqual({ deleted: [NEVER_HELD_ID], evicted: [] });
+    });
   });
 
   it('still tombstones a record the server holds as deleted, while answering it with an eviction', async () => {

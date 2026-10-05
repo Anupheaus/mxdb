@@ -8,7 +8,7 @@ import { extendCollection } from './collections/extendCollection';
 import { ServerDbCollection } from './providers/db/ServerDbCollection';
 import { ServerDispatcher, type ClientDispatcherRequest, type MXDBRecordCursors } from '../common/sync-engine';
 import { auditor, AuditEntryType, type AnyAuditOf, type AuditEntry } from '../common/auditor';
-import { DELETED_RECORD_REASON, OUTSIDE_READ_GATE_REASON } from './actions/rejectWritesOutsideReadGate';
+import { OUTSIDE_READ_GATE_REASON } from '../common/sync-engine';
 
 /**
  * A collection's `onQuery` hook is the app's read gate (e.g. "a fitter sees only their own tasks"). It must
@@ -561,9 +561,59 @@ describe('client-to-server sync', () => {
         { collectionName: openNotes.name, records: [probe(aliceBlue.id)] },
       ]);
 
-      expect(response.find(({ collectionName }) => collectionName === gatedNotes.name)?.rejectedRecords).toEqual([{ id: bobGreen.id, reason: DELETED_RECORD_REASON, kind: 'access' }]);
+      expect(response.find(({ collectionName }) => collectionName === gatedNotes.name)?.rejectedRecords).toEqual([{ id: bobGreen.id, reason: OUTSIDE_READ_GATE_REASON, kind: 'access' }]);
       expect(await notesIn(gatedNotes.name).get(bobGreen.id)).toBeUndefined();
       await vi.waitFor(() => expect(dispatchedRecordIds()).toEqual([aliceBlue.id]), WAIT_FOR_PUSH);
+    });
+
+    describe('one answer whether the record is unreadable, deleted or never existed (sc-998)', () => {
+      const NEVER_STORED_ID = 'never-stored';
+      /** Stands in for the record id, so answers about different records can be compared. */
+      const SOME_ID = '<id>';
+
+      interface ClientVisibleAnswer {
+        response: unknown;
+        pushed: unknown;
+      }
+
+      /** Only the entries `edited` adds to `audit`: what a client sends for an edit. */
+      function editEntriesOf(edited: Note, audit: AnyAuditOf<Note>, previous: Note): AuditEntry[] {
+        const existingIds = new Set(audit.entries.map(({ id }) => id));
+        return auditor.entriesOf(auditor.updateAuditWithAfterLatest(edited, audit, previous)).filter(({ id }) => !existingIds.has(id)) as AuditEntry[];
+      }
+
+      /** Alice edits `id` (claiming `hash`, or none), and what she gets back: the response and every push, with the id masked. */
+      async function answerToAnEdit(id: string, entries: AuditEntry[], hash: string | undefined): Promise<ClientVisibleAnswer> {
+        ctx.dispatched = [];
+        const response = await handleClientToServerSync([{ collectionName: gatedNotes.name, records: [{ id, ...(hash != null ? { hash } : {}), entries }] }]);
+        await vi.waitFor(() => expect(dispatchedEvictionIds()).toEqual([id]), WAIT_FOR_PUSH);
+        const mask = (value: unknown): unknown => JSON.parse(JSON.stringify(value).split(`"${id}"`).join(`"${SOME_ID}"`));
+        return { response: mask(response), pushed: mask(ctx.dispatched) };
+      }
+
+      it.each([
+        ['claiming a hash', 'stale-hash'],
+        ['claiming no hash', undefined],
+      ])('gives an edit the same refusal and the same pushes, %s', async (_label, hash) => {
+        ctx.userId = ALICE;
+        await auditsWritten(gatedNotes.name);
+        const deletedNote = aliceBlue;
+        await notesIn(gatedNotes.name).remove(deletedNote.id);
+        await vi.waitFor(async () => expect((await auditOf(deletedNote.id)).entries.some(({ type }) => type === AuditEntryType.Deleted)).toBe(true), WAIT_FOR_PUSH);
+        const neverStored: Note = { id: NEVER_STORED_ID, ownerId: ALICE, colour: 'white' };
+
+        const unreadable = await answerToAnEdit(bobGreen.id, editEntriesOf({ ...bobGreen, colour: 'black' }, await auditOf(bobGreen.id), bobGreen), hash);
+        const deleted = await answerToAnEdit(deletedNote.id, editEntriesOf({ ...deletedNote, colour: 'black' }, await auditOf(deletedNote.id), deletedNote), hash);
+        const missing = await answerToAnEdit(NEVER_STORED_ID, editEntriesOf({ ...neverStored, colour: 'black' }, auditor.createAuditFrom(neverStored) as AnyAuditOf<Note>, neverStored), hash);
+
+        expect(unreadable.response).toEqual([{ collectionName: gatedNotes.name, successfulRecordIds: [SOME_ID], rejectedRecords: [{ id: SOME_ID, reason: OUTSIDE_READ_GATE_REASON, kind: 'access' }] }]);
+        expect(deleted).toEqual(unreadable);
+        expect(missing).toEqual(unreadable);
+        // None of the three was written.
+        expect(await notesIn(gatedNotes.name).get(bobGreen.id)).toEqual(bobGreen);
+        expect(await notesIn(gatedNotes.name).get(deletedNote.id)).toBeUndefined();
+        expect(await notesIn(gatedNotes.name).get(NEVER_STORED_ID)).toBeUndefined();
+      });
     });
 
     it('still accepts a change to the caller\'s own record, and a new record', async () => {
