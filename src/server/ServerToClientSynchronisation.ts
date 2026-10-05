@@ -54,6 +54,13 @@ interface BuildAndPushResult {
   unreturnedIds: string[];
 }
 
+/** Marks (`delta` 1) or unmarks (`delta` -1) record ids a {@link ServerToClientSynchronisation.pushActive} is building. */
+interface TrackBuildingAuthoritativeRequest {
+  collectionName: string;
+  recordIds: string[];
+  delta: 1 | -1;
+}
+
 export class ServerToClientSynchronisation {
   readonly #logger: Logger;
   readonly #getDb: (() => ServerDb) | null;
@@ -62,6 +69,11 @@ export class ServerToClientSynchronisation {
   readonly #sd: ServerDispatcher | null;
   readonly #noOp: boolean;
   readonly #readReadable: ServerToClientSynchronisationProps['readReadable'];
+  /**
+   * Per collection, how many {@link pushActive} calls are building cursors for each record id: not yet handed to the SD,
+   * so the SD cannot report them reachable, yet a change landing now must still be gate-checked (see {@link #heldRecords}).
+   */
+  readonly #buildingAuthoritativeIds = new Map<string, Map<string, number>>();
   #closed = false;
 
   constructor(props: ServerToClientSynchronisationProps) {
@@ -178,7 +190,13 @@ export class ServerToClientSynchronisation {
   async pushActive(collectionName: string, records: MXDBRecord[]): Promise<void> {
     if (this.#noOp || this.#closed || this.#sd == null) return;
     if (!this.#collectionNames.has(collectionName)) return;
-    await this.#buildAndPush(collectionName, records, /* addToFilter */ true);
+    const recordIds = records.ids();
+    this.#trackBuildingAuthoritative({ collectionName, recordIds, delta: 1 });
+    try {
+      await this.#buildAndPush(collectionName, records, /* addToFilter */ true);
+    } finally {
+      this.#trackBuildingAuthoritative({ collectionName, recordIds, delta: -1 });
+    }
   }
 
   /**
@@ -217,13 +235,19 @@ export class ServerToClientSynchronisation {
    * change-stream style, so the SD only sends it for a record in its filter. Fails closed on a gate that throws:
    * nothing is pushed, but nothing is evicted either — a lookup failure must not wipe the device. The same for a
    * collection the gated read gives no answer for (one the connection's database does not register, sc-999).
+   *
+   * Only records this client holds are gate-checked (sc-997): the SD drops a change-stream cursor for any other, so the
+   * gate — which the host may make costly with its own lookups — is not asked about them, and a change nobody holds
+   * costs no gate call on any socket.
    */
-  async #pushThroughReadGate(collectionName: string, records: MXDBRecord[]): Promise<void> {
+  async #pushThroughReadGate(collectionName: string, changedRecords: MXDBRecord[]): Promise<void> {
     const readReadable = this.#readReadable;
     if (readReadable == null) {
-      await this.#buildAndPush(collectionName, records, /* addToFilter */ false);
+      await this.#buildAndPush(collectionName, changedRecords, /* addToFilter */ false);
       return;
     }
+    const records = this.#heldRecords(collectionName, changedRecords);
+    if (records.length === 0) return;
     // An answer that is not gated (no gate on the collection) means every id is readable: one not returned is deleted.
     let isGated = true;
     let isUnknownCollection = false;
@@ -252,6 +276,31 @@ export class ServerToClientSynchronisation {
       return;
     }
     if (isGated && unreturnedIds.length > 0) this.#sd?.push([{ collectionName, records: unreturnedIds.map(evictionOf) }], /* addToFilter */ false);
+  }
+
+  /**
+   * The changed records a change-stream push could reach this client for: ones the SD holds or is delivering, plus ones
+   * a {@link pushActive} is still building cursors for (they reach the SD once built, and its read may predate the change).
+   */
+  #heldRecords(collectionName: string, records: MXDBRecord[]): MXDBRecord[] {
+    if (this.#sd == null) return [];
+    const reachableIds = new Set(this.#sd.reachableRecordIds(collectionName, records.ids()));
+    const buildingIds = this.#buildingAuthoritativeIds.get(collectionName);
+    return records.filter(({ id }) => reachableIds.has(id) || buildingIds?.has(id) === true);
+  }
+
+  #trackBuildingAuthoritative({ collectionName, recordIds, delta }: TrackBuildingAuthoritativeRequest): void {
+    let buildingIds = this.#buildingAuthoritativeIds.get(collectionName);
+    if (buildingIds == null) {
+      buildingIds = new Map();
+      this.#buildingAuthoritativeIds.set(collectionName, buildingIds);
+    }
+    for (const recordId of recordIds) {
+      const count = (buildingIds.get(recordId) ?? 0) + delta;
+      if (count > 0) buildingIds.set(recordId, count);
+      else buildingIds.delete(recordId);
+    }
+    if (buildingIds.size === 0) this.#buildingAuthoritativeIds.delete(collectionName);
   }
 
   /**

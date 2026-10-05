@@ -55,6 +55,11 @@ function createClient(isReadable?: ReadGate, { beforeEachRead = () => undefined,
     if (!isCollectionKnown) return [];
     return request.map(({ collectionName, recordIds }) => ({ collectionName, records: readStored(recordIds).filter(isReadable), isGated }));
   };
+  const gateRequests: MXDBRecordStatesRequest[] = [];
+  const recordedReadReadable = readReadable == null ? undefined : (request: MXDBRecordStatesRequest) => {
+    gateRequests.push(structuredClone(request));
+    return readReadable(request);
+  };
   const emitted: MXDBRecordCursors[] = [];
   const s2c = new ServerToClientSynchronisation({
     emitS2C: async (payload): Promise<MXDBSyncEngineResponse> => {
@@ -66,14 +71,14 @@ function createClient(isReadable?: ReadGate, { beforeEachRead = () => undefined,
     getDb: () => ({ use: () => dbCollection }) as unknown as ServerDb,
     collections: [collection],
     logger: logger as unknown as Logger,
-    readReadable,
+    readReadable: recordedReadReadable,
   });
   const store = (record: Widget, sequence: number): Widget => {
     records.set(record.id, record);
     audits.set(record.id, { id: record.id, entries: [createdEntry(record, sequence)] } as AuditOf<Widget>);
     return record;
   };
-  return { s2c, emitted, store, records };
+  return { s2c, emitted, store, records, gateRequests };
 }
 
 async function settle(): Promise<void> {
@@ -180,6 +185,91 @@ describe('ServerToClientSynchronisation — change-stream fan-out through the re
     await s2c.onDbChange({ type: 'upsert', collectionName: COLLECTION, records: [held] });
     await settle();
     expect(emitted).toEqual([]);
+  });
+
+  describe('gate cost: only changed records the socket holds are gate-checked (sc-997)', () => {
+    const SOCKET_COUNT = 3;
+    type Socket = ReturnType<typeof createClient>;
+    const createSockets = (): Socket[] => Array.from({ length: SOCKET_COUNT }, () => createClient(gate));
+    /** One socket that will hold the record, and the other connected sockets. */
+    const createHolderAndOthers = (): { holder: Socket; others: Socket[]; sockets: Socket[] } => {
+      const holder = createClient(gate);
+      const others = Array.from({ length: SOCKET_COUNT - 1 }, () => createClient(gate));
+      return { holder, others, sockets: [holder, ...others] };
+    };
+    const gateCallCount = (sockets: Socket[]) => sockets.reduce((count, { gateRequests }) => count + gateRequests.length, 0);
+
+    /** The same write lands in every socket's (stubbed) database and its change-stream event reaches every socket. */
+    async function changeOnEverySocket(sockets: Socket[], changed: Widget[], sequence: number): Promise<void> {
+      await sockets.mapAsync(async ({ s2c, store }) => {
+        await s2c.onDbChange({ type: 'upsert', collectionName: COLLECTION, records: changed.map(record => store(record, sequence)) });
+      });
+      await settle();
+    }
+
+    async function holdOn(socket: Socket, record: Widget): Promise<void> {
+      await socket.s2c.pushActive(COLLECTION, [socket.store(record, 1)]);
+      await settle();
+      socket.emitted.length = 0;
+    }
+
+    it('makes no gate call for a change to a record that no connected socket holds', async () => {
+      readable.clear(); readable.add('a');
+      const sockets = createSockets();
+      await changeOnEverySocket(sockets, [{ id: 'a', name: 'A' }], 1);
+      expect(gateCallCount(sockets)).toBe(0);
+      expect(sockets.flatMap(({ emitted }) => emitted)).toEqual([]);
+    });
+
+    it('makes one gate call, on the holding socket only, for a change to a record one socket holds', async () => {
+      readable.clear(); readable.add('a');
+      const { holder, others, sockets } = createHolderAndOthers();
+      await holdOn(holder, { id: 'a', name: 'A' });
+
+      await changeOnEverySocket(sockets, [{ id: 'a', name: 'A2' }], 2);
+      expect(holder.gateRequests).toEqual([[{ collectionName: COLLECTION, recordIds: ['a'] }]]);
+      expect(gateCallCount(others)).toBe(0);
+    });
+
+    it('gate-checks only the held ids of a batch that mixes held and unheld records', async () => {
+      readable.clear(); readable.add('a'); readable.add('b');
+      const socket = createClient(gate);
+      await holdOn(socket, { id: 'a', name: 'A' });
+
+      await changeOnEverySocket([socket], [{ id: 'a', name: 'A2' }, { id: 'b', name: 'B' }], 2);
+      expect(socket.gateRequests).toEqual([[{ collectionName: COLLECTION, recordIds: ['a'] }]]);
+      expect(delivered(socket.emitted)).toEqual({ pushed: ['a'], evicted: [] });
+    });
+
+    it('still pushes a readable change and evicts a reassigned record on the socket that holds it, and nothing elsewhere', async () => {
+      readable.clear(); readable.add('a');
+      const { holder, others, sockets } = createHolderAndOthers();
+      await holdOn(holder, { id: 'a', name: 'A' });
+
+      await changeOnEverySocket(sockets, [{ id: 'a', name: 'A2' }], 2);
+      expect(delivered(holder.emitted)).toEqual({ pushed: ['a'], evicted: [] });
+      holder.emitted.length = 0;
+
+      readable.delete('a');
+      await changeOnEverySocket(sockets, [{ id: 'a', name: 'reassigned' }], 3);
+      expect(delivered(holder.emitted)).toEqual({ pushed: [], evicted: ['a'] });
+      expect(others.flatMap(({ emitted }) => emitted)).toEqual([]);
+    });
+
+    it('gate-checks a change that lands while an authoritative push of the record is still being built', async () => {
+      readable.clear(); readable.add('a');
+      let pendingChange: Promise<void> | undefined;
+      let landChange: (() => void) | undefined;
+      const socket = createClient(gate, { beforeEachRead: () => { const landNow = landChange; landChange = undefined; landNow?.(); } });
+      const original = socket.store({ id: 'a', name: 'A' }, 1);
+      landChange = () => {
+        pendingChange = socket.s2c.onDbChange({ type: 'upsert', collectionName: COLLECTION, records: [socket.store({ id: 'a', name: 'A2' }, 2)] });
+      };
+      await socket.s2c.pushActive(COLLECTION, [original]);
+      await pendingChange;
+      await settle();
+      expect(socket.gateRequests).toEqual([[{ collectionName: COLLECTION, recordIds: ['a'] }]]);
+    });
   });
 
   describe('two close changes: readable, then reassigned away (sc-682)', () => {
