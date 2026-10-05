@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "defaultMode": "bypassPermissions",
+    "allow": [
+      "Bash(curl https://api.app.shortcut.com/*)",
+      "Bash(git diff:*)",
+      "Bash(git log:*)",
+      "Bash(git push origin --delete:*)"
+    ]
+  }
+}
