@@ -21,6 +21,8 @@ import { runBeforeWriteHooksOnSyncStates } from './runBeforeWriteHooksOnSyncStat
 import { filterReadableRecordIds } from './filterReadableRecordIds';
 import { rejectWritesOutsideReadGate } from './rejectWritesOutsideReadGate';
 import { assertValidSyncRequest } from './assertValidSyncRequest';
+import { hasConcurrentServerChange } from './hasConcurrentServerChange';
+import { buildC2SSyncSummary, C2S_SYNC_SUMMARY_MESSAGE, type C2SSyncCollectionResult } from './buildC2SSyncSummary';
 
 /**
  * Per-record promise chain — serialises concurrent C2S syncs for the same record across clients.
@@ -91,6 +93,10 @@ export function buildServerRecordStates(
   return records;
 }
 
+function stateIdOf(state: MXDBActiveRecordState | MXDBDeletedRecordState): string {
+  return isActiveRecordState(state) ? state.record.id : state.recordId;
+}
+
 /**
  * Client-to-Server sync handler.
  *
@@ -110,6 +116,11 @@ export async function handleClientToServerSync(request: ClientDispatcherRequest)
     logger.warn('C2S sync handler invoked under no-op S2C instance — skipping');
     return [];
   }
+
+  // What the client sent per record, to tell a conflict (a merge with a change it had not seen) from a plain write.
+  const clientEntriesByKey = new Map(request.flatMap(({ collectionName, records }) => records.map(({ id, entries }) => [`${collectionName}::${id}`, entries] as const)));
+  // Filled by `onUpdate`, one per collection persisted; summarised in one info entry once the sync is done.
+  const collectionResults: C2SSyncCollectionResult[] = [];
 
   const sr = new ServerReceiver(logger.createSubLogger('sr'), {
     serverDispatcher: s2c.dispatcher,
@@ -190,6 +201,11 @@ export async function handleClientToServerSync(request: ClientDispatcherRequest)
           continue;
         }
 
+        // Judged before the hooks run: a hook's amendment is the server's own change, not a conflict.
+        const conflictedIds = new Set(col.records
+          .filter(state => hasConcurrentServerChange({ clientEntries: clientEntriesByKey.get(`${col.collectionName}::${stateIdOf(state)}`) ?? [], mergedEntries: state.audit }))
+          .map(stateIdOf));
+
         try {
           // First the read gate: an update or delete to a record whose stored version the caller may not read is
           // refused outright (sc-583). Then the before-write hooks, which may amend or revert the remaining states
@@ -238,6 +254,22 @@ export async function handleClientToServerSync(request: ClientDispatcherRequest)
             }
           }
           const successfulRecordIds = [...attempted.filter(id => !failedIds.has(id)), ...unpersistedIds];
+          // A rejected create or update is still written (reverted), but that is the server undoing it, not a client write.
+          const rejectedIds = new Set(rejectedRecords.map(({ id }) => id));
+          const isClientWrite = (id: string): boolean => !failedIds.has(id) && !rejectedIds.has(id);
+          const upsertedIds = updated.map(({ id }) => id).filter(isClientWrite);
+          const deletedIds = removedIds.filter(isClientWrite);
+          // Ids and counts only: never record values (see the logging rules on epic 373).
+          if (upsertedIds.length > 0) logger.debug('C2S write', { collectionName: col.collectionName, op: 'upsert', count: upsertedIds.length, recordIds: upsertedIds });
+          if (deletedIds.length > 0) logger.debug('C2S write', { collectionName: col.collectionName, op: 'delete', count: deletedIds.length, recordIds: deletedIds });
+          collectionResults.push({
+            collectionName: col.collectionName,
+            upserted: upsertedIds.length,
+            deleted: deletedIds.length,
+            conflicts: [...upsertedIds, ...deletedIds].filter(id => conflictedIds.has(id)).length,
+            rejected: rejectedRecords.length,
+            failed: failedIds.size,
+          });
           response.push({ collectionName: col.collectionName, successfulRecordIds, ...(rejectedRecords.length > 0 ? { rejectedRecords } : {}) });
         } catch (error) {
           if (isTransientMongoCloseError(error)) {
@@ -245,6 +277,7 @@ export async function handleClientToServerSync(request: ClientDispatcherRequest)
           } else {
             logger.error(`C2S onUpdate failed for "${col.collectionName}"`, { error });
           }
+          collectionResults.push({ collectionName: col.collectionName, upserted: 0, deleted: 0, conflicts: 0, rejected: 0, failed: col.records.length });
           response.push({ collectionName: col.collectionName, successfulRecordIds: [] });
         }
       }
@@ -268,7 +301,10 @@ export async function handleClientToServerSync(request: ClientDispatcherRequest)
   }
 
   try {
-    return await withRecordLocks(lockKeys, () => sr.process(request));
+    const response = await withRecordLocks(lockKeys, () => sr.process(request));
+    const summary = buildC2SSyncSummary(collectionResults);
+    if (summary != null) logger.info(C2S_SYNC_SUMMARY_MESSAGE, summary);
+    return response;
   } catch (error) {
     if (isTransientMongoCloseError(error)) {
       // Expected during server restart / teardown — the in-flight Mongo op was aborted.
