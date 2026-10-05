@@ -215,7 +215,8 @@ export class ServerToClientSynchronisation {
    * its reassigned state (sc-682). A record the gated read does not return, and that is not deleted, has left the
    * client's gate (a reassigned task, a capability removed): it is evicted from the client if it holds it —
    * change-stream style, so the SD only sends it for a record in its filter. Fails closed on a gate that throws:
-   * nothing is pushed, but nothing is evicted either — a lookup failure must not wipe the device.
+   * nothing is pushed, but nothing is evicted either — a lookup failure must not wipe the device. The same for a
+   * collection the gated read gives no answer for (one the connection's database does not register, sc-999).
    */
   async #pushThroughReadGate(collectionName: string, records: MXDBRecord[]): Promise<void> {
     const readReadable = this.#readReadable;
@@ -225,10 +226,12 @@ export class ServerToClientSynchronisation {
     }
     // An answer that is not gated (no gate on the collection) means every id is readable: one not returned is deleted.
     let isGated = true;
+    let isUnknownCollection = false;
     let gateError: unknown;
     const readThroughGate: LiveRecordReader = async ids => {
       try {
         const [result] = await readReadable([{ collectionName, recordIds: ids }]);
+        if (result == null) isUnknownCollection = true;
         if (result?.isGated === false) isGated = false;
         return result?.records ?? [];
       } catch (error) {
@@ -242,6 +245,10 @@ export class ServerToClientSynchronisation {
     } catch (error) {
       if (error !== gateError) throw error;
       this.#logger.error('[s2c] read gate failed for a change-stream push — pushing nothing for it', { collectionName, recordCount: records.length, error: error as Record<string, unknown> });
+      return;
+    }
+    if (isUnknownCollection) {
+      this.#logger.warn('[s2c] read gate has no answer for an unknown collection — pushing and evicting nothing for it', { collectionName, recordCount: records.length });
       return;
     }
     if (isGated && unreturnedIds.length > 0) this.#sd?.push([{ collectionName, records: unreturnedIds.map(evictionOf) }], /* addToFilter */ false);

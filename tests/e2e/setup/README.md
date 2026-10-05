@@ -95,7 +95,7 @@ Installs browser-like globals in Node: `fake-indexeddb`, JSDOM (`window` / `docu
 
 `useClient` wires `createSyncClient` to `e2eForwardingRunLogger` so client/socket events go to the same log.
 
-`options.serverExtensionsModule` — absolute path of a module the forked server imports before `startServer` (and on every restart), passed via the `MXDB_E2E_SERVER_EXTENSIONS_MODULE` env var and cleared by `teardownE2E()`. Use it to register a suite's own server-only `extendCollection` hooks; keep that module next to the suite (e.g. `crud-operations/beforeHooks.serverExtensions.ts`), not in `setup/`.
+`options.serverExtensionsModule` — absolute path of a module the forked server imports before `startServer` (and on every restart), passed via the `MXDB_E2E_SERVER_EXTENSIONS_MODULE` env var and cleared by `teardownE2E()`. Use it to register a suite's own server-only `extendCollection` hooks; keep that module next to the suite (e.g. `crud-operations/beforeHooks.serverExtensions.ts`), not in `setup/`. The module may also export `serverConfig` (a partial `ServerConfig`) that the server spreads over its defaults, e.g. `resolveConnectionDb` to route connections to a tenant database (see `crud-operations/readGateContext.serverExtensions.ts`).
 
 Throws if `setupE2E` was already called in this worker without `teardownE2E()`.
 
@@ -115,7 +115,9 @@ After reset, the next `useClient('sameLabel')` is a **new** React tree and DB (`
 
 ---
 
-### `useClient(label: string): E2EClientHandle`
+### `useClient(label: string, options?): E2EClientHandle`
+
+`options.afterDevSignIn(userId)` is awaited after the dev sign-in route issues the client's session, before its socket connects (applies when the client is first created).
 
 **Requires active context after `setupE2E()`.** Named client; created on first use per `label`. Empty `label` throws. Logging id `e2e-{label}`, IndexedDB/SQLite DB name `e2e-client-{label}`.
 

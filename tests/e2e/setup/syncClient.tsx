@@ -261,6 +261,12 @@ export interface CreateSyncClientOptions {
   /** Override IndexedDB / DbsProvider database name (default: `mxdb-e2e-client-${clientId}`). */
   dbName?: string;
   /**
+   * Awaited after the dev sign-in route has issued this client's session and before its socket connects. The dev
+   * route stores the session in the server's default database, so a suite that routes connections to a tenant
+   * database (`resolveConnectionDb`) copies it there in this hook.
+   */
+  afterDevSignIn?(userId: string): Promise<void>;
+  /**
    * Pre-generated 32-byte AES-256-GCM key for the test SQLite database.
    * Must be provided — DbsProvider requires an encryption key and unencrypted
    * storage is not permitted. Generate once per SyncClient via
@@ -308,7 +314,10 @@ export function createSyncClient(
       await waitUntilAsync(async () => getIsConnected(), `Client ${clientId} socket connected`, 30_000);
       return;
     }
-    sessionToken ??= await fetchDevSessionToken(serverUrl, clientId);
+    if (sessionToken == null) {
+      sessionToken = await fetchDevSessionToken(serverUrl, clientId);
+      await options.afterDevSignIn?.(clientId);
+    }
 
     container = document.createElement('div');
     document.body.appendChild(container);

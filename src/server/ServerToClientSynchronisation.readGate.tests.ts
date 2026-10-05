@@ -30,8 +30,15 @@ const createdEntry = (record: Widget, sequence: number): AuditEntry<Widget> =>
 type ReadGate = (record: Widget) => boolean;
 type StoredRecords = Map<string, Widget>;
 
+interface CreateClientOptions {
+  beforeEachRead?(): void;
+  isGated?: boolean;
+  /** False when the client's database does not register the collection: the gated read then answers nothing for it. */
+  isCollectionKnown?: boolean;
+}
+
 /** A client of the given gate, holding nothing yet. `beforeEachRead` runs as the server touches the database. */
-function createClient(isReadable?: ReadGate, { beforeEachRead = () => undefined, isGated = true }: { beforeEachRead?(): void; isGated?: boolean } = {}) {
+function createClient(isReadable?: ReadGate, { beforeEachRead = () => undefined, isGated = true, isCollectionKnown = true }: CreateClientOptions = {}) {
   const records: StoredRecords = new Map<string, Widget>();
   const audits = new Map<string, AuditOf<Widget>>();
   const readStored = (ids: string[]) => ids.map(id => records.get(id)).filter((record): record is Widget => record != null);
@@ -45,6 +52,7 @@ function createClient(isReadable?: ReadGate, { beforeEachRead = () => undefined,
   // One query: the gate decision and the content come from the same stored version.
   const readReadable = isReadable == null ? undefined : async (request: MXDBRecordStatesRequest): Promise<MXDBReadableRecords> => {
     beforeEachRead();
+    if (!isCollectionKnown) return [];
     return request.map(({ collectionName, recordIds }) => ({ collectionName, records: readStored(recordIds).filter(isReadable), isGated }));
   };
   const emitted: MXDBRecordCursors[] = [];
@@ -134,6 +142,20 @@ describe('ServerToClientSynchronisation — change-stream fan-out through the re
     await settle();
     expect(emitted).toEqual([]);
     expect(logger.error).toHaveBeenCalledWith(expect.stringContaining('read gate failed'), expect.objectContaining({ collectionName: COLLECTION }));
+  });
+
+  it('pushes nothing and evicts nothing for a collection the gated read does not know (sc-999)', async () => {
+    readable.clear(); readable.add('a');
+    const { s2c, emitted, store } = createClient(gate, { isCollectionKnown: false });
+    await s2c.pushActive(COLLECTION, [store({ id: 'a', name: 'A' }, 1)]);
+    await settle();
+    expect(delivered(emitted)).toEqual({ pushed: ['a'], evicted: [] });
+    emitted.length = 0;
+
+    await s2c.onDbChange({ type: 'upsert', collectionName: COLLECTION, records: [store({ id: 'a', name: 'A2' }, 2)] });
+    await settle();
+    expect(emitted).toEqual([]);
+    expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('unknown collection'), expect.objectContaining({ collectionName: COLLECTION }));
   });
 
   it('pushes every change when there is no gate (unchanged behaviour)', async () => {

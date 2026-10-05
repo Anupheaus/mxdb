@@ -430,8 +430,14 @@ describe('reading records through the gate in one query (sc-682)', () => {
     expect(await read(openNotes.name, [bobGreen.id])).toEqual({ isGated: false, records: [bobGreen] });
   });
 
-  it('returns nothing for a collection the database does not register', async () => {
-    expect(await read('no_such_collection', [aliceRed.id])).toEqual({ isGated: false, records: [] });
+  it('fails closed for a collection the database does not register: no answer, so no id is readable (sc-999)', async () => {
+    ctx.userId = ALICE;
+    expect(await readReadableRecords([{ collectionName: 'no_such_collection', recordIds: [aliceRed.id] }])).toEqual([]);
+    // The collections it does know are still answered.
+    expect(await readReadableRecords([
+      { collectionName: 'no_such_collection', recordIds: [aliceRed.id] },
+      { collectionName: openNotes.name, recordIds: [bobGreen.id] },
+    ])).toEqual([{ collectionName: openNotes.name, records: [bobGreen], isGated: false }]);
   });
 });
 
