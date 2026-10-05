@@ -1,0 +1,27 @@
+{
+  "permissions": {
+    "defaultMode": "bypassPermissions",
+    "allow": [
+      "Bash(*)",
+      "Bash(curl:*)",
+      "Bash(gh:*)",
+      "Bash(gh pr merge:*)",
+      "Bash(curl *api.app.shortcut.com*)",
+      "Bash(git diff:*)",
+      "Bash(git log:*)",
+      "Bash(git push origin --delete:*)",
+      "PowerShell(*)",
+      "Read",
+      "Edit",
+      "Write",
+      "WebFetch",
+      "WebSearch",
+      "mcp__shortcut",
+      "mcp__plugin_github_github",
+      "mcp__plugin_mongodb_mongodb",
+      "mcp__chrome-devtools",
+      "mcp__claude-in-chrome",
+      "mcp__computer-use"
+    ]
+  }
+}

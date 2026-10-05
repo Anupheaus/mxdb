@@ -34,7 +34,8 @@ tests/e2e/setup/certs/
 2048
 
 # Claude Code session files
-.claude
+.claude/*
+!.claude/settings.json
 
 # Git worktrees
 .worktrees
