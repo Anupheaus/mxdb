@@ -256,13 +256,25 @@ describe('ServerDb', () => {
       expect(logger.error).toHaveBeenCalledWith('Database direct error', { error });
     });
 
-    it.each(['commandStarted', 'commandFailed', 'commandSucceeded'])('logs %s driver events at debug level', eventName => {
+    it.each(['commandStarted', 'commandSucceeded'])('logs %s driver events at debug level without the command document', eventName => {
       const { client, logger } = makeServerDb();
-      const event = { commandName: 'find' };
+      const event = { requestId: 1, commandName: 'find', databaseName: DB_NAME, command: { find: 'orders', filter: { email: 'a@b.c' } }, duration: 3 };
 
       client.emit(eventName, event);
 
-      expect(logger.debug).toHaveBeenCalledWith(expect.any(String), { event });
+      expect(logger.debug).toHaveBeenCalledTimes(1);
+      expect(JSON.stringify(logger.debug.mock.calls)).not.toContain('a@b.c');
+    });
+
+    it('logs a failed non-retryable command as an error and a transient one as a warn', () => {
+      const { client, logger } = makeServerDb();
+      const base = { requestId: 1, commandName: 'update', databaseName: DB_NAME, duration: 4 };
+
+      client.emit('commandFailed', { ...base, failure: { code: 2, codeName: 'BadValue' } });
+      client.emit('commandFailed', { ...base, requestId: 2, failure: { code: 112, codeName: 'WriteConflict' } });
+
+      expect(logger.error).toHaveBeenCalledWith('Database command failed', expect.objectContaining({ commandName: 'update', code: 2 }));
+      expect(logger.warn).toHaveBeenCalledWith('Database command failed', expect.objectContaining({ code: 112 }));
     });
   });
 
@@ -281,7 +293,7 @@ describe('ServerDb', () => {
       expect(fakeMongo.db.watch).not.toHaveBeenCalled();
     });
 
-    it('logs change stream errors instead of throwing', async () => {
+    it('logs a change stream that failed to resume as an error', async () => {
       const { serverDb, logger } = makeServerDb();
       await serverDb.getMongoDb();
 
@@ -290,13 +302,33 @@ describe('ServerDb', () => {
       expect(logger.error).toHaveBeenCalledWith('[ServerDb] changeStream error', { error: 'cursor killed' });
     });
 
-    it('logs when the change stream closes', async () => {
+    it('logs an expected transient change stream error as a warn', async () => {
+      const { serverDb, logger } = makeServerDb();
+      await serverDb.getMongoDb();
+
+      fakeMongo.db.changeStream.emit('error', Object.assign(new Error('not primary'), { code: 10_107 }));
+
+      expect(logger.warn).toHaveBeenCalledWith('[ServerDb] changeStream error', { error: 'not primary' });
+      expect(logger.error).not.toHaveBeenCalled();
+    });
+
+    it('warns when the change stream closes without the database being closed', async () => {
       const { serverDb, logger } = makeServerDb();
       await serverDb.getMongoDb();
 
       fakeMongo.db.changeStream.emit('close');
 
-      expect(logger.info).toHaveBeenCalledWith('[ServerDb] changeStream closed');
+      expect(logger.warn).toHaveBeenCalledWith('[ServerDb] changeStream closed unexpectedly');
+    });
+
+    it('warns when the change stream is restarted after the connection is lost', async () => {
+      const { serverDb, client, logger } = makeServerDb();
+      await serverDb.getMongoDb();
+
+      client.emit('connectionClosed', {});
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(logger.warn).toHaveBeenCalledWith('[ServerDb] changeStream restarting after the connection was lost');
     });
   });
 

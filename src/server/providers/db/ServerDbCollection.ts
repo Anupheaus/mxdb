@@ -12,9 +12,10 @@ import { toServerAuditOf } from '../../audit/toServerAuditOf';
 import { runBeforeUpsertHook } from '../../collections/runBeforeUpsertHook';
 import { runBeforeDeleteHook } from '../../collections/runBeforeDeleteHook';
 import { getCollectionExtensions } from '../../collections/extendCollection';
+import { getSlowQueryThresholdMs } from './slowQueryThreshold';
+import { redactMongoErrorMessage } from './redactMongoErrorMessage';
 
 const slowFilterParseThreshold = 1000;
-const slowQueryThreshold = 3000;
 
 const SORT_ASCENDING = 1;
 const SORT_DESCENDING = -1;
@@ -238,7 +239,7 @@ export class ServerDbCollection<RecordType extends Record = Record> {
       const startTime = performance.now();
       const rawDocs = await collection.find().sort({ $natural: 1 }).toArray();
       const endTime = performance.now();
-      if (endTime - startTime >= slowQueryThreshold) this.#logger.warn('Slow query (full scan)', {
+      if (endTime - startTime >= getSlowQueryThresholdMs()) this.#logger.warn('Slow query (full scan)', {
         collectionName: collection.collectionName,
         durationMs: Math.round(endTime - startTime),
         recordCount: rawDocs.length,
@@ -264,7 +265,7 @@ export class ServerDbCollection<RecordType extends Record = Record> {
       const startTime = performance.now();
       const rawDocs = await collection.find(filters ?? {}, { sort: withStableOrder(sort), skip: offset, limit }).toArray();
       const endTime = performance.now();
-      if (endTime - startTime >= slowQueryThreshold) this.#logger.warn('Slow query', {
+      if (endTime - startTime >= getSlowQueryThresholdMs()) this.#logger.warn('Slow query', {
         collectionName: collection.collectionName,
         durationMs: Math.round(endTime - startTime),
         recordCount: rawDocs.length,
@@ -451,8 +452,8 @@ export class ServerDbCollection<RecordType extends Record = Record> {
           collectionName: this.#collection.name,
           recordId: record.id,
           txnAttempts,
-          error: err instanceof Error ? err.message : String(err),
-          stack: err instanceof Error ? err.stack : undefined,
+          error: redactMongoErrorMessage(err instanceof Error ? err.message : String(err)),
+          stack: err instanceof Error ? redactMongoErrorMessage(err.stack ?? '') : undefined,
         });
         return { id: record.id, error: err instanceof Error ? err.message : String(err) };
       } finally {
@@ -503,8 +504,8 @@ export class ServerDbCollection<RecordType extends Record = Record> {
           collectionName: this.#collection.name,
           recordId: id,
           txnAttempts,
-          error: err instanceof Error ? err.message : String(err),
-          stack: err instanceof Error ? err.stack : undefined,
+          error: redactMongoErrorMessage(err instanceof Error ? err.message : String(err)),
+          stack: err instanceof Error ? redactMongoErrorMessage(err.stack ?? '') : undefined,
         });
         return { id, error: err instanceof Error ? err.message : String(err) };
       } finally {
@@ -533,14 +534,14 @@ export class ServerDbCollection<RecordType extends Record = Record> {
         const errAny = err as any;
         const errDetails = {
           name: errAny?.name,
-          message: errAny?.message ?? String(err),
+          message: redactMongoErrorMessage(String(errAny?.message ?? err)),
           code: errAny?.code,
           codeName: errAny?.codeName,
           errorLabels: errAny?.errorLabels,
           hasErrorLabel: typeof errAny?.hasErrorLabel === 'function'
             ? { TransientTransactionError: errAny.hasErrorLabel('TransientTransactionError'), UnknownTransactionCommitResult: errAny.hasErrorLabel('UnknownTransactionCommitResult') }
             : undefined,
-          stack: errAny?.stack,
+          stack: redactMongoErrorMessage(String(errAny?.stack ?? '')),
         };
         // Session-ended errors are NOT retryable. They occur when graceful shutdown's
         // drain timeout fires `session.endSession()` on in-flight transactions: every
