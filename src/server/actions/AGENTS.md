@@ -20,6 +20,8 @@ Each file registers one socket action using `createServerActionHandler`. Actions
 - `rejectWritesOutsideReadGate.ts` — the C2S write gate: refuses an update or delete to a record whose stored version the caller may not read (creates are allowed); runs before the before-write hooks, whose runner skips the refused ids (`excludedIds`)
 - `assertValidSyncRequest.ts` — refuses a C2S request whose shape a client would not send (e.g. an operator object as a record id) before anything is mirrored or queried
 - `runBeforeWriteHooksOnSyncStates.ts` — runs the collections' `onBeforeDelete` / `onBeforeUpsert` hooks on a C2S batch before it is persisted (see [../collections/AGENTS.md](../collections/AGENTS.md)); an amendment replaces the state's record and appends an `Updated` audit entry, in place, so the `ServerReceiver` pushes the amended record back to the client
+- `buildC2SSyncSummary.ts` — the C2S write summary: one info entry (`C2S sync wrote records`) per sync that wrote, with upserted / deleted / conflicts / rejected / failed counts in total and per collection (an array, so collection names never become log fields). Counts only, never values or ids; a sync with no writes logs no info. Each write is also logged at debug (`C2S write`: collection, op, count, ids)
+- `hasConcurrentServerChange.ts` — whether a client's change was merged with a server change newer than the client's `Branched` anchor that it had not seen; counted as a conflict in the summary (ULID order still resolves it)
 - `reconcileAction.ts` — `mxdbReconcileAction` — reconciles a client's claimed state against the server; used on reconnect to detect divergence
 
 ### Internal
