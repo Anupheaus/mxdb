@@ -15,6 +15,7 @@ import {
   type MXDBSyncEngineResponse,
   type ServerDispatcherFilter,
   type MXDBRecordCursors,
+  type MXDBReadableRecords,
 } from './models';
 import type { ServerDispatcher } from './ServerDispatcher';
 import { isActiveRecordState } from './utils';
@@ -33,13 +34,15 @@ interface ServerReceiverProps {
    */
   onUpdate(records: MXDBRecordStates): Promise<MXDBSyncEngineResponse>;
   /**
-   * The server's read gate (the collection's `onQuery`): of the given record ids, those this client may read.
-   * Called after persisting, so a record the client just wrote is judged as it is now stored. A record outside
-   * it is answered only with an eviction (never its content, never a plain delete) and is removed from the
-   * dispatcher's filter, so a client claiming an id it may not read is not subscribed to its changes.
+   * The server's read gate (the collection's `onQuery`), as a read: of the given record ids, the live records this
+   * client may read, read through the gate in ONE query. Called after persisting, so a record the client just wrote is
+   * judged as it is now stored. A record it does not return is answered only with an eviction (never its content,
+   * never a plain delete) and is removed from the dispatcher's filter, so a client claiming an id it may not read is
+   * not subscribed to its changes. Content is sent only when it is the version the gate passed: a record that changed
+   * after the receiver read it is left to the change stream, which reads it through the gate again (sc-682).
    * Absent: every record is readable.
    */
-  onFilterReadable?(request: MXDBRecordStatesRequest): Promise<MXDBRecordStatesRequest>;
+  onReadReadable?(request: MXDBRecordStatesRequest): Promise<MXDBReadableRecords>;
   serverDispatcher: ServerDispatcher;
 }
 
@@ -65,7 +68,7 @@ interface ServerReceiverProps {
  *         about, push the disparity cursor. Records whose first non-Branched entry
  *         is not Created and the server has no state are treated as server-origin
  *         ghosts and receive a delete cursor — client Created records are excluded.
- * 4b. Read gate: resolve which of the request's records this client may read ({@link ServerReceiverProps.onFilterReadable}).
+ * 4b. Read gate: read the request's records this client may read ({@link ServerReceiverProps.onReadReadable}).
  *    A record outside it gets only an eviction (if the client claimed it), and is removed from the SD filter the mirror seeded.
  * 5. All disparity pushes go through `sd.push(payload)` with the default
  *    `addToFilter=true`. Since the mirror set in step 2 has the client's old
@@ -74,6 +77,12 @@ interface ServerReceiverProps {
  * 6. Resume the SD.
  */
 let srIdCounter = 0;
+
+/** What the read gate returned for a sync request: the readable records by collection and id, and the ungated collections. */
+interface ReadableRecords {
+  byCollection: Map<string, Map<string, MXDBRecord>>;
+  ungatedCollections: Set<string>;
+}
 
 export class ServerReceiver {
   readonly #logger: Logger;
@@ -94,7 +103,7 @@ export class ServerReceiver {
     // The mirror (step 2) subscribes the client to every id it CLAIMS. Until the read gate has vetted those claims
     // (step 5b), a throw — even one while mirroring — must not leave an unvetted one in the filter: fail closed
     // (see the `finally`). Pause and mirror sit inside the `try` so that `finally` always covers them.
-    let areClaimsVetted = this.#props.onFilterReadable == null;
+    let areClaimsVetted = this.#props.onReadReadable == null;
     let mirrorMs = 0;
 
     try {
@@ -317,8 +326,10 @@ export class ServerReceiver {
 
       // Step 5b: the read gate, judged on what is now stored. A client can name any id in a sync request; it
       // must not be answered with, or subscribed to, a record it may not read.
-      const readableIds = await this.#resolveReadableIds(request);
-      const isReadable = (collectionName: string, recordId: string): boolean => readableIds == null || readableIds.get(collectionName)?.has(recordId) === true;
+      // The gate and the content are one read: content is only sent when it is the version the gate passed.
+      const readableRecords = await this.#readReadable(request);
+      const isGated = (collectionName: string): boolean => readableRecords != null && !readableRecords.ungatedCollections.has(collectionName);
+      const isReadable = (collectionName: string, recordId: string): boolean => !isGated(collectionName) || readableRecords?.byCollection.get(collectionName)?.has(recordId) === true;
       const unreadable: MXDBRecordStatesRequest = request
         .map(({ collectionName, records }) => ({ collectionName, recordIds: records.map(({ id }) => id).filter(id => !isReadable(collectionName, id)) }))
         .filter(({ recordIds }) => recordIds.length > 0);
@@ -377,10 +388,21 @@ export class ServerReceiver {
         return successIds.has(item.recordId) && item.liveRecord != null;
       });
 
-      const [branchedHashes, persistedHashes] = await Promise.all([
+      const [branchedHashes, persistedHashes, gatedHashes] = await Promise.all([
         Promise.all(branchedActive.map(d => hashRecord((d.serverState as MXDBActiveRecordState).record))),
         Promise.all(persistedActive.map(item => hashRecord(item.liveRecord!))),
+        this.#hashGatedVersions(readableRecords, [
+          ...branchedActive.map(({ collectionName, recordId }) => ({ collectionName, recordId })),
+          ...persistedActive.map(({ collectionName, recordId }) => ({ collectionName, recordId })),
+        ]),
       ]);
+      /** Whether `hash` is the version the read gate passed (always, with no gate). */
+      const isGatedVersion = (collectionName: string, recordId: string, hash: string): boolean => {
+        if (gatedHashes == null || !isGated(collectionName)) return true;
+        if (gatedHashes.get(`${collectionName}::${recordId}`) === hash) return true;
+        this.#logger.debug('[SR] record changed after it was read — left to the change stream', { srId, collectionName, recordId });
+        return false;
+      };
 
       const branchedHashByIdx = new Map<number, string>();
       branchedActive.forEach((_, i) => branchedHashByIdx.set(i, branchedHashes[i]!));
@@ -406,6 +428,7 @@ export class ServerReceiver {
         }
         if (isActiveRecordState(d.serverState)) {
           if (serverHash === d.clientHash) continue; // already consistent
+          if (!isGatedVersion(d.collectionName, d.recordId, serverHash!)) continue;
           const serverLastId = this.#getLastAuditEntryId(d.serverState.audit);
           const cursor: MXDBActiveRecordCursor & { hash: string } = {
             record: d.serverState.record,
@@ -442,6 +465,7 @@ export class ServerReceiver {
         if (item.liveRecord != null) {
           const mergedHash = persistedHashByKey.get(`${colName}::${item.recordId}`)!;
           if (mergedHash === item.clientHash) continue; // client already matches the merged state
+          if (!isGatedVersion(colName, item.recordId, mergedHash)) continue;
           const cursor: MXDBActiveRecordCursor & { hash: string } = {
             record: item.liveRecord,
             lastAuditEntryId,
@@ -522,19 +546,36 @@ export class ServerReceiver {
     return request.map(({ collectionName, records }) => ({ collectionName, recordIds: (Array.isArray(records) ? records : []).map(record => record?.id).filter((id): id is string => typeof id === 'string') }));
   }
 
-  /** The ids per collection this client may read, or `undefined` when the server supplies no read gate. */
-  async #resolveReadableIds(request: ClientDispatcherRequest): Promise<Map<string, Set<string>> | undefined> {
-    const { onFilterReadable } = this.#props;
-    if (onFilterReadable == null) return undefined;
+  /**
+   * The records per collection (by id) this client may read, and the collections with no gate (every id readable), or
+   * `undefined` when the server supplies no read gate. A collection the read does not answer for is gated: fail closed.
+   */
+  async #readReadable(request: ClientDispatcherRequest): Promise<ReadableRecords | undefined> {
+    const { onReadReadable } = this.#props;
+    if (onReadReadable == null) return undefined;
     const recordsRequest: MXDBRecordStatesRequest = request
       .map(({ collectionName, records }) => ({ collectionName, recordIds: [...new Set(records.map(({ id }) => id))] }))
       .filter(({ recordIds }) => recordIds.length > 0);
-    const readableIds = new Map<string, Set<string>>();
-    if (recordsRequest.length === 0) return readableIds;
-    for (const { collectionName, recordIds } of await onFilterReadable(recordsRequest)) {
-      readableIds.set(collectionName, new Set([...(readableIds.get(collectionName) ?? []), ...recordIds]));
+    const readable: ReadableRecords = { byCollection: new Map(), ungatedCollections: new Set() };
+    if (recordsRequest.length === 0) return readable;
+    for (const { collectionName, records, isGated } of await onReadReadable(recordsRequest)) {
+      if (!isGated) readable.ungatedCollections.add(collectionName);
+      const byId = readable.byCollection.get(collectionName) ?? new Map<string, MXDBRecord>();
+      for (const record of records) byId.set(record.id, record);
+      readable.byCollection.set(collectionName, byId);
     }
-    return readableIds;
+    return readable;
+  }
+
+  /** The hash of the version the read gate passed, keyed `collection::id`, for the given records it passed; `undefined` with no gate. */
+  async #hashGatedVersions(readable: ReadableRecords | undefined, candidates: { collectionName: string; recordId: string }[]): Promise<Map<string, string> | undefined> {
+    if (readable == null) return undefined;
+    const hashes = new Map<string, string>();
+    await Promise.all(candidates.map(async ({ collectionName, recordId }) => {
+      const record = readable.byCollection.get(collectionName)?.get(recordId);
+      if (record != null) hashes.set(`${collectionName}::${recordId}`, await hashRecord(record));
+    }));
+    return hashes;
   }
 
   #getLastAuditEntryId(entries: AuditEntry[]): string {

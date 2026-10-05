@@ -7,6 +7,7 @@ import {
   ServerReceiver,
   ServerDispatcher,
   type ClientDispatcherRequest,
+  type MXDBReadableRecords,
   type MXDBRecordCursors,
   type MXDBRecordStates,
   type MXDBRecordStatesRequest,
@@ -18,8 +19,9 @@ import {
  * request — a branch-only probe claiming a stale hash, or an update — and the receiver answers a disparity
  * with the stored record. Without the gate that hands a client any record whose id it knows (sc-583).
  *
- * `onFilterReadable` is the server's answer to "which of these ids may this client read"; the receiver must
- * never push a record outside it, and must not let a mere claim subscribe the client to later changes.
+ * `onReadReadable` is the server's answer to "which of these records may this client read", read through the gate
+ * in one query; the receiver must never push a record outside it, never push a version other than the one it
+ * returned (sc-682), and must not let a mere claim subscribe the client to later changes.
  */
 
 vi.mock('../auditor/hash', () => ({
@@ -90,16 +92,29 @@ async function onRetrieve(request: MXDBRecordStatesRequest): Promise<MXDBRecordS
   }));
 }
 
-/** The gate: only `readable` passes. */
-const onFilterReadable = vi.fn(async (request: MXDBRecordStatesRequest): Promise<MXDBRecordStatesRequest> =>
-  request.map(({ collectionName, recordIds }) => ({ collectionName, recordIds: recordIds.filter(id => id === readable.id) })));
+/** The live records as stored now — what the gate reads. `onUpdate` writes to it. */
+const liveById = new Map<string, Note>();
+const liveRecords = (): Note[] => [...liveById.values()];
+beforeEach(() => {
+  liveById.clear();
+  for (const note of [readable, gated]) liveById.set(note.id, note);
+});
+
+/** The gate: only `readable` passes, read as it is stored. */
+const onReadReadable = vi.fn(async (request: MXDBRecordStatesRequest): Promise<MXDBReadableRecords> =>
+  request.map(({ collectionName, recordIds }) => ({ collectionName, records: liveRecords().filter(({ id }) => id === readable.id && recordIds.includes(id)), isGated: true })));
 
 /** Persists everything it is given, successfully. */
-const onUpdate = vi.fn(async (states: MXDBRecordStates): Promise<MXDBSyncEngineResponse> =>
-  states.map(({ collectionName, records }) => ({ collectionName, successfulRecordIds: records.map(state => ('record' in state ? state.record.id : state.recordId)) })));
+const onUpdate = vi.fn(async (states: MXDBRecordStates): Promise<MXDBSyncEngineResponse> => {
+  for (const state of states.flatMap(({ records }) => records)) {
+    if ('record' in state) liveById.set(state.record.id, state.record as Note);
+    else liveById.delete(state.recordId);
+  }
+  return states.map(({ collectionName, records }) => ({ collectionName, successfulRecordIds: records.map(state => ('record' in state ? state.record.id : state.recordId)) }));
+});
 
 function receiver(): ServerReceiver {
-  return new ServerReceiver(logger, { onRetrieve, onUpdate, onFilterReadable, serverDispatcher: sd });
+  return new ServerReceiver(logger, { onRetrieve, onUpdate, onReadReadable, serverDispatcher: sd });
 }
 
 /**
@@ -117,7 +132,7 @@ function changeStreamPush(record: Note): void {
 
 describe('ServerReceiver and the read gate', () => {
   beforeEach(() => {
-    onFilterReadable.mockClear();
+    onReadReadable.mockClear();
     onUpdate.mockClear();
   });
 
@@ -144,10 +159,10 @@ describe('ServerReceiver and the read gate', () => {
     const created: Note = { id: 'mine', text: 'my note, amended' };
     const createdAudit = auditor.createAuditFrom(created);
     const onRetrieveNothing = async (): Promise<MXDBRecordStates> => [];
-    const sr = new ServerReceiver(logger, { onRetrieve: onRetrieveNothing, onUpdate, onFilterReadable, serverDispatcher: sd });
+    const sr = new ServerReceiver(logger, { onRetrieve: onRetrieveNothing, onUpdate, onReadReadable, serverDispatcher: sd });
     await sr.process([{ collectionName: COLLECTION, records: [{ id: created.id, hash: 'client-hash', entries: createdAudit.entries }] }]);
     await drain();
-    expect(onUpdate.mock.invocationCallOrder[0]!).toBeLessThan(onFilterReadable.mock.invocationCallOrder[0]!);
+    expect(onUpdate.mock.invocationCallOrder[0]!).toBeLessThan(onReadReadable.mock.invocationCallOrder[0]!);
     expect(pushedRecordIds()).toEqual([created.id]);
   });
 
@@ -165,7 +180,7 @@ describe('ServerReceiver and the read gate', () => {
   it('evicts a record the client already holds at the current version once it may no longer read it (e.g. a lost capability)', async () => {
     // The meta fast-path confirms the client is up to date without a retrieve; that must not keep a gated record on it.
     const onRetrieveMeta = async (request: MXDBRecordStatesRequest) => request.map(({ collectionName, recordIds }) => ({ collectionName, records: recordIds.map(id => ({ id, hash: 'current' })) }));
-    const sr = new ServerReceiver(logger, { onRetrieve, onRetrieveMeta, onUpdate, onFilterReadable, serverDispatcher: sd });
+    const sr = new ServerReceiver(logger, { onRetrieve, onRetrieveMeta, onUpdate, onReadReadable, serverDispatcher: sd });
     await sr.process([{ collectionName: COLLECTION, records: [{ ...probe(gated.id), hash: 'current' }, { ...probe(readable.id), hash: 'current' }] }]);
     await drain();
     expect(pushedRemovals()).toEqual({ deleted: [], evicted: [gated.id] });
@@ -185,7 +200,7 @@ describe('ServerReceiver and the read gate', () => {
   it('still tombstones a record the server holds as deleted, while answering it with an eviction', async () => {
     const deletedAudit = auditor.deleteAfterLatest(gatedAudit);
     const onRetrieveTombstone = async (): Promise<MXDBRecordStates> => [{ collectionName: COLLECTION, records: [{ recordId: gated.id, audit: auditor.entriesOf(deletedAudit) as AuditEntry[] }] }];
-    const sr = new ServerReceiver(logger, { onRetrieve: onRetrieveTombstone, onUpdate, onFilterReadable, serverDispatcher: sd });
+    const sr = new ServerReceiver(logger, { onRetrieve: onRetrieveTombstone, onUpdate, onReadReadable, serverDispatcher: sd });
     await sr.process([{ collectionName: COLLECTION, records: [probe(gated.id)] }]);
     await drain();
     expect(pushedRemovals()).toEqual({ deleted: [], evicted: [gated.id] });
@@ -215,8 +230,8 @@ describe('ServerReceiver fails closed on the read gate', () => {
   }
 
   it('leaves no claim subscribed when the read gate itself throws', async () => {
-    const throwingGate = async (): Promise<MXDBRecordStatesRequest> => { throw new Error('gate lookup failed'); };
-    const sr = new ServerReceiver(logger, { onRetrieve, onUpdate, onFilterReadable: throwingGate, serverDispatcher: sd });
+    const throwingGate = async (): Promise<MXDBReadableRecords> => { throw new Error('gate lookup failed'); };
+    const sr = new ServerReceiver(logger, { onRetrieve, onUpdate, onReadReadable: throwingGate, serverDispatcher: sd });
     await expect(sr.process([{ collectionName: COLLECTION, records: [probe(gated.id), probe(readable.id)] }])).rejects.toThrow('gate lookup failed');
     await drain();
     expect(pushedRecordIds()).toEqual([]);
@@ -226,7 +241,7 @@ describe('ServerReceiver fails closed on the read gate', () => {
 
   it('leaves no claim subscribed when the sync throws before the gate is reached', async () => {
     const failingRetrieve = async (): Promise<MXDBRecordStates> => { throw new Error('database unavailable'); };
-    const sr = new ServerReceiver(logger, { onRetrieve: failingRetrieve, onUpdate, onFilterReadable, serverDispatcher: sd });
+    const sr = new ServerReceiver(logger, { onRetrieve: failingRetrieve, onUpdate, onReadReadable, serverDispatcher: sd });
     await expect(sr.process([{ collectionName: COLLECTION, records: [probe(gated.id)] }])).rejects.toThrow('database unavailable');
     expect(await changeStreamReaches()).toEqual([]);
   });
@@ -235,8 +250,8 @@ describe('ServerReceiver fails closed on the read gate', () => {
     // The second sync's gate is held open until the test releases it.
     let releaseGate!: () => void;
     const gateHeld = new Promise<void>(resolve => { releaseGate = resolve; });
-    const slowGate = async (request: MXDBRecordStatesRequest): Promise<MXDBRecordStatesRequest> => { await gateHeld; return onFilterReadable(request); };
-    const slow = new ServerReceiver(logger, { onRetrieve, onUpdate, onFilterReadable: slowGate, serverDispatcher: sd });
+    const slowGate = async (request: MXDBRecordStatesRequest): Promise<MXDBReadableRecords> => { await gateHeld; return onReadReadable(request); };
+    const slow = new ServerReceiver(logger, { onRetrieve, onUpdate, onReadReadable: slowGate, serverDispatcher: sd });
 
     const slowSync = slow.process([{ collectionName: COLLECTION, records: [probe(gated.id)] }]);
     await receiver().process([{ collectionName: COLLECTION, records: [probe(readable.id)] }]);
@@ -261,6 +276,48 @@ describe('ServerReceiver with a request it cannot mirror', () => {
     // Were the pause outside the `finally`'s reach, nothing would ever be dispatched to this client again.
     sd.push([{ collectionName: COLLECTION, records: [{ record: readable, lastAuditEntryId: auditor.generateUlid() }] }]);
     await drain();
+    expect(pushedRecordIds()).toEqual([readable.id]);
+  });
+});
+
+describe('ServerReceiver: a record that changes while the sync runs (sc-682)', () => {
+  /** A retrieve that returns `version` for `readable.id`, then lets `landChange` alter what is stored before the gate reads. */
+  function receiverSeeing(version: Note, landChange: () => void): ServerReceiver {
+    const retrieveThenChange = async (): Promise<MXDBRecordStates> => {
+      const states: MXDBRecordStates = [{ collectionName: COLLECTION, records: [{ record: version, audit: auditor.createAuditFrom(version).entries }] }];
+      landChange();
+      return states;
+    };
+    return new ServerReceiver(logger, { onRetrieve: retrieveThenChange, onUpdate, onReadReadable, serverDispatcher: sd });
+  }
+
+  it('never sends the version read before the gate when the gate passes a newer one', async () => {
+    // Read while still someone else's (its content is theirs); reassigned to this client before the gate reads it.
+    const theirsVersion: Note = { id: readable.id, text: 'their private text' };
+    const sr = receiverSeeing(theirsVersion, () => { liveById.set(readable.id, { id: readable.id, text: 'mine now' }); });
+
+    await sr.process([{ collectionName: COLLECTION, records: [probe(readable.id)] }]);
+    await drain();
+
+    expect({ pushed: pushedRecordIds(), removals: pushedRemovals() }).toEqual({ pushed: [], removals: { deleted: [], evicted: [] } });
+  });
+
+  it('evicts, and sends nothing of, a record that leaves the gate (reassigned away) before the gate reads it', async () => {
+    // The stub gate passes only what is stored under `readable.id`; a reassignment takes it out of what it returns.
+    const sr = receiverSeeing(readable, () => { liveById.delete(readable.id); });
+
+    await sr.process([{ collectionName: COLLECTION, records: [probe(readable.id)] }]);
+    await drain();
+
+    expect({ pushed: pushedRecordIds(), removals: pushedRemovals() }).toEqual({ pushed: [], removals: { deleted: [], evicted: [readable.id] } });
+  });
+
+  it('sends the version the gate passed when nothing changed in between', async () => {
+    const sr = receiverSeeing(readable, () => undefined);
+
+    await sr.process([{ collectionName: COLLECTION, records: [probe(readable.id)] }]);
+    await drain();
+
     expect(pushedRecordIds()).toEqual([readable.id]);
   });
 });

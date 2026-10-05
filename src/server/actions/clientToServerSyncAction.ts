@@ -18,7 +18,7 @@ import type { AnyAuditOf, AuditOf } from '../../common';
 import { isActiveRecordState } from '../../common/sync-engine';
 import { isTransientMongoCloseError } from '../utils/isTransientMongoCloseError';
 import { runBeforeWriteHooksOnSyncStates } from './runBeforeWriteHooksOnSyncStates';
-import { filterReadableRecordIds } from './filterReadableRecordIds';
+import { readReadableRecords } from './readReadableRecords';
 import { rejectWritesOutsideReadGate } from './rejectWritesOutsideReadGate';
 import { assertValidSyncRequest } from './assertValidSyncRequest';
 
@@ -115,8 +115,9 @@ export async function handleClientToServerSync(request: ClientDispatcherRequest)
     serverDispatcher: s2c.dispatcher,
 
     // The read gate: a sync request can name any record id, so the receiver answers (and subscribes the client
-    // to) only the records the collection's onQuery lets this caller read (sc-583).
-    onFilterReadable: filterReadableRecordIds,
+    // to) only the records the collection's onQuery lets this caller read (sc-583), read through the gate in one
+    // query so it never sends a version other than the one the gate passed (sc-682).
+    onReadReadable: readReadableRecords,
 
     // Meta fast-path: project stored `_meta.hash` only — no full record fetch/deserialise. The
     // ServerReceiver uses this to confirm branched-only records whose hash already matches the client,

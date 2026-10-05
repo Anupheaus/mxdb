@@ -131,6 +131,7 @@ const { serverGetAllSubscription } = await import('./subscriptions/getAllSubscri
 const { serverDistinctSubscription } = await import('./subscriptions/distinctSubscription');
 const { serverQuerySubscription } = await import('./subscriptions/querySubscription');
 const { handleClientToServerSync } = await import('./actions/clientToServerSyncAction');
+const { readReadableRecords } = await import('./actions/readReadableRecords');
 
 // ─── Database ───────────────────────────────────────────────────────────────────────────────────────────
 
@@ -402,6 +403,37 @@ describe('query subscription (the path that already applied the gate)', () => {
 });
 
 // ─── C2S sync (sc-583) ──────────────────────────────────────────────────────────────────────────────────
+
+describe('reading records through the gate in one query (sc-682)', () => {
+  const read = async (collectionName: string, recordIds: string[]) => {
+    const [result] = await readReadableRecords([{ collectionName, recordIds }]);
+    return { isGated: result?.isGated, records: (result?.records ?? []).orderBy(({ id }) => id) };
+  };
+
+  it('returns the content of only the asked records the gate lets through', async () => {
+    ctx.userId = ALICE;
+    expect(await read(gatedNotes.name, [aliceRed.id, bobGreen.id])).toEqual({ isGated: true, records: [aliceRed] });
+  });
+
+  it('never widens the read to records that were not asked for, even under a gate that replaces the id filter', async () => {
+    ctx.userId = ALICE;
+    expect(await read(overridingNotes.name, [aliceBlue.id, bobGreen.id])).toEqual({ isGated: true, records: [aliceBlue] });
+  });
+
+  it('honours an $or gate', async () => {
+    ctx.userId = ALICE;
+    expect(await read(eitherNotes.name, [aliceRed.id, bobGreen.id])).toEqual({ isGated: true, records: [aliceRed, bobGreen].orderBy(({ id }) => id) });
+  });
+
+  it('reads plainly, and says so, for a collection without a gate', async () => {
+    ctx.userId = ALICE;
+    expect(await read(openNotes.name, [bobGreen.id])).toEqual({ isGated: false, records: [bobGreen] });
+  });
+
+  it('returns nothing for a collection the database does not register', async () => {
+    expect(await read('no_such_collection', [aliceRed.id])).toEqual({ isGated: false, records: [] });
+  });
+});
 
 describe('client-to-server sync', () => {
   /** Sorts before every generated ULID, so the server's version always looks newer than the client's claim. */
