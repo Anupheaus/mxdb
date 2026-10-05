@@ -1,7 +1,7 @@
 import { provideDb, ServerDb, createConnectionDbPool, setConnectionDbPool } from './providers';
 import { Logger } from '@anupheaus/common';
 import { startAuthenticatedServer } from './startAuthenticatedServer';
-import { getDevices, enableDevice, disableDevice, deleteDevice, expireStalePendingInvites } from './auth/deviceManagement';
+import { getDevices, enableDevice, disableDevice, deleteDevice, deletePendingInvite, expireStalePendingInvites } from './auth/deviceManagement';
 import { setAuthDevices } from './auth/useAuthDevices';
 import { useAuthentication } from '@anupheaus/nexus/server';
 import type { WebAuthnAuthRecord } from '@anupheaus/nexus/common';
@@ -52,6 +52,7 @@ export async function startServer(config: ServerConfig): Promise<ServerInstance>
       const enable = async (requestId: string) => enableDevice(authColl, requestId);
       const disable = async (requestId: string) => disableDevice(authColl, requestId);
       const remove = async (requestId: string) => deleteDevice(authColl, requestId);
+      const removePendingInvite = async (requestId: string) => deletePendingInvite(authColl, requestId);
 
       setAuthDevices({
         listForUser,
@@ -61,6 +62,7 @@ export async function startServer(config: ServerConfig): Promise<ServerInstance>
           else await disable(requestId);
         },
         deleteDevice: remove,
+        deletePendingInvite: removePendingInvite,
         expireStalePendingInvites: async ttlMs => expireStalePendingInvites(authColl, ttlMs),
         findById: async requestId => authColl.findById(requestId) as Promise<WebAuthnAuthRecord | undefined>,
         create: async record => authColl.create(record),
@@ -73,6 +75,7 @@ export async function startServer(config: ServerConfig): Promise<ServerInstance>
         enableDevice: enable,
         disableDevice: disable,
         deleteDevice: remove,
+        deletePendingInvite: removePendingInvite,
         updateCertificate,
         close: async () => { await stopListening(); await db.close(); await dbPool.closeAll(); },
       };

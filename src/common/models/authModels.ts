@@ -35,10 +35,18 @@ export interface MXDBGoogleOAuthAuthRecord extends MXDBAuthRecord {
   grantedScopes: string[];
 }
 
+/**
+ * Where a device is in its life: `pending` (an invite that has never registered, by nexus's `isPendingWebAuthnInvite`),
+ * `active` (registered and enabled) or `disabled` (registered, then signed out or disabled by an admin).
+ */
+export type MXDBDeviceStatus = 'pending' | 'active' | 'disabled';
+
 export interface MXDBDeviceInfo {
   requestId: string;
   userId: string;
   deviceDetails?: unknown;
   isEnabled: boolean;
   lastConnectedAt?: number;
+  /** Derived from the record with nexus's pending-invite definition; use it rather than testing the fields yourself. */
+  status: MXDBDeviceStatus;
 }

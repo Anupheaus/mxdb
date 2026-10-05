@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import '@anupheaus/common';
 import type { NexusAuthRecord } from '@anupheaus/nexus/common';
 import type { AuthCollection } from './AuthCollection';
-import { deleteDevice, disableDevice, enableDevice, expireStalePendingInvites } from './deviceManagement';
+import { deleteDevice, deletePendingInvite, disableDevice, enableDevice, expireStalePendingInvites } from './deviceManagement';
 
 function makeAuthColl(isEnabled = false): AuthCollection<NexusAuthRecord> {
   return {
@@ -10,7 +10,8 @@ function makeAuthColl(isEnabled = false): AuthCollection<NexusAuthRecord> {
     update: vi.fn().mockResolvedValue(undefined),
     findById: vi.fn().mockResolvedValue({ requestId: 'req-1', isEnabled }),
     enableIfDisabled: vi.fn().mockResolvedValue(!isEnabled),
-    findStalePendingInvites: vi.fn(),
+    deleteStalePendingInvites: vi.fn(),
+    deletePendingInvite: vi.fn(),
   } as unknown as AuthCollection<NexusAuthRecord>;
 }
 
@@ -41,30 +42,24 @@ describe('deviceManagement', () => {
     expect(authColl.delete).toHaveBeenCalledWith('req-99');
   });
 
-  it('expireStalePendingInvites deletes each stale invite and returns the count', async () => {
+  // The sweep and the conditional delete are each ONE write whose filter re-checks that the record is still a pending
+  // invite (tested against MongoDB in AuthCollection.pendingInvite.tests.ts), so neither lists records and deletes them after.
+  it('expireStalePendingInvites deletes invites created before the cut-off in one write and returns the count', async () => {
     const authColl = makeAuthColl();
-    const stale: NexusAuthRecord[] = [
-      { requestId: 'invite-1', sessionToken: 't1', userId: 'u1', deviceId: 'd1', isEnabled: false },
-      { requestId: 'invite-2', sessionToken: 't2', userId: 'u1', deviceId: 'd2', isEnabled: false },
-    ];
-    vi.mocked(authColl.findStalePendingInvites).mockResolvedValue(stale);
+    vi.mocked(authColl.deleteStalePendingInvites).mockResolvedValue(2);
+    vi.spyOn(Date, 'now').mockReturnValue(100_000_000);
 
     const removed = await expireStalePendingInvites(authColl, 86_400_000);
 
-    expect(removed).toBe(2);
-    expect(authColl.findStalePendingInvites).toHaveBeenCalledOnce();
-    expect(authColl.delete).toHaveBeenCalledTimes(2);
-    expect(authColl.delete).toHaveBeenCalledWith('invite-1');
-    expect(authColl.delete).toHaveBeenCalledWith('invite-2');
+    expect({ removed, cutOffs: vi.mocked(authColl.deleteStalePendingInvites).mock.calls, deleted: vi.mocked(authColl.delete).mock.calls.length })
+      .toEqual({ removed: 2, cutOffs: [[13_600_000]], deleted: 0 });
   });
 
-  it('expireStalePendingInvites returns zero when nothing is stale', async () => {
+  it('deletePendingInvite deletes through the conditional write and reports whether it did', async () => {
     const authColl = makeAuthColl();
-    vi.mocked(authColl.findStalePendingInvites).mockResolvedValue([]);
+    vi.mocked(authColl.deletePendingInvite).mockResolvedValue(false);
 
-    const removed = await expireStalePendingInvites(authColl, 60_000);
-
-    expect(removed).toBe(0);
-    expect(authColl.delete).not.toHaveBeenCalled();
+    expect(await deletePendingInvite(authColl, 'req-1')).toBe(false);
+    expect({ conditional: vi.mocked(authColl.deletePendingInvite).mock.calls, plain: vi.mocked(authColl.delete).mock.calls.length }).toEqual({ conditional: [['req-1']], plain: 0 });
   });
 });

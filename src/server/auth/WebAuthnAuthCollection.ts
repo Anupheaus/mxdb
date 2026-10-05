@@ -12,6 +12,7 @@ import { toStoredKeyHash } from '@anupheaus/nexus/server';
 import type { WebAuthnAuthRecord, WebAuthnAuthStore } from '@anupheaus/nexus/common';
 import type { ServerDb } from '../providers';
 import { AuthCollection, toAuthRecordUpdate } from './AuthCollection';
+import { PENDING_INVITE_FILTER } from './pendingInviteFilter';
 import { isAuthKey } from '@anupheaus/nexus/common';
 
 type WebAuthnDoc = Omit<WebAuthnAuthRecord, 'requestId'> & { _id: string };
@@ -124,7 +125,7 @@ export class WebAuthnAuthCollection
   /**
    * Registers a device on the invite holding `registrationToken` in ONE atomic write, so two registrations racing on the
    * same token cannot both succeed. The write applies `patch` and removes the token. It happens only while the record is
-   * still a pending invite (the same test as nexus's `isPendingWebAuthnInvite`: not enabled, and no key hash, device
+   * still a pending invite (`PENDING_INVITE_FILTER`, the same test as nexus's `isPendingWebAuthnInvite`: not enabled, and no key hash, passkey credential, device
    * details or connection) and, given `createdSince`, still inside the invite lifetime. Resolves the record as it was
    * before the write, or `undefined` when nothing matched: the token was already used, the device has registered since,
    * or the invite has expired.
@@ -133,14 +134,9 @@ export class WebAuthnAuthCollection
     if (!isAuthKey(registrationToken)) return undefined;
     if (createdSince != null && (typeof createdSince !== 'number' || !Number.isFinite(createdSince))) return undefined;
     const coll = await this.getColl() as unknown as Collection<WebAuthnDoc>;
-    // `field: null` matches a field that is missing or null, as `== null` does in isPendingWebAuthnInvite.
     const doc = await coll.findOneAndUpdate({
       registrationToken,
-      isEnabled: { $ne: true },
-      keyHash: null,
-      credentialId: null,
-      deviceDetails: null,
-      lastConnectedAt: null,
+      ...PENDING_INVITE_FILTER,
       ...(createdSince != null ? { createdAt: { $gte: createdSince } } : {}),
     } as any, toAuthRecordUpdate({ ...patch, registrationToken: undefined }), { returnDocument: 'before' })
       .catch(error => { throw asPasskeyAlreadyRegistered(error); });
