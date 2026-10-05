@@ -339,6 +339,12 @@ export class ServerReceiver {
         const existing = successResponse.find(r => r.collectionName === collectionName);
         if (existing != null) existing.rejectedRecords = [...(existing.rejectedRecords ?? []), ...rejectedRecords];
       }
+      // Likewise the records whose change `onUpdate` saved but amended with a note for the user.
+      for (const { collectionName, amendedRecords } of updateResponse) {
+        if (amendedRecords == null || amendedRecords.length === 0) continue;
+        const existing = successResponse.find(r => r.collectionName === collectionName);
+        if (existing != null) existing.amendedRecords = [...(existing.amendedRecords ?? []), ...amendedRecords];
+      }
       for (const [colName, ids] of branchOnlySuccessIds) {
         const existing = successResponse.find(r => r.collectionName === colName);
         if (existing) existing.successfulRecordIds.push(...ids);

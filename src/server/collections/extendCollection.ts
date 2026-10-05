@@ -33,6 +33,20 @@ export interface OnUpsertPayload<RecordType extends Record = Record> {
   updatedIds: string[];
 }
 
+/** One record an `onBeforeUpsert` hook amended, and why, in words for the user. */
+export interface OnBeforeUpsertAmendmentNote {
+  /** The amended record's id. */
+  id: string;
+  /** What was put back and why (e.g. "Only an admin can change the business name, so it was put back."). */
+  note: string;
+}
+
+/**
+ * What an `onBeforeUpsert` hook may return: a note for each record it amended in a way the user should hear about.
+ * Returning nothing (or notes for records it did not change) reports nothing.
+ */
+export type OnBeforeUpsertResult = OnBeforeUpsertAmendmentNote[] | void;
+
 export interface OnClearPayload {
   collectionName: string;
 }
@@ -60,8 +74,12 @@ export interface CollectionExtensionHooks<RecordType extends Record = Record> {
    * arriving via sync — before anything is persisted, once per write and only for records that are new
    * or changed. The records may be amended in place; the amended records are what gets written (and
    * synced back to the client). Throw to reject the write.
+   *
+   * An amendment is silent unless the hook returns a note for the record (`{ id, note }[]`): for a synced
+   * client write the note reaches the client's `onSyncAmended` so the user is told what was put back and
+   * why. Notes are ignored on a server-side write and for a record the hook left unchanged.
    */
-  onBeforeUpsert?(payload: OnUpsertPayload<RecordType>): Promise<void> | void;
+  onBeforeUpsert?(payload: OnUpsertPayload<RecordType>): Promise<OnBeforeUpsertResult> | OnBeforeUpsertResult;
   /**
    * Runs when an insert/update is observed from the MongoDB change stream, so it runs on every
    * instance watching the stream (including when another instance or process performed the write).

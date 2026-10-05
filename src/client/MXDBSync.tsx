@@ -8,7 +8,7 @@ import { Nexus } from '@anupheaus/nexus/client';
 import { ConflictResolutionContext } from './providers';
 import { MXDBSyncInner } from './auth/MXDBSyncInner';
 import { setupBrowserTools } from './utils/setupBrowserTools';
-import type { MXDBCollection, MXDBError, MXDBSyncRejection } from '../common';
+import type { MXDBCollection, MXDBError, MXDBSyncAmendment, MXDBSyncRejection } from '../common';
 import type { MXDBUser } from '../common/models';
 import type { MXDBRemoteAssistanceConfig } from './remote-assistance/models';
 
@@ -31,6 +31,12 @@ interface Props {
    * user why their change did not stick.
    */
   onSyncRejected?(rejections: MXDBSyncRejection[]): void;
+  /**
+   * Called when the server saved a local change but partly amended it: a collection before-write hook put some
+   * protected fields back and said why. The amended record has already been pushed to the device (see
+   * {@link MXDBSyncAmendment}); use this to tell the user what was put back. One call per sync response.
+   */
+  onSyncAmended?(amendments: MXDBSyncAmendment[]): void;
   onConflictResolution?(message: string): Promise<boolean>;
   tokenStorage?: TokenStorage;
   /**
@@ -56,6 +62,7 @@ export const MXDBSync = createComponent('MXDBSync', ({
   onSignedOut,
   onError,
   onSyncRejected,
+  onSyncAmended,
   onConflictResolution,
   tokenStorage,
   rpId,
@@ -103,6 +110,7 @@ export const MXDBSync = createComponent('MXDBSync', ({
             onPrfRef={onPrfRef}
             onError={onError}
             onSyncRejected={onSyncRejected}
+            onSyncAmended={onSyncAmended}
             onSignedIn={onSignedIn}
             onSignedOut={onSignedOut}
           >

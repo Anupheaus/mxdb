@@ -203,6 +203,9 @@ export async function handleClientToServerSync(request: ClientDispatcherRequest)
           for (const { id, reason, kind } of hooked.rejectedRecords) {
             logger.warn('C2S write rejected by a before-write hook — reverting it on the client', { collectionName: col.collectionName, recordId: id, reason, kind });
           }
+          for (const { id, note } of hooked.amendedRecords) {
+            logger.info('C2S write amended by a before-write hook — telling the client what was put back', { collectionName: col.collectionName, recordId: id, note });
+          }
           const rejectedRecords = [...outsideGate.rejectedRecords, ...hooked.rejectedRecords];
           const unpersistedIds = [...outsideGate.unpersistedIds, ...hooked.unpersistedIds];
           const unpersisted = new Set(unpersistedIds);
@@ -237,8 +240,10 @@ export async function handleClientToServerSync(request: ClientDispatcherRequest)
               failedIds.add(wr.id);
             }
           }
+          // A record that failed to persist is retried, so its note is held back until the write that does succeed.
+          const amendedRecords = hooked.amendedRecords.filter(({ id }) => !failedIds.has(id));
           const successfulRecordIds = [...attempted.filter(id => !failedIds.has(id)), ...unpersistedIds];
-          response.push({ collectionName: col.collectionName, successfulRecordIds, ...(rejectedRecords.length > 0 ? { rejectedRecords } : {}) });
+          response.push({ collectionName: col.collectionName, successfulRecordIds, ...(rejectedRecords.length > 0 ? { rejectedRecords } : {}), ...(amendedRecords.length > 0 ? { amendedRecords } : {}) });
         } catch (error) {
           if (isTransientMongoCloseError(error)) {
             logger.warn(`C2S onUpdate aborted by client close (shutdown race) for "${col.collectionName}"`, { error });

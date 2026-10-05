@@ -10,7 +10,7 @@ import { saveEncryptionToSession, loadEncryptionFromSession, clearEncryptionFrom
 import { createDbReadyWaitHandle } from './dbReadyWait';
 import { keepEncryptionKey } from './keepEncryptionKey';
 import { DB_READY_TIMEOUT_MS, MxdbReadyContext } from './MxdbReadyContext';
-import type { MXDBCollection, MXDBError, MXDBSyncRejection } from '../../common';
+import type { MXDBCollection, MXDBError, MXDBSyncAmendment, MXDBSyncRejection } from '../../common';
 import type { MXDBAccount, MXDBUser } from '../../common/models';
 import type { MXDBRemoteAssistanceConfig } from '../remote-assistance/models';
 import { RemoteAssistanceContext } from '../remote-assistance/RemoteAssistanceContext';
@@ -25,6 +25,7 @@ interface Props {
   >;
   onError?(error: MXDBError): void;
   onSyncRejected?(rejections: MXDBSyncRejection[]): void;
+  onSyncAmended?(amendments: MXDBSyncAmendment[]): void;
   onSignedIn?(user: MXDBUser): void;
   onSignedOut?(): void;
   children?: ReactNode;
@@ -42,6 +43,7 @@ export const MXDBSyncInner = createComponent('MXDBSyncInner', ({
   onPrfRef,
   onError,
   onSyncRejected,
+  onSyncAmended,
   onSignedIn,
   onSignedOut,
   children,
@@ -176,7 +178,7 @@ export const MXDBSyncInner = createComponent('MXDBSyncInner', ({
   return (
     <MxdbReadyContext.Provider value={mxdbReadyContext}>
       <DbsProvider name={dbName} encryptionKey={encryptionKey} collections={collections} logger={logger}>
-        <ClientToServerSyncProvider collections={collections} onError={onError} onUnauthorized={signOut} onSyncRejected={onSyncRejected}>
+        <ClientToServerSyncProvider collections={collections} onError={onError} onUnauthorized={signOut} onSyncRejected={onSyncRejected} onSyncAmended={onSyncAmended}>
           <RemoteAssistanceContext.Provider value={remoteAssistance}>
             <ClientToServerProvider />
             <ServerToClientProvider />
