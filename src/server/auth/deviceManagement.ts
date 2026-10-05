@@ -1,6 +1,7 @@
 import type { NexusAuthRecord } from '@anupheaus/nexus/common';
 import type { AuthCollection } from './AuthCollection';
 import type { MXDBDeviceInfo } from '../../common/models';
+import { toDeviceStatus } from './deviceStatus';
 
 /**
  * Device management public server APIs.
@@ -15,12 +16,13 @@ export async function getDevices(
   userId: string,
 ): Promise<MXDBDeviceInfo[]> {
   const records = await authColl.findAllByUserId(userId);
-  return records.map((r: NexusAuthRecord) => ({
-    requestId: r.requestId,
-    userId: r.userId,
-    deviceDetails: r.deviceDetails,
-    isEnabled: r.isEnabled,
-    lastConnectedAt: r.lastConnectedAt,
+  return records.map(record => ({
+    requestId: record.requestId,
+    userId: record.userId,
+    deviceDetails: record.deviceDetails,
+    isEnabled: record.isEnabled,
+    lastConnectedAt: record.lastConnectedAt,
+    status: toDeviceStatus(record),
   }));
 }
 
@@ -48,14 +50,21 @@ export async function deleteDevice(
   await authColl.delete(requestId);
 }
 
+/**
+ * Deletes the device only while it is still a pending invite (one conditional write), and resolves whether it did. Use it
+ * to retire invites: a device that registered after it was listed is never deleted.
+ */
+export async function deletePendingInvite(
+  authColl: AuthCollection<NexusAuthRecord>,
+  requestId: string,
+): Promise<boolean> {
+  return authColl.deletePendingInvite(requestId);
+}
+
+/** Deletes pending invites older than `ttlMs` in one write (an invite registering meanwhile is kept), returning how many. */
 export async function expireStalePendingInvites(
   authColl: AuthCollection<NexusAuthRecord>,
   ttlMs: number,
 ): Promise<number> {
-  const createdBeforeMs = Date.now() - ttlMs;
-  const records = await authColl.findStalePendingInvites(createdBeforeMs);
-  await records.mapAsync(async record => {
-    await authColl.delete(record.requestId);
-  });
-  return records.length;
+  return authColl.deleteStalePendingInvites(Date.now() - ttlMs);
 }
