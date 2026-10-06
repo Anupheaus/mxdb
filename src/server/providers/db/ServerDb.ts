@@ -6,6 +6,7 @@ import { ServerDbCollection } from './ServerDbCollection';
 import { ServerDbCollectionEvents } from './ServerDbCollectionEvents';
 import type { ServerDbChangeEvent } from './server-db-models';
 import { runInDbScope, setDb } from './DbContext';
+import { captureAmbientLogger, runOutsideAnyConnection } from './runOutsideAnyConnection';
 import { is, type Logger, type Record, type Unsubscribe } from '@anupheaus/common';
 import { AsyncLocalStorage } from 'async_hooks';
 
@@ -55,6 +56,7 @@ export class ServerDb {
     this.#watch = props.watch ?? true;
     this.#client = new MongoClient(props.mongoDbUrl);
     this.#logger = props.logger.createSubLogger('ServerDb');
+    this.#hookLogger = captureAmbientLogger();
     this.#dbEvents = new Map();
     this.#setupEvents();
     this.#db = this.#connect();
@@ -67,6 +69,8 @@ export class ServerDb {
   #client: MongoClient;
   #collections: Map<string, ServerDbCollection<any>>;
   #logger: Logger;
+  /** The logger ambient when this database was built, provided to the onAfter hooks (which run on an empty context). */
+  #hookLogger: Logger | undefined;
   #db: Promise<Db>;
   #changeStream: ChangeStream | undefined;
   #dbEvents: Map<string, ServerDbCollectionEvents>;
@@ -292,12 +296,16 @@ export class ServerDb {
     };
 
     try {
-      // Scoped to THIS database: the driver emits the change in whatever context the change stream was started in,
-      // which for a pooled tenant database is the process default (the controller). A hook calling useDb() or
-      // useCollection() must reach the database that saw the change (sc-621).
-      await runInDbScope(() => {
-        setDb(this);
-        return Promise.resolve(run());
+      // The driver emits the change in whatever context the change stream was started in: for a pooled tenant database,
+      // the first connection routed to it. So the hooks run on an empty context chain, with no connection's socket or
+      // signed-in user (sc-662), scoped to THIS database so useDb()/useCollection() reach the database that saw the
+      // change (sc-621), and with the logger that was ambient when this database was built.
+      await runOutsideAnyConnection({
+        logger: this.#hookLogger,
+        delegate: () => runInDbScope(() => {
+          setDb(this);
+          return Promise.resolve(run());
+        }),
       });
     } catch (error) {
       this.#logger.error('Extension onAfter hook failed', { collectionName: event.collectionName, type: event.type, error });

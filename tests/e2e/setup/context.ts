@@ -10,7 +10,7 @@ import {
   type LifecycleState,
 } from './serverLifecycle';
 import type { RunLogger } from './types';
-import { createSyncClient, type SyncClient } from './syncClient';
+import { createSyncClient, type CreateSyncClientOptions, type SyncClient } from './syncClient';
 import { e2eTestCollection, type E2eTestRecord } from './types';
 import { installBrowserEnvironment } from './browserEnvironment';
 import { clearE2eTestCollections } from './mongoData';
@@ -307,14 +307,14 @@ export function getAppLoggerErrorCount(): number {
  * {@link resetE2E} or {@link teardownE2E}, which unmount and drop the client so the next
  * `useClient` builds a new one.
  */
-export function useClient(label: string): E2EClientHandle {
+export function useClient(label: string, options: Pick<CreateSyncClientOptions, 'afterDevSignIn'> = {}): E2EClientHandle {
   if (label.length === 0) throw new Error('useClient: label must be non-empty');
   const c = requireCtx();
   let entry = c.clients.get(label);
   if (entry == null) {
     const dbName = clientDbName(label);
     const encryptionKey = crypto.getRandomValues(new Uint8Array(32));
-    const raw = createSyncClient(`e2e-${label}`, e2eForwardingRunLogger, { dbName, encryptionKey });
+    const raw = createSyncClient(`e2e-${label}`, e2eForwardingRunLogger, { dbName, encryptionKey, ...options });
     entry = { dbName, raw };
     c.clients.set(label, entry);
   }

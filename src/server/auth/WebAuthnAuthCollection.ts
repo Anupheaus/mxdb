@@ -1,17 +1,19 @@
 /**
  * WebAuthn-specific authentication collection.
  *
- * Extends the generic AuthCollection base with two extra sparse indexes
- * (registrationToken, keyHash) and the corresponding lookup methods required
- * by the WebAuthnAuthStore interface.
+ * Extends the generic AuthCollection base with the WebAuthn indexes (registrationToken, keyHash, and one device per
+ * installation of a passkey) and the lookup methods the WebAuthnAuthStore interface requires. Passkey-level state (the
+ * sign-ins a synced passkey has claimed, and whether it is revoked) lives in `passkeyState.ts` (sc-645).
  */
 
 import type { Collection } from 'mongodb';
 import { Logger, is } from '@anupheaus/common';
 import { toStoredKeyHash } from '@anupheaus/nexus/server';
-import type { WebAuthnAuthRecord, WebAuthnAuthStore } from '@anupheaus/nexus/common';
+import type { PasskeySignInClaim, WebAuthnAuthRecord, WebAuthnAuthStore } from '@anupheaus/nexus/common';
 import type { ServerDb } from '../providers';
 import { AuthCollection, toAuthRecordUpdate } from './AuthCollection';
+import { PENDING_INVITE_FILTER } from './pendingInviteFilter';
+import { claimPasskeySignIn, isPasskeyRevoked, revokePasskeys } from './passkeyState';
 import { isAuthKey } from '@anupheaus/nexus/common';
 
 type WebAuthnDoc = Omit<WebAuthnAuthRecord, 'requestId'> & { _id: string };
@@ -19,9 +21,16 @@ type WebAuthnDoc = Omit<WebAuthnAuthRecord, 'requestId'> & { _id: string };
 const KEY_HASH_INDEX = 'keyHash_1';
 /** One key hash, one device (sc-613), over the records that have one: any number of pending invites have none. */
 const UNIQUE_KEY_HASH_INDEX = { name: KEY_HASH_INDEX, unique: true, partialFilterExpression: { keyHash: { $type: 'string' } } };
+/** sc-627's index: one device per passkey. Replaced by the installation index (sc-645) and dropped from collections that have it. */
 const CREDENTIAL_ID_INDEX = 'credentialId_1';
-/** One passkey, one device (sc-627), over the records that have one: any number of pending invites have none. */
-const UNIQUE_CREDENTIAL_ID_INDEX = { name: CREDENTIAL_ID_INDEX, unique: true, partialFilterExpression: { credentialId: { $type: 'string' } } };
+const CREDENTIAL_INSTALLATION_INDEX = 'credentialId_1_installationId_1';
+/**
+ * One device per installation of a passkey (sc-645), over the records that have a passkey: any number of pending invites
+ * have none. A synced passkey signs in on several installations, each its own device; a second record for the same
+ * installation is refused, so two identical sign-ins cannot both register it. Also serves lookups by credential id.
+ */
+const UNIQUE_CREDENTIAL_INSTALLATION_INDEX = { name: CREDENTIAL_INSTALLATION_INDEX, unique: true, partialFilterExpression: { credentialId: { $type: 'string' } } };
+const CREDENTIAL_INSTALLATION_KEYS = { credentialId: 1, installationId: 1 } as const;
 /** The prefix nexus puts on the digest it stores (`toStoredKeyHash`); a key hash without it predates digests. */
 const STORED_KEY_HASH_PREFIX = 'sha256:';
 
@@ -58,7 +67,7 @@ export class WebAuthnAuthCollection
     await super.createIndexes(coll as any);
     await coll.createIndex({ registrationToken: 1 }, { sparse: true });
     await coll.createIndex({ keyHash: 1 }, UNIQUE_KEY_HASH_INDEX);
-    await coll.createIndex({ credentialId: 1 }, UNIQUE_CREDENTIAL_ID_INDEX);
+    await coll.createIndex(CREDENTIAL_INSTALLATION_KEYS, UNIQUE_CREDENTIAL_INSTALLATION_INDEX);
   }
 
   /**
@@ -70,10 +79,16 @@ export class WebAuthnAuthCollection
   protected override async upgradeExisting(coll: Collection<WebAuthnDoc>): Promise<void> {
     const logger = !is.browser() ? Logger.getCurrent()?.createSubLogger('WebAuthnAuthCollection') : undefined;
     try {
-      // sc-627: one device per passkey. No record had a credential id before, so the index cannot conflict.
-      await coll.createIndex({ credentialId: 1 }, UNIQUE_CREDENTIAL_ID_INDEX);
+      // sc-645: one device per installation of a passkey. Every record the earlier index allowed (one per credential id)
+      // fits the new one, so it cannot conflict. Devices disabled before passkeys were revoked revoke theirs now. Only
+      // then does the old index go: until it does, a synced passkey's second installation is refused, as before, so no
+      // new device can register on a passkey whose revoke is not yet recorded.
+      await coll.createIndex(CREDENTIAL_INSTALLATION_KEYS, UNIQUE_CREDENTIAL_INSTALLATION_INDEX);
+      const disabled = await coll.find({ credentialId: { $type: 'string' }, isEnabled: { $ne: true } } as any, { projection: { credentialId: 1 } }).toArray();
+      await revokePasskeys(await this.getMongoDb(), disabled.map(({ credentialId }) => credentialId as string), Date.now());
+      if ((await coll.indexes()).some(index => index.name === CREDENTIAL_ID_INDEX)) await coll.dropIndex(CREDENTIAL_ID_INDEX);
     } catch (error) {
-      logger?.error('Could not add the unique passkey index to the auth collection', { error });
+      logger?.error('Could not bring the unique passkey index in the auth collection up to date', { error });
     }
     try {
       const raw = await coll.find({ keyHash: { $type: 'string', $not: new RegExp(`^${STORED_KEY_HASH_PREFIX}`) } } as any, { projection: { keyHash: 1 } }).toArray();
@@ -106,8 +121,32 @@ export class WebAuthnAuthCollection
     try { await super.create(record); } catch (error) { throw asPasskeyAlreadyRegistered(error); }
   }
 
+  /** Disabling a device with a passkey (nexus's sign-out, an admin, any caller) revokes the passkey first (sc-645). */
   override async update(requestId: string, patch: Partial<WebAuthnAuthRecord>): Promise<void> {
+    if (patch.isEnabled === false) await this.#revokePasskeyOf(requestId);
     try { await super.update(requestId, patch); } catch (error) { throw asPasskeyAlreadyRegistered(error); }
+  }
+
+  /** Deleting a device with a passkey revokes the passkey first, so deleting a revoked device never lifts the revoke (sc-645). */
+  override async delete(requestId: string): Promise<void> {
+    await this.#revokePasskeyOf(requestId);
+    await super.delete(requestId);
+  }
+
+  async #revokePasskeyOf(requestId: string): Promise<void> {
+    const credentialId = (await this.findById(requestId))?.credentialId;
+    if (credentialId == null) return;
+    await revokePasskeys(await this.getMongoDb(), [credentialId], Date.now());
+  }
+
+  /** Claims a verified sign-in once for its passkey, across every device it is synced to (sc-645). See `passkeyState.ts`. */
+  async claimPasskeySignIn(claim: PasskeySignInClaim): Promise<boolean> {
+    return claimPasskeySignIn(await this.getMongoDb(), claim);
+  }
+
+  /** Whether a device of this passkey was ever disabled, signed out or deleted (sc-645). */
+  async isPasskeyRevoked(credentialId: string): Promise<boolean> {
+    return isPasskeyRevoked(await this.getMongoDb(), credentialId);
   }
 
   // As in AuthCollection: a key that is not a non-empty string (an object is a MongoDB operator) finds and claims nothing.
@@ -124,7 +163,7 @@ export class WebAuthnAuthCollection
   /**
    * Registers a device on the invite holding `registrationToken` in ONE atomic write, so two registrations racing on the
    * same token cannot both succeed. The write applies `patch` and removes the token. It happens only while the record is
-   * still a pending invite (the same test as nexus's `isPendingWebAuthnInvite`: not enabled, and no key hash, device
+   * still a pending invite (`PENDING_INVITE_FILTER`, the same test as nexus's `isPendingWebAuthnInvite`: not enabled, and no key hash, passkey credential, device
    * details or connection) and, given `createdSince`, still inside the invite lifetime. Resolves the record as it was
    * before the write, or `undefined` when nothing matched: the token was already used, the device has registered since,
    * or the invite has expired.
@@ -133,14 +172,9 @@ export class WebAuthnAuthCollection
     if (!isAuthKey(registrationToken)) return undefined;
     if (createdSince != null && (typeof createdSince !== 'number' || !Number.isFinite(createdSince))) return undefined;
     const coll = await this.getColl() as unknown as Collection<WebAuthnDoc>;
-    // `field: null` matches a field that is missing or null, as `== null` does in isPendingWebAuthnInvite.
     const doc = await coll.findOneAndUpdate({
       registrationToken,
-      isEnabled: { $ne: true },
-      keyHash: null,
-      credentialId: null,
-      deviceDetails: null,
-      lastConnectedAt: null,
+      ...PENDING_INVITE_FILTER,
       ...(createdSince != null ? { createdAt: { $gte: createdSince } } : {}),
     } as any, toAuthRecordUpdate({ ...patch, registrationToken: undefined }), { returnDocument: 'before' })
       .catch(error => { throw asPasskeyAlreadyRegistered(error); });
@@ -149,7 +183,7 @@ export class WebAuthnAuthCollection
     return { requestId: _id, ...rest };
   }
 
-  /** Finds the device whose passkey has this credential id (sc-627). A key that is not a string finds nothing. */
+  /** Finds a device whose passkey has this credential id (sc-627). A key that is not a string finds nothing. */
   async findByCredentialId(credentialId: string): Promise<WebAuthnAuthRecord | undefined> {
     if (!isAuthKey(credentialId)) return undefined;
     const coll = await this.getColl() as unknown as Collection<WebAuthnDoc>;
@@ -157,6 +191,17 @@ export class WebAuthnAuthCollection
     if (doc == null) return undefined;
     const { _id, ...rest } = doc;
     return { requestId: _id, ...rest };
+  }
+
+  /**
+   * Every device whose passkey has this credential id: one per installation a synced passkey has signed in on (sc-645).
+   * A key that is not a string finds nothing.
+   */
+  async findAllByCredentialId(credentialId: string): Promise<WebAuthnAuthRecord[]> {
+    if (!isAuthKey(credentialId)) return [];
+    const coll = await this.getColl() as unknown as Collection<WebAuthnDoc>;
+    const docs = await coll.find({ credentialId } as any).toArray();
+    return docs.map(({ _id, ...rest }) => ({ requestId: _id, ...rest }));
   }
 
   /**

@@ -1,6 +1,6 @@
-import { createServerActionHandler } from '@anupheaus/nexus/server';
 import { useLogger } from '@anupheaus/nexus/server';
 import type { Record as MXDBRecord } from '@anupheaus/common';
+import { createClientActionHandler } from './createClientActionHandler';
 import { mxdbClientToServerSyncAction } from '../../common/internalActions';
 import { useDb, useServerToClientSynchronisation } from '../providers';
 import {
@@ -18,7 +18,7 @@ import type { AnyAuditOf, AuditOf } from '../../common';
 import { isActiveRecordState } from '../../common/sync-engine';
 import { isTransientMongoCloseError } from '../utils/isTransientMongoCloseError';
 import { runBeforeWriteHooksOnSyncStates } from './runBeforeWriteHooksOnSyncStates';
-import { filterReadableRecordIds } from './filterReadableRecordIds';
+import { readReadableRecords } from './readReadableRecords';
 import { rejectWritesOutsideReadGate } from './rejectWritesOutsideReadGate';
 import { assertValidSyncRequest } from './assertValidSyncRequest';
 
@@ -115,8 +115,9 @@ export async function handleClientToServerSync(request: ClientDispatcherRequest)
     serverDispatcher: s2c.dispatcher,
 
     // The read gate: a sync request can name any record id, so the receiver answers (and subscribes the client
-    // to) only the records the collection's onQuery lets this caller read (sc-583).
-    onFilterReadable: filterReadableRecordIds,
+    // to) only the records the collection's onQuery lets this caller read (sc-583), read through the gate in one
+    // query so it never sends a version other than the one the gate passed (sc-682).
+    onReadReadable: readReadableRecords,
 
     // Meta fast-path: project stored `_meta.hash` only — no full record fetch/deserialise. The
     // ServerReceiver uses this to confirm branched-only records whose hash already matches the client,
@@ -196,8 +197,9 @@ export async function handleClientToServerSync(request: ClientDispatcherRequest)
           // in place; the receiver reads them back to push what was persisted to the client. A rejected record is
           // still acknowledged (so the client stops resending it) and reported back with the reason.
           const outsideGate = await rejectWritesOutsideReadGate({ collection, states: col.records });
-          for (const { id } of outsideGate.rejectedRecords) {
-            logger.warn('C2S write refused: the caller may not read the stored record (outside its read gate)', { collectionName: col.collectionName, recordId: id });
+          // The cause is logged here only: the client is told the same thing whatever it was (sc-998).
+          for (const { id, cause } of outsideGate.refusedWrites) {
+            logger.warn('C2S write refused: the caller may not read the stored record (outside its read gate, or deleted)', { collectionName: col.collectionName, recordId: id, cause });
           }
           const hooked = await runBeforeWriteHooksOnSyncStates({ collection, states: col.records, excludedIds: new Set(outsideGate.unpersistedIds) });
           for (const { id, reason, kind } of hooked.rejectedRecords) {
@@ -283,4 +285,4 @@ export async function handleClientToServerSync(request: ClientDispatcherRequest)
   }
 }
 
-export const clientToServerSyncAction = createServerActionHandler(mxdbClientToServerSyncAction, handleClientToServerSync);
+export const clientToServerSyncAction = createClientActionHandler(mxdbClientToServerSyncAction, handleClientToServerSync);

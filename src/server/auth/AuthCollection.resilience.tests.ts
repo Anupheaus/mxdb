@@ -29,6 +29,8 @@ function matches(doc: Doc, filter: Filter): boolean {
       if ('$ne' in (expected as object) && actual === $ne) return false;
       return true;
     }
+    // As in MongoDB, `field: null` matches a field that is null or missing.
+    if (expected === null) return actual == null;
     return actual === expected;
   });
 }
@@ -213,12 +215,12 @@ describe('AuthCollection — first-use setup', () => {
     expect(indexKeys(collection)).toEqual(['deviceId', 'sessionToken', 'userId']);
   });
 
-  it('adds the webauthn registration-token, key-hash and passkey credential indexes for webauthn stores', async () => {
+  it('adds the webauthn registration-token, key-hash and passkey installation indexes for webauthn stores', async () => {
     const { serverDb, collection } = makeFakeServerDb({ hasExistingCollection: false });
 
     await new WebAuthnAuthCollection(serverDb).findById('any');
 
-    expect(indexKeys(collection)).toEqual(['credentialId', 'deviceId', 'keyHash', 'registrationToken', 'sessionToken', 'userId']);
+    expect(indexKeys(collection)).toEqual(['credentialId,installationId', 'deviceId', 'keyHash', 'registrationToken', 'sessionToken', 'userId']);
   });
 
   it('reuses an existing auth collection without recreating it', async () => {
@@ -299,7 +301,7 @@ describe('deviceManagement against a real auth store', () => {
     const devices = await getDevices(authColl, 'user-1');
 
     expect(devices.find(({ requestId }) => requestId === 'req-phone')).toEqual({
-      requestId: 'req-phone', userId: 'user-1', deviceDetails: { name: 'Phone' }, isEnabled: true, lastConnectedAt: 1_000,
+      requestId: 'req-phone', userId: 'user-1', deviceDetails: { name: 'Phone' }, isEnabled: true, lastConnectedAt: 1_000, status: 'active',
     });
   });
 

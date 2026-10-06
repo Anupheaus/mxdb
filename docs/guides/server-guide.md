@@ -35,8 +35,8 @@ Use the **same** `defineCollection()` definitions as the client (shared module r
 **Return value (`ServerInstance`):**
 
 - **`app`** — Koa app (mount or listen as you prefer)
-- **`createInvite`** (WebAuthn mode only), **`getDevices`**, **`enableDevice`**, **`disableDevice`**, **`deleteDevice`** — device / invite management on the instance
-- **`useAuthDevices()`** — same operations as a hook inside socket actions and HTTP routes after `startServer` (`listForUser`, `createInvite`, `setEnabled`, `deleteDevice`, `expireStalePendingInvites`)
+- **`createInvite`** (WebAuthn mode only), **`getDevices`**, **`enableDevice`**, **`disableDevice`**, **`deleteDevice`**, **`deletePendingInvite`** — device / invite management on the instance
+- **`useAuthDevices()`** — same operations as a hook inside socket actions and HTTP routes after `startServer` (`listForUser`, `createInvite`, `setEnabled`, `deleteDevice`, `deletePendingInvite`, `expireStalePendingInvites`). Each listed device carries a `status` (`pending` | `active` | `disabled`) derived from nexus's `isPendingWebAuthnInvite`: read it rather than testing the record's fields. To retire invites use `deletePendingInvite(requestId)`, one conditional delete that leaves a device that registered after it was listed
 
 Internally: **`provideDb`** opens Mongo + change streams, then **`startAuthenticatedServer`** starts the socket server with **internal actions** and **subscriptions**, per-socket **`ServerToClientSynchronisation`** (registered before auth awaits complete), and **client DB watches**.
 

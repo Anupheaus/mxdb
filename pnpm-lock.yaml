@@ -22,8 +22,8 @@ importers:
         specifier: ^0.2.14
         version: 0.2.14
       '@anupheaus/nexus':
-        specifier: ^2.0.4
-        version: 2.0.4(@aparajita/capacitor-biometric-auth@10.0.0)(@aparajita/capacitor-secure-storage@8.0.1)(@capacitor/app@8.1.1(@capacitor/core@8.5.2))(@capacitor/browser@8.0.4(@capacitor/core@8.5.2))(@capacitor/preferences@7.0.4(@capacitor/core@8.5.2))(@mui/system@5.18.0(@emotion/react@11.14.0(@types/react@18.3.28)(react@18.3.1))(@emotion/styled@11.14.1(@emotion/react@11.14.0(@types/react@18.3.28)(react@18.3.1))(@types/react@18.3.28)(react@18.3.1))(@types/react@18.3.28)(react@18.3.1))(@types/react-dom@18.3.7(@types/react@18.3.28))(@types/react@18.3.28)(react-dom@18.3.1(react@18.3.1))(react@18.3.1)(socket.io-client@4.8.3)(socket.io@4.8.3)
+        specifier: ^2.0.7
+        version: 2.0.7(@aparajita/capacitor-biometric-auth@10.0.0)(@aparajita/capacitor-secure-storage@8.0.1)(@capacitor/app@8.1.1(@capacitor/core@8.5.2))(@capacitor/browser@8.0.4(@capacitor/core@8.5.2))(@capacitor/preferences@7.0.4(@capacitor/core@8.5.2))(@mui/system@5.18.0(@emotion/react@11.14.0(@types/react@18.3.28)(react@18.3.1))(@emotion/styled@11.14.1(@emotion/react@11.14.0(@types/react@18.3.28)(react@18.3.1))(@types/react@18.3.28)(react@18.3.1))(@types/react@18.3.28)(react@18.3.1))(@types/react-dom@18.3.7(@types/react@18.3.28))(@types/react@18.3.28)(react-dom@18.3.1(react@18.3.1))(react@18.3.1)(socket.io-client@4.8.3)(socket.io@4.8.3)
       '@anupheaus/react-ui':
         specifier: ^0.1.18
         version: 0.1.18(@mui/system@5.18.0(@emotion/react@11.14.0(@types/react@18.3.28)(react@18.3.1))(@emotion/styled@11.14.1(@emotion/react@11.14.0(@types/react@18.3.28)(react@18.3.1))(@types/react@18.3.28)(react@18.3.1))(@types/react@18.3.28)(react@18.3.1))(@types/react-dom@18.3.7(@types/react@18.3.28))(@types/react@18.3.28)(react-dom@18.3.1(react@18.3.1))(react@18.3.1)
@@ -202,8 +202,8 @@ packages:
   '@anupheaus/common@0.2.14':
     resolution: {integrity: sha512-v7lAJijLRxvXm29WNPNrMvaroibRqkIQu8RY10PGbkXOsbiuBO13w/0wVQre195Y4c3jzLZqZqG0ifkSl0QV2A==, tarball: https://npm.pkg.github.com/download/@anupheaus/common/0.2.14/f2faa96a65bae556f1263e52d54b9ae38cf35d31}
 
-  '@anupheaus/nexus@2.0.4':
-    resolution: {integrity: sha512-18yd5G+d5zB8fyZgsaI/yxJ1LgUdWxOnFL4s2JWyAxmGCsOD6JPwiTIj9fd1N60DNY3mIC+OWWWZoYmwYoQl3Q==, tarball: https://npm.pkg.github.com/download/@anupheaus/nexus/2.0.4/7f4ae93251f9a760544b056c2dd18f45f74ee7e0}
+  '@anupheaus/nexus@2.0.7':
+    resolution: {integrity: sha512-JKRqcsL5UcFrcmD9hepmr9S8jVzDsvMwZ7dvtRENNGQZyxgpSsEKhHtq8hopc+AyEKRYAnbbn8AQ2HhoXxH6rw==, tarball: https://npm.pkg.github.com/download/@anupheaus/nexus/2.0.7/d9df3dffa6e2fa65ee806543c75848e30c2c24e0}
     engines: {node: '>=20'}
     peerDependencies:
       '@aparajita/capacitor-biometric-auth': ^10.0.0
@@ -4623,7 +4623,7 @@ snapshots:
       object-hash: 3.0.0
       uuid: 14.0.2
 
-  '@anupheaus/nexus@2.0.4(@aparajita/capacitor-biometric-auth@10.0.0)(@aparajita/capacitor-secure-storage@8.0.1)(@capacitor/app@8.1.1(@capacitor/core@8.5.2))(@capacitor/browser@8.0.4(@capacitor/core@8.5.2))(@capacitor/preferences@7.0.4(@capacitor/core@8.5.2))(@mui/system@5.18.0(@emotion/react@11.14.0(@types/react@18.3.28)(react@18.3.1))(@emotion/styled@11.14.1(@emotion/react@11.14.0(@types/react@18.3.28)(react@18.3.1))(@types/react@18.3.28)(react@18.3.1))(@types/react@18.3.28)(react@18.3.1))(@types/react-dom@18.3.7(@types/react@18.3.28))(@types/react@18.3.28)(react-dom@18.3.1(react@18.3.1))(react@18.3.1)(socket.io-client@4.8.3)(socket.io@4.8.3)':
+  '@anupheaus/nexus@2.0.7(@aparajita/capacitor-biometric-auth@10.0.0)(@aparajita/capacitor-secure-storage@8.0.1)(@capacitor/app@8.1.1(@capacitor/core@8.5.2))(@capacitor/browser@8.0.4(@capacitor/core@8.5.2))(@capacitor/preferences@7.0.4(@capacitor/core@8.5.2))(@mui/system@5.18.0(@emotion/react@11.14.0(@types/react@18.3.28)(react@18.3.1))(@emotion/styled@11.14.1(@emotion/react@11.14.0(@types/react@18.3.28)(react@18.3.1))(@types/react@18.3.28)(react@18.3.1))(@types/react@18.3.28)(react@18.3.1))(@types/react-dom@18.3.7(@types/react@18.3.28))(@types/react@18.3.28)(react-dom@18.3.1(react@18.3.1))(react@18.3.1)(socket.io-client@4.8.3)(socket.io@4.8.3)':
     dependencies:
       '@anupheaus/common': 0.2.14
       '@anupheaus/react-ui': 0.1.18(@mui/system@5.18.0(@emotion/react@11.14.0(@types/react@18.3.28)(react@18.3.1))(@emotion/styled@11.14.1(@emotion/react@11.14.0(@types/react@18.3.28)(react@18.3.1))(@types/react@18.3.28)(react@18.3.1))(@types/react@18.3.28)(react@18.3.1))(@types/react-dom@18.3.7(@types/react@18.3.28))(@types/react@18.3.28)(react-dom@18.3.1(react@18.3.1))(react@18.3.1)

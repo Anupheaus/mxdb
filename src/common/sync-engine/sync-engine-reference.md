@@ -257,6 +257,8 @@ Regression test: [ServerDispatcher.tests.ts](ServerDispatcher.tests.ts) — "suc
 
 Additionally, if a client reports an active record (hash present) but `#deletedRecordIds` has a premature tombstone for that id (e.g. a change-stream delete arrived before the CD's initial dispatch), the tombstone is cleared — preventing the subsequent authoritative delete from being swallowed.
 
+**`reachableRecordIds(collectionName, ids)`** answers, from the filter, which changed ids a change-stream push could still reach this client for: ids in the filter, plus ids in a queued or in-flight authoritative batch (the queue is trimmed only after the client answers, and those ids join the filter on ack). The server's change-stream path asks it before running the client's read gate, so a change to a record the client does not hold costs no gate call (sc-997). It must stay in step with step 2 of `#dispatch`, which drops every other change-stream cursor.
+
 ### 5.7 Pause / resume
 
 `pause()` sets `#isPaused = true`. `resume()` clears it and calls `#dispatch` if nothing is in-flight and no retry timer is running. `push()` always adds to the queue; it only calls `#dispatch` when not paused, not in-flight, and no retry timer is running.

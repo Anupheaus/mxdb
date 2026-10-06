@@ -28,7 +28,7 @@ Conventions:
 - **Seed data** is inserted on first run through `onSeed` (categories, types, system settings, fixed lookups).
 - **`version`** is bumped when the on-disk shape changes so migrations run.
 - Collections are registered into **sync sets** by client capability — a full replica for full-featured clients, a leaner subset for constrained (e.g. mobile/Capacitor) clients. **Don't sync data that is large, expensive to aggregate, or doesn't need live reactivity** — keep those out of the sync sets and fetch on demand.
-- **Server-only wiring lives separately** from the shared schema (a server-side extension per entity) and adds server indexes, server-only hooks (`onAfterUpsert`), and server-only collections (e.g. token stores). The shared `defineCollection` stays free of server-only concerns.
+- **Server-only wiring lives separately** from the shared schema (a server-side extension per entity) and adds server indexes, server-only hooks (`onAfterUpsert`), and server-only collections (e.g. token stores). The shared `defineCollection` stays free of server-only concerns. A `syncMode: 'ServerOnly'` collection needs no read or write guard of its own: mxdb refuses every client request that names one, so only server code (actions, hooks, jobs) can touch it.
 
 ---
 
