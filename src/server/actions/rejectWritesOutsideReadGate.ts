@@ -45,6 +45,8 @@ export interface RejectWritesOutsideReadGateResult {
  * The read gate applied to client writes, for a collection with an `onQuery` gate. A client may not change a
  * record whose stored version is outside the gate for them — a record it cannot read is not its to change.
  * Without this, a fitter who knew a task's id could add themself to its assignees (and so read it) or delete it.
+ * The gate is asked with `purpose: 'write'`, so a scope that only limits delivery (a device's date window) does
+ * not refuse an offline edit to a record that has left it since: the edit is saved, then the record is evicted.
  *
  * - A **live** record outside the caller's gate: the update or delete is refused.
  * - A **deleted** record (its audit is a tombstone): any change is refused, whoever asks. Its gate cannot be
@@ -65,7 +67,8 @@ export interface RejectWritesOutsideReadGateResult {
 export async function rejectWritesOutsideReadGate({ collection, states }: RejectWritesOutsideReadGateProps): Promise<RejectWritesOutsideReadGateResult> {
   const result: RejectWritesOutsideReadGateResult = { rejectedRecords: [], refusedWrites: [], unpersistedIds: [] };
   const { collection: definition, queryIds, getAuditIds, get, getAudit } = collection;
-  const gateFilters = await useQueryGate<MXDBRecord>(definition).getGateFilters();
+  // Asked as a write: a scope that only limits what is delivered (a device's window) must not refuse a change.
+  const gateFilters = await useQueryGate<MXDBRecord>(definition).getGateFilters('write');
   if (gateFilters == null || states.length === 0) return result;
 
   const ids = states.map(stateIdOf);

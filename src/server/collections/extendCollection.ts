@@ -37,9 +37,18 @@ export interface OnClearPayload {
   collectionName: string;
 }
 
+/**
+ * Why the read gate is being asked: `'read'` to decide what the caller may be sent, `'write'` to decide whether a
+ * client's change to a stored record may be saved. A gate that only limits what is delivered (a device's date
+ * window, say) applies that limit to reads alone; ownership and role rules apply to both.
+ */
+export type OnQueryPurpose = 'read' | 'write';
+
 export interface OnQueryPayload {
   request: QueryProps<any>;
   userId: string | undefined;
+  /** Absent means `'read'` (gates written before this field existed treat every call as a read). */
+  purpose?: OnQueryPurpose;
 }
 
 export interface CollectionExtensionHooks<RecordType extends Record = Record> {
@@ -86,6 +95,11 @@ export interface CollectionExtensionHooks<RecordType extends Record = Record> {
    * scoping) or to interpret {@link QueryProps.serverHints}; return void/undefined to use the request
    * unchanged. For `get` and `getAll` the request is empty and only the returned filters are used, AND-ed
    * with the requested ids for `get` — so AND your scope onto `request.filters` rather than replacing it.
+   *
+   * It is also asked, with `purpose: 'write'`, whether a client may change a stored record: a change to a record
+   * outside the returned filters is refused. A scope that only limits delivery, not authority, should be left out
+   * of a `'write'` answer, so an edit made offline to a record that has since left that scope is still saved
+   * (and then evicted from the client, because it is no longer readable).
    */
   onQuery?(payload: OnQueryPayload): PromiseMaybe<QueryProps<any> | void>;
 }

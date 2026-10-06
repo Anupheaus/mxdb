@@ -141,6 +141,13 @@ extendCollection(addressesCollection, {
 - Hooks run in the writer's context, so `useCollection` inside them hits the same database; never upsert the same collection from its own `onBeforeUpsert`.
 - **Other sync failures are not rejections.** A change the server keeps failing to write for any other reason stays on the device and is retried with backoff; after a few attempts `MXDBSync`'s `onError` receives a `SYNC_STALLED` error (worth a non-blocking "changes not saved yet" indicator). It syncs as soon as the server accepts it.
 
+### 3b. The read gate — `onQuery`, for reads and for writes
+
+`onQuery` is the collection's read gate: every client read (`query`, `get`, `getAll`, `distinct`, change pushes, reconnect sync) is narrowed by the filters it returns. It is also the write gate: a synced client change to a stored record outside its filters is refused (`kind: 'access'`). The payload's `purpose` says which is being asked — `'read'` (also when absent) or `'write'`.
+
+- **Authority applies to both.** Ownership and role rules ("a fitter sees only their own tasks") ignore `purpose`.
+- **Delivery scope applies to reads only.** A rule that limits what a client *holds* rather than what the user may change (a device's date window) returns no filter for `'write'`. Otherwise an edit made offline to a record that has since left the scope is refused and lost. With the scope left out, the edit is saved, and the record, no longer readable, is then evicted from the device.
+
 ---
 
 ## 4. Records: Interface + Namespace

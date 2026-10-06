@@ -1,5 +1,6 @@
 import type { DataFilters, Record } from '@anupheaus/common';
 import type { QueryProps } from '../../common';
+import type { OnQueryPurpose } from './extendCollection';
 
 /**
  * A collection's read gate — its `onQuery` hook — bound to the caller who is reading. Every server path a
@@ -15,6 +16,7 @@ export interface QueryGate<RecordType extends Record = Record> {
   /**
    * The filters the gate narrows a read of the whole collection to, for reads that are not a query (`get`,
    * `getAll`). `undefined` when nothing narrows it — no gate, or a gate that lets this caller see everything.
+   * `purpose` is `'read'` by default; the write gate passes `'write'` to get the records the caller may change.
    */
-  getGateFilters(): Promise<DataFilters<RecordType> | undefined>;
+  getGateFilters(purpose?: OnQueryPurpose): Promise<DataFilters<RecordType> | undefined>;
 }
