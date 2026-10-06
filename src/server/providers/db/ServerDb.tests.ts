@@ -3,9 +3,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { EventEmitter } from 'events';
 import { AsyncLocalStorage } from 'async_hooks';
 import type { Logger, Record as MXDBRecord } from '@anupheaus/common';
-// nexus keeps its context setters internal; the test seeds a signed-in connection the way nexus's own auth does.
-import { setAuthData, setClient, wrap as wrapNexusContext } from '../../../../../nexus/src/server/async-context';
-import { useAuthData, useClient } from '@anupheaus/nexus/server';
+import { createAsyncContext, optional, useAuthData, useClient } from '@anupheaus/nexus/server';
 import type { ClientSession } from 'mongodb';
 import { defineCollection } from '../../../common/defineCollection';
 import type { MXDBCollection } from '../../../common';
@@ -74,6 +72,25 @@ vi.mock('mongodb', () => ({ MongoClient: class { constructor(url: string) { retu
 
 interface Item extends MXDBRecord {
   name: string;
+}
+
+/** Stands in for a connection's socket on the async-context chain. */
+interface FakeConnection {
+  id: string;
+}
+
+/** Stands in for a connection's signed-in user on the async-context chain. */
+interface FakeAuthData {
+  userId: string;
+}
+
+/** What an onAfter hook could see of a connection's identity, and which database it is scoped to. */
+interface SeenByHook {
+  connectionClient: FakeConnection | undefined;
+  connectionAuthData: FakeAuthData | undefined;
+  nexusClient: unknown;
+  nexusAuthData: unknown;
+  db: unknown;
 }
 
 const DEBOUNCE_MS = 10;
@@ -477,18 +494,36 @@ describe('ServerDb', () => {
       // Production: a pooled tenant ServerDb is built inside whichever connection first reached it, and the driver emits
       // changes in that context. Without a reset a hook calling useAuthentication()/useClient() would see that unrelated
       // member as the one making the change (sc-662).
+      //
+      // nexus keeps its own setters (setClient/setAuthData) internal, so the signed-in connection is seeded through its
+      // public createAsyncContext: every context it creates resolves its values along the same async scope chain nexus
+      // holds the socket and signed-in user on, so a hook that can still see this connection's values could still see
+      // nexus's. nexus's own useAuthData()/useClient() are read too, for an end-to-end check of what a hook would call.
       const collection = makeCollection();
-      const seen: { authData: unknown; client: unknown; db: unknown }[] = [];
+      const connectionContext = createAsyncContext({
+        client: optional<FakeConnection>(),
+        authData: optional<FakeAuthData>(),
+      });
+      const seen: SeenByHook[] = [];
       extendCollection(collection, {
         onAfterUpsert: async () => {
           await new Promise(resolve => setTimeout(resolve, 1));
-          seen.push({ authData: useAuthData(), client: useClient(), db: useDb() });
+          seen.push({
+            connectionClient: connectionContext.useClient(),
+            connectionAuthData: connectionContext.useAuthData(),
+            nexusClient: useClient(),
+            nexusAuthData: useAuthData(),
+            db: useDb(),
+          });
         },
       });
-      const connection = { id: 'socket-1' };
-      const { serverDb } = await wrapNexusContext(connection, async () => {
-        setClient(connection as never);
-        setAuthData({ user: { id: 'signed-in-member' } as never });
+      const connection: FakeConnection = { id: 'socket-1' };
+      const seenBeforeChange: Partial<SeenByHook>[] = [];
+      const { serverDb } = await connectionContext.wrap(connection, async () => {
+        connectionContext.setClient(connection);
+        connectionContext.setAuthData({ userId: 'signed-in-member' });
+        // Proves the seeding took: the connection's identity is visible here, in the context the change stream starts in.
+        seenBeforeChange.push({ connectionClient: connectionContext.useClient(), connectionAuthData: connectionContext.useAuthData() });
         const watching = await makeWatchingServerDb(collection);
         // The change arrives in the context the change stream was started in: the signed-in connection's.
         watching.emit(changeEvent('insert', collection.name, { _id: 'a', name: 'A' }));
@@ -496,7 +531,10 @@ describe('ServerDb', () => {
         return watching;
       })();
 
-      expect(seen).toEqual([{ authData: undefined, client: undefined, db: serverDb }]);
+      expect({ seenBeforeChange, seen }).toEqual({
+        seenBeforeChange: [{ connectionClient: connection, connectionAuthData: { userId: 'signed-in-member' } }],
+        seen: [{ connectionClient: undefined, connectionAuthData: undefined, nexusClient: undefined, nexusAuthData: undefined, db: serverDb }],
+      });
     });
 
     it('still notifies change callbacks when an onAfter hook throws', async () => {
