@@ -2,6 +2,7 @@ import type { Logger, Record as MXDBRecord } from '@anupheaus/common';
 import { auditor, AuditEntryType } from '../auditor';
 import { replayHistoryEndState } from '../auditor/replay';
 import { hashRecord } from '../auditor/hash';
+import { generateAnchorUlid } from '../auditor/time';
 import type { AuditEntry } from '../auditor';
 import {
   type ClientDispatcherRequest,
@@ -262,7 +263,7 @@ export class ServerReceiver {
             mergedEntries = strippedEntries;
           } else {
             try {
-              const serverAuditOf = { id: recordId, entries: serverState.audit as AuditEntry[] };
+              const serverAuditOf = { id: recordId, entries: this.#entriesWithAnchor(serverState) };
               const clientAuditOf = { id: recordId, entries: strippedEntries };
               const merged = auditor.merge(serverAuditOf, clientAuditOf, this.#logger);
               mergedEntries = merged.entries as AuditEntry[];
@@ -607,6 +608,17 @@ export class ServerReceiver {
       if (record != null) hashes.set(`${collectionName}::${recordId}`, await hashRecord(record));
     }));
     return hashes;
+  }
+
+  /**
+   * The audit to merge a client's entries into. A live record with no audit at all was written without mxdb (a migration, a seed
+   * script): replaying an edit to it has nothing to start from, so the edit would be skipped and the record deleted. Its stored
+   * record becomes the audit's first entry, dated before every other so it is the anchor for this replay and every later one.
+   */
+  #entriesWithAnchor(serverState: MXDBActiveRecordState | MXDBDeletedRecordState): AuditEntry[] {
+    const entries = serverState.audit as AuditEntry[];
+    if (entries.length > 0 || !isActiveRecordState(serverState)) return entries;
+    return [{ type: AuditEntryType.Created, id: generateAnchorUlid(), record: Object.clone(serverState.record) } as AuditEntry];
   }
 
   #getLastAuditEntryId(entries: AuditEntry[]): string {
