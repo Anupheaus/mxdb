@@ -1,18 +1,19 @@
 /**
  * WebAuthn-specific authentication collection.
  *
- * Extends the generic AuthCollection base with two extra sparse indexes
- * (registrationToken, keyHash) and the corresponding lookup methods required
- * by the WebAuthnAuthStore interface.
+ * Extends the generic AuthCollection base with the WebAuthn indexes (registrationToken, keyHash, and one device per
+ * installation of a passkey) and the lookup methods the WebAuthnAuthStore interface requires. Passkey-level state (the
+ * sign-ins a synced passkey has claimed, and whether it is revoked) lives in `passkeyState.ts` (sc-645).
  */
 
 import type { Collection } from 'mongodb';
 import { Logger, is } from '@anupheaus/common';
 import { toStoredKeyHash } from '@anupheaus/nexus/server';
-import type { WebAuthnAuthRecord, WebAuthnAuthStore } from '@anupheaus/nexus/common';
+import type { PasskeySignInClaim, WebAuthnAuthRecord, WebAuthnAuthStore } from '@anupheaus/nexus/common';
 import type { ServerDb } from '../providers';
 import { AuthCollection, toAuthRecordUpdate } from './AuthCollection';
 import { PENDING_INVITE_FILTER } from './pendingInviteFilter';
+import { claimPasskeySignIn, isPasskeyRevoked, revokePasskeys } from './passkeyState';
 import { isAuthKey } from '@anupheaus/nexus/common';
 
 type WebAuthnDoc = Omit<WebAuthnAuthRecord, 'requestId'> & { _id: string };
@@ -79,9 +80,12 @@ export class WebAuthnAuthCollection
     const logger = !is.browser() ? Logger.getCurrent()?.createSubLogger('WebAuthnAuthCollection') : undefined;
     try {
       // sc-645: one device per installation of a passkey. Every record the earlier index allowed (one per credential id)
-      // fits the new one, so it cannot conflict. The old index goes after, so a passkey is never left without one; until
-      // it goes, a synced passkey's second installation is refused, as before.
+      // fits the new one, so it cannot conflict. Devices disabled before passkeys were revoked revoke theirs now. Only
+      // then does the old index go: until it does, a synced passkey's second installation is refused, as before, so no
+      // new device can register on a passkey whose revoke is not yet recorded.
       await coll.createIndex(CREDENTIAL_INSTALLATION_KEYS, UNIQUE_CREDENTIAL_INSTALLATION_INDEX);
+      const disabled = await coll.find({ credentialId: { $type: 'string' }, isEnabled: { $ne: true } } as any, { projection: { credentialId: 1 } }).toArray();
+      await revokePasskeys(await this.getMongoDb(), disabled.map(({ credentialId }) => credentialId as string), Date.now());
       if ((await coll.indexes()).some(index => index.name === CREDENTIAL_ID_INDEX)) await coll.dropIndex(CREDENTIAL_ID_INDEX);
     } catch (error) {
       logger?.error('Could not bring the unique passkey index in the auth collection up to date', { error });
@@ -117,8 +121,32 @@ export class WebAuthnAuthCollection
     try { await super.create(record); } catch (error) { throw asPasskeyAlreadyRegistered(error); }
   }
 
+  /** Disabling a device with a passkey (nexus's sign-out, an admin, any caller) revokes the passkey first (sc-645). */
   override async update(requestId: string, patch: Partial<WebAuthnAuthRecord>): Promise<void> {
+    if (patch.isEnabled === false) await this.#revokePasskeyOf(requestId);
     try { await super.update(requestId, patch); } catch (error) { throw asPasskeyAlreadyRegistered(error); }
+  }
+
+  /** Deleting a device with a passkey revokes the passkey first, so deleting a revoked device never lifts the revoke (sc-645). */
+  override async delete(requestId: string): Promise<void> {
+    await this.#revokePasskeyOf(requestId);
+    await super.delete(requestId);
+  }
+
+  async #revokePasskeyOf(requestId: string): Promise<void> {
+    const credentialId = (await this.findById(requestId))?.credentialId;
+    if (credentialId == null) return;
+    await revokePasskeys(await this.getMongoDb(), [credentialId], Date.now());
+  }
+
+  /** Claims a verified sign-in once for its passkey, across every device it is synced to (sc-645). See `passkeyState.ts`. */
+  async claimPasskeySignIn(claim: PasskeySignInClaim): Promise<boolean> {
+    return claimPasskeySignIn(await this.getMongoDb(), claim);
+  }
+
+  /** Whether a device of this passkey was ever disabled, signed out or deleted (sc-645). */
+  async isPasskeyRevoked(credentialId: string): Promise<boolean> {
+    return isPasskeyRevoked(await this.getMongoDb(), credentialId);
   }
 
   // As in AuthCollection: a key that is not a non-empty string (an object is a MongoDB operator) finds and claims nothing.

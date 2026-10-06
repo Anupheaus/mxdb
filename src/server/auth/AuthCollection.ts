@@ -8,7 +8,7 @@
  * createIndexes() to add extra indices (call super.createIndexes() first).
  */
 
-import type { Collection } from 'mongodb';
+import type { Collection, Db } from 'mongodb';
 import type { NexusAuthRecord, NexusAuthStore } from '@anupheaus/nexus/common';
 import type { ServerDb } from '../providers';
 import { useDb } from '../providers';
@@ -84,6 +84,12 @@ export abstract class AuthCollection<TRecord extends NexusAuthRecord> implements
     } catch {
       return this.#fallbackDb;
     }
+  }
+
+  /** The MongoDB database of the CURRENT `ServerDb` (see `#getServerDb`), for a subclass's companion collections, which
+   *  must live in the same database as the auth records they describe. */
+  protected async getMongoDb(): Promise<Db> {
+    return this.#getServerDb().getMongoDb();
   }
 
   /** Returns the underlying MongoDB collection for the CURRENT `ServerDb` (see `#getServerDb`).
