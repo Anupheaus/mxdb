@@ -98,7 +98,7 @@ const { records } = await query({ filters: { scheduleId }, serverHints: { latest
 - **`onAfter*` (upsert/delete) run on every instance watching the change stream** — not just the one that originated the write. Do not rely on request-scoped context (user, socket) inside them; use `onBefore*` for that.
 - **`onAfterClear` is not change-stream driven** — it runs only on the instance that performed the clear. This asymmetry is intentional and documented in `README.md`.
 - **`onBeforeClear` / `onAfterClear`** are run by `ServerDbCollection.clear()` itself (before and after the delete), on the instance performing the clear only.
-- **`useCollection` inside hooks** — `onAfter*` hooks run outside socket request context, with the ambient database set to the `ServerDb` that observed the change (whatever context that database was built in). Use `useCollection` for cross-collection reads/writes; do not attempt to access user/socket context here.
+- **`useCollection` inside hooks** — `onAfter*` hooks run outside any connection or request: on an empty async-context chain (no socket, no signed-in user — `useAuthentication().user` is undefined), with the ambient database set to the `ServerDb` that observed the change and the logger that was ambient when it was built (sc-621, sc-662). Use `useCollection` for cross-collection reads/writes; do not attempt to access user/socket context here.
 - **`serverHints` is inert without an `onQuery` hook** — if no hook interprets them, the hints are silently ignored (they never reach the client SQLite query or the server Mongo query). A hint that "does nothing" usually means the `onQuery` hook isn't registered or isn't reading `request.serverHints`.
 
 ## Related

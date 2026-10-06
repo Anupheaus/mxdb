@@ -3,6 +3,9 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { EventEmitter } from 'events';
 import { AsyncLocalStorage } from 'async_hooks';
 import type { Logger, Record as MXDBRecord } from '@anupheaus/common';
+// nexus keeps its context setters internal; the test seeds a signed-in connection the way nexus's own auth does.
+import { setAuthData, setClient, wrap as wrapNexusContext } from '../../../../../nexus/src/server/async-context';
+import { useAuthData, useClient } from '@anupheaus/nexus/server';
 import type { ClientSession } from 'mongodb';
 import { defineCollection } from '../../../common/defineCollection';
 import type { MXDBCollection } from '../../../common';
@@ -468,6 +471,32 @@ describe('ServerDb', () => {
 
       expect(seenDbs).toHaveLength(3);
       seenDbs.forEach(seenDb => expect(seenDb).toBe(serverDb));
+    });
+
+    it('runs the onAfter hooks with no connection\'s identity, even when the database was built inside a signed-in connection', async () => {
+      // Production: a pooled tenant ServerDb is built inside whichever connection first reached it, and the driver emits
+      // changes in that context. Without a reset a hook calling useAuthentication()/useClient() would see that unrelated
+      // member as the one making the change (sc-662).
+      const collection = makeCollection();
+      const seen: { authData: unknown; client: unknown; db: unknown }[] = [];
+      extendCollection(collection, {
+        onAfterUpsert: async () => {
+          await new Promise(resolve => setTimeout(resolve, 1));
+          seen.push({ authData: useAuthData(), client: useClient(), db: useDb() });
+        },
+      });
+      const connection = { id: 'socket-1' };
+      const { serverDb } = await wrapNexusContext(connection, async () => {
+        setClient(connection as never);
+        setAuthData({ user: { id: 'signed-in-member' } as never });
+        const watching = await makeWatchingServerDb(collection);
+        // The change arrives in the context the change stream was started in: the signed-in connection's.
+        watching.emit(changeEvent('insert', collection.name, { _id: 'a', name: 'A' }));
+        await vi.advanceTimersByTimeAsync(DEBOUNCE_MS + 1);
+        return watching;
+      })();
+
+      expect(seen).toEqual([{ authData: undefined, client: undefined, db: serverDb }]);
     });
 
     it('still notifies change callbacks when an onAfter hook throws', async () => {
