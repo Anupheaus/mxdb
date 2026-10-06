@@ -30,6 +30,7 @@ function storeWith(held: WebAuthnAuthRecord, extra: Partial<WebAuthnAuthStore> =
     findBySessionToken: async () => held,
     findByDevice: async () => held,
     findByCredentialId: async () => held,
+    findAllByCredentialId: async () => [held],
     // Proves unfiltered methods still run against the store itself (`this`).
     async findByUserId(this: unknown) { calls.push(this === store ? 'bound' : 'unbound'); return [held]; },
     ...extra,
@@ -78,7 +79,7 @@ describe('withInviteExpiry', () => {
     const device = registered();
     const { store } = storeWith(device);
 
-    expect([await store.findByCredentialId('cred-1'), await store.findBySessionToken('s')]).toEqual([device, device]);
+    expect([await store.findByCredentialId('cred-1'), await store.findAllByCredentialId('cred-1'), await store.findBySessionToken('s')]).toEqual([device, [device], device]);
   });
 
   it('claims a registration only inside the invite lifetime: the store is asked for invites created since then', async () => {

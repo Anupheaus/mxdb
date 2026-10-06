@@ -20,9 +20,16 @@ type WebAuthnDoc = Omit<WebAuthnAuthRecord, 'requestId'> & { _id: string };
 const KEY_HASH_INDEX = 'keyHash_1';
 /** One key hash, one device (sc-613), over the records that have one: any number of pending invites have none. */
 const UNIQUE_KEY_HASH_INDEX = { name: KEY_HASH_INDEX, unique: true, partialFilterExpression: { keyHash: { $type: 'string' } } };
+/** sc-627's index: one device per passkey. Replaced by the installation index (sc-645) and dropped from collections that have it. */
 const CREDENTIAL_ID_INDEX = 'credentialId_1';
-/** One passkey, one device (sc-627), over the records that have one: any number of pending invites have none. */
-const UNIQUE_CREDENTIAL_ID_INDEX = { name: CREDENTIAL_ID_INDEX, unique: true, partialFilterExpression: { credentialId: { $type: 'string' } } };
+const CREDENTIAL_INSTALLATION_INDEX = 'credentialId_1_installationId_1';
+/**
+ * One device per installation of a passkey (sc-645), over the records that have a passkey: any number of pending invites
+ * have none. A synced passkey signs in on several installations, each its own device; a second record for the same
+ * installation is refused, so two identical sign-ins cannot both register it. Also serves lookups by credential id.
+ */
+const UNIQUE_CREDENTIAL_INSTALLATION_INDEX = { name: CREDENTIAL_INSTALLATION_INDEX, unique: true, partialFilterExpression: { credentialId: { $type: 'string' } } };
+const CREDENTIAL_INSTALLATION_KEYS = { credentialId: 1, installationId: 1 } as const;
 /** The prefix nexus puts on the digest it stores (`toStoredKeyHash`); a key hash without it predates digests. */
 const STORED_KEY_HASH_PREFIX = 'sha256:';
 
@@ -59,7 +66,7 @@ export class WebAuthnAuthCollection
     await super.createIndexes(coll as any);
     await coll.createIndex({ registrationToken: 1 }, { sparse: true });
     await coll.createIndex({ keyHash: 1 }, UNIQUE_KEY_HASH_INDEX);
-    await coll.createIndex({ credentialId: 1 }, UNIQUE_CREDENTIAL_ID_INDEX);
+    await coll.createIndex(CREDENTIAL_INSTALLATION_KEYS, UNIQUE_CREDENTIAL_INSTALLATION_INDEX);
   }
 
   /**
@@ -71,10 +78,13 @@ export class WebAuthnAuthCollection
   protected override async upgradeExisting(coll: Collection<WebAuthnDoc>): Promise<void> {
     const logger = !is.browser() ? Logger.getCurrent()?.createSubLogger('WebAuthnAuthCollection') : undefined;
     try {
-      // sc-627: one device per passkey. No record had a credential id before, so the index cannot conflict.
-      await coll.createIndex({ credentialId: 1 }, UNIQUE_CREDENTIAL_ID_INDEX);
+      // sc-645: one device per installation of a passkey. Every record the earlier index allowed (one per credential id)
+      // fits the new one, so it cannot conflict. The old index goes after, so a passkey is never left without one; until
+      // it goes, a synced passkey's second installation is refused, as before.
+      await coll.createIndex(CREDENTIAL_INSTALLATION_KEYS, UNIQUE_CREDENTIAL_INSTALLATION_INDEX);
+      if ((await coll.indexes()).some(index => index.name === CREDENTIAL_ID_INDEX)) await coll.dropIndex(CREDENTIAL_ID_INDEX);
     } catch (error) {
-      logger?.error('Could not add the unique passkey index to the auth collection', { error });
+      logger?.error('Could not bring the unique passkey index in the auth collection up to date', { error });
     }
     try {
       const raw = await coll.find({ keyHash: { $type: 'string', $not: new RegExp(`^${STORED_KEY_HASH_PREFIX}`) } } as any, { projection: { keyHash: 1 } }).toArray();
@@ -145,7 +155,7 @@ export class WebAuthnAuthCollection
     return { requestId: _id, ...rest };
   }
 
-  /** Finds the device whose passkey has this credential id (sc-627). A key that is not a string finds nothing. */
+  /** Finds a device whose passkey has this credential id (sc-627). A key that is not a string finds nothing. */
   async findByCredentialId(credentialId: string): Promise<WebAuthnAuthRecord | undefined> {
     if (!isAuthKey(credentialId)) return undefined;
     const coll = await this.getColl() as unknown as Collection<WebAuthnDoc>;
@@ -153,6 +163,17 @@ export class WebAuthnAuthCollection
     if (doc == null) return undefined;
     const { _id, ...rest } = doc;
     return { requestId: _id, ...rest };
+  }
+
+  /**
+   * Every device whose passkey has this credential id: one per installation a synced passkey has signed in on (sc-645).
+   * A key that is not a string finds nothing.
+   */
+  async findAllByCredentialId(credentialId: string): Promise<WebAuthnAuthRecord[]> {
+    if (!isAuthKey(credentialId)) return [];
+    const coll = await this.getColl() as unknown as Collection<WebAuthnDoc>;
+    const docs = await coll.find({ credentialId } as any).toArray();
+    return docs.map(({ _id, ...rest }) => ({ requestId: _id, ...rest }));
   }
 
   /**
