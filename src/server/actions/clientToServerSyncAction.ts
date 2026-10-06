@@ -1,6 +1,6 @@
-import { createServerActionHandler } from '@anupheaus/nexus/server';
 import { useLogger } from '@anupheaus/nexus/server';
 import type { Record as MXDBRecord } from '@anupheaus/common';
+import { createClientActionHandler } from './createClientActionHandler';
 import { mxdbClientToServerSyncAction } from '../../common/internalActions';
 import { useDb, useServerToClientSynchronisation } from '../providers';
 import {
@@ -285,4 +285,4 @@ export async function handleClientToServerSync(request: ClientDispatcherRequest)
   }
 }
 
-export const clientToServerSyncAction = createServerActionHandler(mxdbClientToServerSyncAction, handleClientToServerSync);
+export const clientToServerSyncAction = createClientActionHandler(mxdbClientToServerSyncAction, handleClientToServerSync);

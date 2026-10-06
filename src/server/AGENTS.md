@@ -17,7 +17,7 @@ Exposes one public function (`startServer`) and one composable extension hook (`
 `extendCollection` (lifecycle hooks + seeding) and `useCollection` (server-side collection accessor). See [collections/AGENTS.md](collections/AGENTS.md).
 
 ### Socket actions (`actions/`)
-Handlers for C2S socket calls: `get`, `getAll`, `query`, `distinct`, `clientToServerSync`, `reconcile`. See [actions/AGENTS.md](actions/AGENTS.md).
+Handlers for C2S socket calls: `get`, `getAll`, `query`, `distinct`, `clientToServerSync`, `reconcile`, each registered through `createClientActionHandler`, which refuses any request naming a server-only collection (sc-1401). See [actions/AGENTS.md](actions/AGENTS.md).
 
 ### Subscriptions (`subscriptions/`)
 Server-side reactive subscriptions: `getAll`, `query`, `distinct`. See [subscriptions/AGENTS.md](subscriptions/AGENTS.md).

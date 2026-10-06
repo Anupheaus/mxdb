@@ -22,6 +22,9 @@ Each file registers one socket action using `createServerActionHandler`. Actions
 - `runBeforeWriteHooksOnSyncStates.ts` — runs the collections' `onBeforeDelete` / `onBeforeUpsert` hooks on a C2S batch before it is persisted (see [../collections/AGENTS.md](../collections/AGENTS.md)); an amendment replaces the state's record and appends an `Updated` audit entry, in place, so the `ServerReceiver` pushes the amended record back to the client
 - `reconcileAction.ts` — `mxdbReconcileAction` — reconciles a client's claimed state against the server; used on reconnect to detect divergence
 
+### The server-only guard
+- `createClientActionHandler.ts` — `createClientActionHandler(action, handler)` — how every action here is registered: a request naming a server-only collection (`syncMode: 'ServerOnly'`) is refused before `handler` runs (`../collections/refuseServerOnlyCollections.ts`), over the socket and over REST (sc-1401). `../clientRequestHandlers.tests.ts` fails if a file here registers a handler straight on nexus
+
 ### Internal
 - `internalActions.ts` — re-exports action descriptor symbols from `src/common/internalActions.ts`
 - `index.ts` — re-exports internal actions for wiring
@@ -34,6 +37,7 @@ Read actions (`getAll`, `query`) push their results through the S2C dispatch pat
 
 ## Ambiguities and gotchas
 
+- **A server-only collection is never reachable from a client.** The client hook's own refusal stops only the app; a client sending the raw request is stopped here, by `createClientActionHandler` (and `createServerCollectionSubscription` for subscriptions). The whole request is refused with one answer (`CLIENT_REQUEST_REFUSED_MESSAGE`), so nothing about a record in it is revealed, and a warning naming the collection is logged. Server code (`useCollection`, hooks, jobs, seeding) does not go through these paths and is unaffected. Register a new client action with `createClientActionHandler`, never `createServerActionHandler`.
 - **Every read action applies the collection's `onQuery` gate** through `useQueryGate` (see [../collections/AGENTS.md](../collections/AGENTS.md#the-read-gate-onquery)). A new read action must too, or it reopens the hole the gate closes: a hand-crafted socket request reading what `query` withholds.
 - **All read actions update the S2C filter** — they do not just return data. Bypassing them (e.g. querying MongoDB directly) will cause the SD filter to drift and clients will miss change-stream notifications.
 - **`reconcileAction` vs `clientToServerSyncAction`** — reconcile is a lighter check that compares hashes without merging audits; C2S sync does the full merge-replay-persist cycle.

@@ -97,6 +97,8 @@ Installs browser-like globals in Node: `fake-indexeddb`, JSDOM (`window` / `docu
 
 `options.serverExtensionsModule` — absolute path of a module the forked server imports before `startServer` (and on every restart), passed via the `MXDB_E2E_SERVER_EXTENSIONS_MODULE` env var and cleared by `teardownE2E()`. Use it to register a suite's own server-only `extendCollection` hooks; keep that module next to the suite (e.g. `crud-operations/beforeHooks.serverExtensions.ts`), not in `setup/`. The module may also export `serverConfig` (a partial `ServerConfig`) that the server spreads over its defaults, e.g. `resolveConnectionDb` to route connections to a tenant database (see `crud-operations/readGateContext.serverExtensions.ts`).
 
+**Hostile-client requests:** a client's `sendRawRequest(eventName, payload)` emits a raw socket event (e.g. `nexus.actions.mxdbGetAction`) and resolves with the server's acknowledgement, `{ error }` included, past every client-side check; `getReceivedEvents()` lists what the server has sent that socket since its first raw request. `crud-operations/serverOnlyCollections.crud.e2e.tests.ts` uses both, with a `serverConfig` that adds a collection and a server action.
+
 Throws if `setupE2E` was already called in this worker without `teardownE2E()`.
 
 ---
