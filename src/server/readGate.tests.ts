@@ -22,13 +22,15 @@ import { DELETED_RECORD_REASON, OUTSIDE_READ_GATE_REASON } from './actions/rejec
 interface Note extends Record {
   ownerId: string;
   colour: string;
+  label?: string;
 }
 
 const gatedNotes = defineCollection<Note>({ name: 'read_gate_notes', indexes: [] });
 const openNotes = defineCollection<Note>({ name: 'read_gate_open_notes', indexes: [] });
 const overridingNotes = defineCollection<Note>({ name: 'read_gate_overriding_notes', indexes: [] });
 const eitherNotes = defineCollection<Note>({ name: 'read_gate_either_notes', indexes: [] });
-const COLLECTIONS = [gatedNotes, openNotes, overridingNotes, eitherNotes];
+const windowedNotes = defineCollection<Note>({ name: 'read_gate_windowed_notes', indexes: [] });
+const COLLECTIONS = [gatedNotes, openNotes, overridingNotes, eitherNotes, windowedNotes];
 
 /** The id no record carries, so a filter on it matches nothing. */
 const NO_MATCH_ID = 'no-such-record';
@@ -56,6 +58,20 @@ extendCollection(overridingNotes, {
 extendCollection(eitherNotes, {
   onQuery({ request, userId }): QueryProps<Note> {
     const gate = { $or: [{ ownerId: userId ?? NO_MATCH_ID }, { colour: 'green' }] } as DataFilters<Note>;
+    const { filters } = request as QueryProps<Note>;
+    return { ...request, filters: filters == null ? gate : { $and: [filters, gate] } } as QueryProps<Note>;
+  },
+});
+
+/** The colour of a note that has left the delivery window (like a visit that has moved out of a device's window). */
+const OUT_OF_WINDOW_COLOUR = 'archived';
+
+// A gate with a delivery window, like Vision's device window: a caller may change any note they own, but is only
+// delivered the owned notes inside the window. The window narrows reads only; a write is judged by ownership.
+extendCollection(windowedNotes, {
+  onQuery({ request, userId, purpose }): QueryProps<Note> {
+    const ownership: DataFilters<Note> = userId == null ? { id: NO_MATCH_ID } : { ownerId: userId };
+    const gate = (purpose === 'write' ? ownership : { $and: [ownership, { colour: { $ne: OUT_OF_WINDOW_COLOUR } }] }) as DataFilters<Note>;
     const { filters } = request as QueryProps<Note>;
     return { ...request, filters: filters == null ? gate : { $and: [filters, gate] } } as QueryProps<Note>;
   },
@@ -550,6 +566,46 @@ describe('client-to-server sync', () => {
       expect(response[0]!.rejectedRecords).toBeUndefined();
       expect(await notesIn(gatedNotes.name).get(aliceRed.id)).toEqual(recoloured);
       expect(await notesIn(gatedNotes.name).get(created.id)).toEqual(created);
+    });
+  });
+
+  describe('a gate that narrows reads but not writes (a delivery window)', () => {
+    const aliceArchived: Note = { id: 'alice-archived', ownerId: ALICE, colour: OUT_OF_WINDOW_COLOUR };
+
+    async function windowedAuditOf(id: string): Promise<AnyAuditOf<Note>> {
+      return (await notesIn(windowedNotes.name).getAudit(id)) as unknown as AnyAuditOf<Note>;
+    }
+
+    it('accepts a change to an owned record outside the window, stores it, then evicts it from the device', async () => {
+      ctx.userId = ALICE;
+      await notesIn(windowedNotes.name).upsert(aliceArchived);
+      await vi.waitFor(async () => expect(await windowedAuditOf(aliceArchived.id)).toBeDefined(), WAIT_FOR_PUSH);
+      // Alice edited the note offline while it was still in her window; it has left the window since.
+      const edited: Note = { ...aliceArchived, label: 'edited offline' };
+      const writeEntries = auditor.entriesOf(auditor.updateAuditWithAfterLatest(edited, await windowedAuditOf(aliceArchived.id), aliceArchived));
+      const response = await handleClientToServerSync([{ collectionName: windowedNotes.name, records: [{ id: aliceArchived.id, hash: 'client-hash', entries: writeEntries }] }]);
+
+      expect(response).toEqual([{ collectionName: windowedNotes.name, successfulRecordIds: [aliceArchived.id] }]);
+      expect(await notesIn(windowedNotes.name).get(aliceArchived.id)).toEqual(edited);
+      // Flush first, eviction second: the edit is stored, and only then does the device drop the record.
+      await vi.waitFor(() => expect(dispatchedEvictionIds()).toEqual([aliceArchived.id]), WAIT_FOR_PUSH);
+      expect(dispatchedRecordIds()).toEqual([]);
+    });
+
+    it('still refuses a change to a record the caller does not own, inside the window or not', async () => {
+      ctx.userId = ALICE;
+      await auditsWritten(windowedNotes.name);
+      const entries = auditor.entriesOf(auditor.updateAuditWithAfterLatest({ ...bobGreen, ownerId: ALICE }, await windowedAuditOf(bobGreen.id), bobGreen));
+      const response = await handleClientToServerSync([{ collectionName: windowedNotes.name, records: [{ id: bobGreen.id, hash: 'stale-hash', entries }] }]);
+
+      expect(response[0]!.rejectedRecords).toEqual([{ id: bobGreen.id, reason: OUTSIDE_READ_GATE_REASON, kind: 'access' }]);
+      expect(await notesIn(windowedNotes.name).get(bobGreen.id)).toEqual(bobGreen);
+    });
+
+    it('still delivers only the owned records inside the window', async () => {
+      ctx.userId = ALICE;
+      await notesIn(windowedNotes.name).upsert(aliceArchived);
+      expect([...await handleGetAll({ collectionName: windowedNotes.name })].sort()).toEqual([aliceBlue.id, aliceRed.id].sort());
     });
   });
 });
