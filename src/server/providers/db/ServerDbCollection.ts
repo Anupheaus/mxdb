@@ -8,7 +8,7 @@ import { useAuthentication } from '@anupheaus/nexus/server';
 import { DateTime } from 'luxon';
 import { auditor } from '../../../common';
 import type { AnyAuditOf, ServerAuditOf } from '../../../common';
-import { matchMissingForEmptyValues } from '../../../common/filters';
+import { normaliseFilterConditions } from '../../../common/filters';
 import { toServerAuditOf } from '../../audit/toServerAuditOf';
 import { runBeforeUpsertHook } from '../../collections/runBeforeUpsertHook';
 import { runBeforeDeleteHook } from '../../collections/runBeforeDeleteHook';
@@ -581,9 +581,10 @@ export class ServerDbCollection<RecordType extends Record = Record> {
 
   #parseFilters(filters: DataFilters<RecordType> | undefined) {
     if (filters == null) return undefined;
-    // A condition with no value means "missing" (null), as on the device. Said here rather than left to the driver's
-    // own undefined handling, which the client's requests never reach (JSON drops the key) and a driver option can change.
-    return toMongoFilterValue(matchMissingForEmptyValues(filters)) as any;
+    // A field with no value means "missing" (null) and a broken operand matches nothing, as on the device. Said here
+    // rather than left to the driver's own undefined handling, which the client's requests never reach (JSON drops the
+    // key) and a driver option can change.
+    return toMongoFilterValue(normaliseFilterConditions(filters)) as any;
   }
 
   /**

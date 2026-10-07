@@ -32,7 +32,7 @@ Re-exports `SqliteWorkerClient`, `buildTableDDL`, `filtersToSql`, `sortsToSql`, 
 - Constants: `LIVE_TABLE_SUFFIX`, `AUDIT_TABLE_SUFFIX`, `SYNC_TABLE_SUFFIX`
 
 ### SQL helpers
-- `filtersToSql.ts` — translates `DataFilters` into parameterised SQL `WHERE` clauses. A condition with no value is "the field is missing" (`IS NULL`), never dropped (`matchMissingForEmptyValues`, sc-2518); `$eq` / `$ne` null are `IS NULL` / `IS NOT NULL`, and a null in an `$in` / `$nin` list is tested apart, because SQL's `IN (NULL)` matches nothing
+- `filtersToSql.ts` — translates `DataFilters` into parameterised SQL `WHERE` clauses. Filters go through `normaliseFilterConditions` first (sc-2518): a field with no value is "the field is missing" (`IS NULL`), and an operator with a missing, null or wrong-type operand matches nothing (`0`); neither is ever dropped. Null handling follows MongoDB, not SQL's three-valued logic: a null in an `$in` / `$nin` list is tested apart, a record missing the field counts as `$ne` / `$nin` a value, and `$all: []` matches nothing. The `regexp` function matches text only (a missing field is not the text "null")
 - `dataFiltersToSift.ts` / `queryRecordsInMemory.ts` — the in-memory fast path, with the same reading of a condition with no value; a list holding null, or `$eq` null, is left to the SQL path
 - `sortsToSql.ts` — translates `DataSorts` into SQL `ORDER BY` clauses
 

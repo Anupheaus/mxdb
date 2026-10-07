@@ -152,7 +152,9 @@ export function databaseSizeBytes(database: OO1Db): number {
 // ─── REGEXP custom function ───────────────────────────────────────────────────
 
 export function registerRegexp(_s3: Sqlite3, database: OO1Db) {
-  (database as any).createFunction('regexp', (_ctx: unknown, pattern: string, value: string) => {
+  (database as any).createFunction('regexp', (_ctx: unknown, pattern: string, value: unknown) => {
+    // Only text matches, as in MongoDB: RegExp.test would read a missing field as the text "null".
+    if (typeof value !== 'string') return 0;
     try {
       return new RegExp(pattern).test(value) ? 1 : 0;
     } catch {

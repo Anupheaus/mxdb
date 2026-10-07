@@ -8,7 +8,7 @@ import { useSubscriptionWrapper } from './useSubscriptionWrapper';
 import type { AddDebugTo, AddDisableTo } from '../../../common/models';
 import type { LiveRequestCallbacks } from './live-request-models';
 import { toLiveRequestCallbacks } from './toLiveRequestCallbacks';
-import { withMissingForEmptyValues } from './withMissingForEmptyValues';
+import { withNormalisedFilters } from './withNormalisedFilters';
 
 export interface QueryResponse<RecordType extends Record> {
   records: RecordType[];
@@ -52,7 +52,7 @@ export function createQuery<RecordType extends Record>(collection: DbCollection<
   function queryWrapper(props: Props, onResponse: OnResponse, onSameResponse: () => void): Promise<void>;
   function queryWrapper(props?: Props, onResponseOrCallbacks?: OnResponse | Callbacks, onSameResponse?: () => void): Promise<QueryResponse<RecordType> | void> {
     const callbacks = toLiveRequestCallbacks(onResponseOrCallbacks, onSameResponse);
-    const request = withMissingForEmptyValues(props ?? {});
+    const request = withNormalisedFilters(props ?? {});
     return callbacks == null ? wrapper(request) : wrapper(request, callbacks);
   }
 

@@ -22,7 +22,8 @@ Neither the client nor the server may import from each other; all cross-layer co
 - `internalSyncModels.ts` — sync-protocol types shared across layers
 
 ### Filters (`filters/`)
-- `matchMissingForEmptyValues.ts` — the one rule for a condition written with no value (`{ leadId: undefined }`): it means "match records where that field is missing", written as `null`. Used by the client before a request leaves the hook (`withMissingForEmptyValues`), by both device query engines (`filtersToSql`, `dataFiltersToSift`) and by the server (`ServerDbCollection.#parseFilters`), so they all agree. An unset range or text bound (`$gte: undefined`) still narrows nothing; no filters, or `{}`, still read everything. Library-internal: not exported from the package.
+- `normaliseFilterConditions.ts` — the one place that decides what an empty or broken condition means, and it fails closed. A field written with no value (`{ leadId: undefined }`) means "the field is missing", written as `null`. An operator whose operand is missing, `null` or of the wrong type (`$in: undefined`, `$gte: null`, `$exists: 'yes'`, `$all: []`…), and a `$or` / `$and` / `$nor` without a non-empty list of filters, match **nothing** (`{ $in: [] }`), never everything. Used by the client before a request leaves the hook (`withNormalisedFilters`), by both device query engines (`filtersToSql`, `dataFiltersToSift`) and by the server (`ServerDbCollection.#parseFilters`), so they all agree. No filters, or `{}`, still read everything. Library-internal: not exported from the package.
+- `filterOperandCases.fixture.ts` — test-only table: every operator × (undefined, null, empty, wrong type), run on the device (`DbCollection.operands.tests.ts`) and the server (`ServerDbCollection.tests.ts`).
 
 ### Internal socket wiring
 - `internalActions.ts` — C2S socket action descriptors

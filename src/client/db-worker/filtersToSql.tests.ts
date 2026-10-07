@@ -46,8 +46,9 @@ describe('filtersToSql — scalar operators', () => {
   });
 
   it('$ne', () => {
+    // As in MongoDB, a record missing the field is "not archived" too.
     const { where, params } = filtersToSql({ status: { $ne: 'archived' } });
-    expect(where).toBe(`${field('status')} != ?`);
+    expect(where).toBe(`(${field('status')} IS NULL OR ${field('status')} != ?)`);
     expect(params).toEqual(['archived']);
   });
 
@@ -133,7 +134,7 @@ describe('filtersToSql — set operators', () => {
 
   it('$ni', () => {
     const { where, params } = filtersToSql({ role: { $ni: ['admin', 'superuser'] } });
-    expect(where).toBe(`${field('role')} NOT IN (?, ?)`);
+    expect(where).toBe(`(${field('role')} IS NULL OR ${field('role')} NOT IN (?, ?))`);
     expect(params).toEqual(['admin', 'superuser']);
   });
 
@@ -256,11 +257,10 @@ describe('filtersToSql — edge cases', () => {
     expect(params).toEqual(['a']);
   });
 
-  it('$eq / $ne with no value (or null) test for missing / present, never `= NULL`, which matches nothing', () => {
-    expect(filtersToSql({ leadId: { $eq: undefined } }).where).toBe(`${field('leadId')} IS NULL`);
-    expect(filtersToSql({ leadId: { $eq: null } }).where).toBe(`${field('leadId')} IS NULL`);
-    expect(filtersToSql({ leadId: { $ne: undefined } }).where).toBe(`${field('leadId')} IS NOT NULL`);
-    expect(filtersToSql({ leadId: { $ne: null } }).where).toBe(`${field('leadId')} IS NOT NULL`);
+  it('an operator with no operand (or null, or the wrong type) matches nothing — it is never dropped', () => {
+    for (const condition of [{ $eq: undefined }, { $eq: null }, { $ne: undefined }, { $ne: null }, { $in: undefined }, { $nin: 'x' }, { $gte: undefined }]) {
+      expect(filtersToSql(filters({ leadId: condition })).where).toBe('0');
+    }
   });
 
   it('a missing value in an $in list (or bare array) also matches records missing the field', () => {
@@ -282,15 +282,15 @@ describe('filtersToSql — edge cases', () => {
     expect(filtersToSql({}).where).toBe('');
   });
 
-  it('skips undefined values inside operator objects', () => {
+  it('an unset bound beside a sound one fails the whole condition closed', () => {
     const { where, params } = filtersToSql({ score: { $gt: 5, $lt: undefined } });
-    expect(where).toBe(`${field('score')} > ?`);
-    expect(params).toEqual([5]);
+    expect(where).toBe('0');
+    expect(params).toEqual([]);
   });
 
-  it('$all with empty array returns truthy condition (match all)', () => {
+  it('$all with an empty array matches nothing, as in MongoDB', () => {
     const { where, params } = filtersToSql(filters({ tags: { $all: [] } }));
-    expect(where).toBe('1');
+    expect(where).toBe('0');
     expect(params).toEqual([]);
   });
 

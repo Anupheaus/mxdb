@@ -114,10 +114,17 @@ describe('DbCollection query parity — in-memory vs SQL/worker', () => {
     expect(mem.ids.slice().sort()).toEqual(expectedIds);
   });
 
-  // Lists holding a missing value, and $eq / $ne with none, are SQL-only (in memory defers them to the worker).
+  // An operator with no operand matches nothing, on both paths (every operator is in DbCollection.operands.tests.ts).
+  it.each<[string, DataRequest<Doc>]>([
+    ['$eq with no value', { filters: { city: { $eq: undefined } } }],
+    ['$ne with no value', { filters: { city: { $ne: undefined } } }],
+  ])('reads the %s as "nothing" on the SQL path and in memory', async (_label, request) => {
+    expect((await viaWorker(request)).ids).toEqual([]);
+    expect(viaMemory(request).ids).toEqual([]);
+  });
+
+  // Lists holding a missing value are SQL-only (in memory defers them to the worker).
   const sqlOnlyMissingValueCases: Array<[string, DataRequest<Doc>, string[]]> = [
-    ['$eq with no value', { filters: { city: { $eq: undefined } } }, ['d3', 'd6']],
-    ['$ne with no value', { filters: { city: { $ne: undefined } } }, ['d1', 'd2', 'd4', 'd5']],
     ['$in holding a missing value', { filters: { city: { $in: ['Paris', undefined] } } as never }, ['d2', 'd3', 'd6']],
     ['$nin holding a missing value', { filters: { city: { $nin: ['Paris', undefined] } } as never }, ['d1', 'd4', 'd5']],
   ];

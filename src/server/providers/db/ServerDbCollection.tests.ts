@@ -8,6 +8,8 @@ import { hashRecord } from '../../../common/auditor/hash';
 import { auditor } from '../../../common/auditor';
 import { AuditEntryType } from '../../../common/auditor/auditor-models';
 import { DateTime } from 'luxon';
+import { normaliseFilterConditions } from '../../../common/filters';
+import { OPERAND_CASE_RECORDS, operandCasesFor, type OperandCaseRecord } from '../../../common/filters/filterOperandCases.fixture';
 
 // The acting user comes from the nexus socket/auth context (external); stub it so audit
 // attribution can be exercised both with and without an authenticated user.
@@ -635,7 +637,6 @@ describe('ServerDbCollection', () => {
         ['null (as a client sends it)', { category: null }, ['d']],
         ['undefined on a field every record has', { name: undefined }, []],
         ['undefined inside $or', { $or: [{ category: undefined }, { id: 'a' }] }, ['a', 'd']],
-        ['$eq with no value', { category: { $eq: undefined } }, ['d']],
         ['$in holding a missing value', { category: { $in: ['y', undefined] } }, ['c', 'd']],
       ])('matches only records missing the field for %s', async (_label, filters, expectedIds) => {
         const col = await seedWithUncategorised();
@@ -649,6 +650,38 @@ describe('ServerDbCollection', () => {
         expect((await col.distinct({ field: 'name', filters: { category: undefined } as any })).map(({ name }) => name)).toEqual(['Delta']);
         const { total } = await col.query({ filters: { category: undefined } as any, getAccurateTotal: true });
         expect(total).toBe(1);
+      });
+    });
+
+    // sc-2518: every operator with a missing, null or wrong-type operand matches NOTHING on the server, whether server
+    // code passes it directly or a client sent it (normalised by the hook, then through JSON on the socket).
+    describe('a filter operand that is missing, null, empty or the wrong type', () => {
+      const operandCollection = defineCollection<OperandCaseRecord>({ name: 'test_operand_cases', indexes: [], disableAudit: true });
+      let operandCol: ServerDbCollection<OperandCaseRecord>;
+
+      beforeAll(async () => {
+        const db = client.db('testdb');
+        try { await db.createCollection(operandCollection.name); } catch { /* already there from an earlier run */ }
+        knownCollectionNames.add(operandCollection.name);
+        await db.collection(operandCollection.name).deleteMany({});
+        operandCol = new ServerDbCollection<OperandCaseRecord>({
+          getDb: () => Promise.resolve(db),
+          collection: operandCollection,
+          collectionNames: Promise.resolve(new Set(knownCollectionNames)),
+          logger: mockLogger,
+        });
+        await operandCol.upsert(OPERAND_CASE_RECORDS);
+      });
+
+      it.each(operandCasesFor('server'))('%s — server code', async (_label, { filters, expectedIds }) => {
+        const { data } = await operandCol.query({ filters });
+        expect(data.ids().sort()).toEqual(expectedIds);
+      });
+
+      it.each(operandCasesFor('server'))('%s — as a client sends it', async (_label, { filters, expectedIds }) => {
+        const sent = JSON.parse(JSON.stringify(normaliseFilterConditions(filters)));
+        const { data } = await operandCol.query({ filters: sent });
+        expect(data.ids().sort()).toEqual(expectedIds);
       });
     });
 

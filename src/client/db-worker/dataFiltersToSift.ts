@@ -1,13 +1,13 @@
 import { DateTime } from 'luxon';
 import type { AnyObject, DataFilters } from '@anupheaus/common';
-import { matchMissingForEmptyValues } from '../../common/filters';
+import { normaliseFilterConditions } from '../../common/filters';
 
 type SiftQuery = Record<string, unknown>;
 
 // Positive operators whose null/missing behaviour matches SQL's (a missing/null field fails the match in both).
-// Negative operators ($ne / $ni / $nin / $exists) diverge under SQL's 3-valued NULL logic — SQL excludes
-// null/missing rows from the match while sift includes them — and string/array/regex operators aren't reproduced
-// here yet. Any operator outside this set makes the whole filter fall back to the worker/SQL path.
+// Negative operators ($ne / $ni / $nin / $exists), whose null/missing handling the SQL path spells out by hand, and
+// string/array/regex operators aren't reproduced here yet. Any operator outside this set makes the whole filter fall
+// back to the worker/SQL path.
 const SUPPORTED_OPERATORS = new Set(['$eq', '$in', '$gt', '$gte', '$lt', '$lte']);
 
 /** Luxon DateTimes can't be ordered by sift (it only understands JS Date via getTime), so normalise them. */
@@ -33,7 +33,6 @@ function translateOperators(field: string, source: Record<string, unknown>, out:
       continue;
     }
     if (!SUPPORTED_OPERATORS.has(key)) return false;
-    if (key === '$eq' && value === null) return false; // "missing": SQL tests it with IS NULL — leave it to the worker
     if (key === '$in') {
       const values = Array.isArray(value) ? value : [value];
       if (hasMissingValue(values)) return false;
@@ -81,9 +80,9 @@ function walkFilters(filters: Record<string, unknown>, out: SiftQuery): boolean 
 /** Translate DataFilters into a sift-compatible query (with dot-notation paths and JS-Date-normalised values),
  *  or null when it uses an operator that can't be evaluated in-memory with parity to the worker/SQL path — in
  *  which case the caller should fall back to the worker. A condition with no value matches records missing that field
- *  (`matchMissingForEmptyValues`), exactly as on the worker/SQL path. */
+ *  and a broken operand matches nothing (`normaliseFilterConditions`), exactly as on the worker/SQL path. */
 export function dataFiltersToSift<T extends AnyObject>(rawFilters: DataFilters<T> | undefined): SiftQuery | null {
-  const filters = matchMissingForEmptyValues(rawFilters);
+  const filters = normaliseFilterConditions(rawFilters);
   if (filters == null) return {};
   const out: SiftQuery = {};
   return walkFilters(filters as Record<string, unknown>, out) ? out : null;
