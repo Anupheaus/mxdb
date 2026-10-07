@@ -1,13 +1,14 @@
 // sc-2518: every filter operator with a missing, null or wrong-type operand matches NOTHING on the device — through
 // DbCollection (in-memory path, falling back to SQL) and through the SQL path alone — never every record.
 import { describe, it, expect, beforeAll } from 'vitest';
-import { to } from '@anupheaus/common';
+import { to, type DataFilters } from '@anupheaus/common';
 import { ulid } from 'ulidx';
 import { SqliteWorkerClient } from '../../db-worker/SqliteWorkerClient';
 import { buildTableDDL, LIVE_TABLE_SUFFIX, q } from '../../db-worker/buildTableDDL';
 import { filtersToSql } from '../../db-worker/filtersToSql';
 import { queryRecordsInMemory } from '../../db-worker/queryRecordsInMemory';
 import { OPERAND_CASE_RECORDS, operandCasesFor, type OperandCaseRecord } from '../../../common/filters/filterOperandCases.fixture';
+import { generateFuzzCases } from '../../../common/filters/filterFuzzCases.fixture';
 import type { MXDBCollectionConfig } from '../../../common/models';
 import { DbCollection } from './DbCollection';
 
@@ -25,16 +26,32 @@ beforeAll(async () => {
 
 const sortedIds = (records: OperandCaseRecord[]) => records.map(({ id }) => id).sort();
 
+/** The ids the SQL path alone returns for `filters`, exactly as DbCollection's worker query runs them. */
+async function viaSql(filters: DataFilters<OperandCaseRecord>): Promise<string[]> {
+  const { where, params } = filtersToSql<OperandCaseRecord>(filters);
+  const rows = await worker.query<{ data: string }>(`SELECT data FROM ${q(`${config.name}${LIVE_TABLE_SUFFIX}`)}${where ? ` WHERE ${where}` : ''}`, params);
+  return sortedIds(rows.map(({ data }) => to.deserialise<OperandCaseRecord>(data)));
+}
+
 describe('filter operands on the device', () => {
   it.each(operandCasesFor('device'))('%s — DbCollection.query', async (_label, { filters, expectedIds }) => {
     const { records } = await collection.query({ filters });
     expect(sortedIds(records)).toEqual(expectedIds);
   });
 
-  it.each(operandCasesFor('device'))('%s — the SQL path alone', async (_label, { filters, expectedIds }) => {
-    const { where, params } = filtersToSql<OperandCaseRecord>(filters);
-    const rows = await worker.query<{ data: string }>(`SELECT data FROM ${q(`${config.name}${LIVE_TABLE_SUFFIX}`)}${where ? ` WHERE ${where}` : ''}`, params);
-    expect(sortedIds(rows.map(({ data }) => to.deserialise<OperandCaseRecord>(data)))).toEqual(expectedIds);
+  it.each(operandCasesFor('device'))('%s — the SQL path alone', async (_label, { filters, expectedIds, deviceSqlIds }) => {
+    expect(await viaSql(filters)).toEqual(deviceSqlIds ?? expectedIds);
+  });
+
+  // Random nested queries with one broken node at every depth: never more than the same query with the node replaced
+  // by match-nothing, and in fact nothing at all — through DbCollection and through the SQL path alone.
+  it.each(generateFuzzCases())('fuzz %s', async (_label, { broken, matchNothing }) => {
+    const [brokenIds, matchNothingIds] = [sortedIds((await collection.query({ filters: broken })).records), sortedIds((await collection.query({ filters: matchNothing })).records)];
+    expect(brokenIds.filter(id => !matchNothingIds.includes(id))).toEqual([]);
+    expect(brokenIds).toEqual([]);
+    const [brokenSqlIds, matchNothingSqlIds] = [await viaSql(broken), await viaSql(matchNothing)];
+    expect(brokenSqlIds.filter(id => !matchNothingSqlIds.includes(id))).toEqual([]);
+    expect(brokenSqlIds).toEqual([]);
   });
 
   it.each(operandCasesFor('device'))('%s — the in-memory path, where it answers', (_label, { filters, expectedIds }) => {

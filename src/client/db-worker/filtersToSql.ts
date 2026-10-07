@@ -92,62 +92,72 @@ function operatorToSql(path: string[], operator: string, value: unknown): SqlFra
     }
     case '$size':
       return { where: `json_array_length(${field}) = ?`, params: [value] };
-    case '$elemMatch': {
-      // Match at least one array element against a sub-filter
-      const sub = filtersToSql(value as DataFilters, path.join('.'));
-      if (sub.where === '') return { where: '1', params: [] };
-      // Re-express using json_each: the sub-filter would normally reference top-level fields
-      // but here we need it to reference the element. We use a correlated EXISTS subquery.
-      // For simplicity, fall back to a JS post-filter marker — the engine will apply it in-memory.
-      // This is noted as a known limitation; proper $elemMatch would require generating
-      // json_each subqueries with re-rooted paths.
-      return { where: '/* $elemMatch */ 1', params: [] };
+    case '$not': {
+      // As in MongoDB, a record missing the field is "not" anything: NULL from the inner test counts as no match.
+      const inner = value instanceof RegExp ? operatorToSql(path, '$regex', value) : operatorsToSql(path, value as Record<string, unknown>);
+      return { where: `NOT COALESCE(${inner.where}, 0)`, params: inner.params };
     }
+    case '$elemMatch':
+      // Not translated to SQL yet (sc-2758): the in-memory path answers $elemMatch. Here it matches NOTHING rather
+      // than everything, so a query the in-memory path declines can come back short, never wide.
+      return MATCH_NOTHING_SQL;
     default:
-      // Unknown operator — pass-through (match all)
-      return { where: '1', params: [] };
+      // normaliseFilterConditions lets no other operator through; never read one as "everything".
+      return MATCH_NOTHING_SQL;
   }
 }
 
-// ─── Recursive value translator ────────────────────────────────────────────────
+// ─── Recursive translators ────────────────────────────────────────────────────
+//
+// Every translator returns a condition that is never empty: an empty filter is `1` (true), never a dropped clause, so
+// nothing can disappear on the way into a $or / $nor / $not and change what it means.
+
+/** SQL for a condition no record meets. */
+const MATCH_NOTHING_SQL: SqlFragment = { where: '0', params: [] };
+
+/** SQL for "no condition". */
+const MATCH_EVERYTHING_SQL: SqlFragment = { where: '1', params: [] };
+
+function combine(fragments: SqlFragment[], joiner: 'AND' | 'OR', whenNone: SqlFragment): SqlFragment {
+  if (fragments.length === 0) return whenNone;
+  if (fragments.length === 1) return fragments[0]!;
+  return { where: `(${fragments.map(({ where }) => where).join(` ${joiner} `)})`, params: fragments.flatMap(({ params }) => params) };
+}
+
+function operatorsToSql(path: string[], operators: Record<string, unknown>): SqlFragment {
+  return combine(Object.entries(operators).map(([operator, operand]) => operatorToSql(path, operator, operand)), 'AND', MATCH_NOTHING_SQL);
+}
 
 function translateValue(path: string[], value: unknown): SqlFragment {
-  if (value === undefined) return { where: '', params: [] };
-  if (value === null) return { where: `${jsonExtract(path)} IS NULL`, params: [] };
+  if (value == null) return { where: `${jsonExtract(path)} IS NULL`, params: [] };
 
   // Direct array shorthand → $in
   if (Array.isArray(value)) return operatorToSql(path, '$in', value);
 
-  // Primitive / Date / DateTime / RegExp — direct equality
-  if (typeof value !== 'object' || value instanceof RegExp || value instanceof Date || DateTime.isDateTime(value)) {
-    return operatorToSql(path, '$eq', value);
-  }
+  // Primitive / Date / DateTime — direct equality
+  if (typeof value !== 'object' || value instanceof Date || DateTime.isDateTime(value)) return operatorToSql(path, '$eq', value);
 
-  // Object: may contain operators and/or nested field paths
-  const parts: string[] = [];
-  const params: unknown[] = [];
+  // Object: operators, or nested field paths (normaliseFilterConditions never mixes them, nor leaves one empty)
+  const entries = Object.entries(value as Record<string, unknown>);
+  const fragments = entries.map(([key, subValue]) => (key.startsWith('$') ? operatorToSql(path, key, subValue) : translateValue([...path, key], subValue)));
+  return combine(fragments, 'AND', MATCH_NOTHING_SQL);
+}
 
-  for (const [key, subValue] of Object.entries(value as Record<string, unknown>)) {
-    if (subValue === undefined) continue;
-    if (key.startsWith('$')) {
-      // Operator key
-      const frag = operatorToSql(path, key, subValue);
-      if (frag.where) {
-        parts.push(frag.where);
-        params.push(...frag.params);
+function filterToSql(filters: Record<string, unknown>): SqlFragment {
+  const fragments = Object.entries(filters).map(([key, value]): SqlFragment => {
+    const branches = () => (value as Record<string, unknown>[]).map(filterToSql);
+    switch (key) {
+      case '$or': return combine(branches(), 'OR', MATCH_NOTHING_SQL);
+      case '$and': return combine(branches(), 'AND', MATCH_EVERYTHING_SQL);
+      case '$nor': {
+        // NULL from a branch counts as no match, as in MongoDB, so a missing field cannot make the whole $nor NULL.
+        const anyBranch = combine(branches(), 'OR', MATCH_NOTHING_SQL);
+        return { where: `NOT COALESCE(${anyBranch.where}, 0)`, params: anyBranch.params };
       }
-    } else {
-      // Nested field path
-      const frag = translateValue([...path, key], subValue);
-      if (frag.where) {
-        parts.push(frag.where);
-        params.push(...frag.params);
-      }
+      default: return translateValue([key], value);
     }
-  }
-
-  if (parts.length === 0) return { where: '', params: [] };
-  return { where: parts.length === 1 ? parts[0]! : `(${parts.join(' AND ')})`, params };
+  });
+  return combine(fragments, 'AND', MATCH_EVERYTHING_SQL);
 }
 
 // ─── Top-level translator ─────────────────────────────────────────────────────
@@ -155,55 +165,15 @@ function translateValue(path: string[], value: unknown): SqlFragment {
 /**
  * Translates a `DataFilters<T>` object into a parameterised SQLite WHERE clause.
  *
- * A condition written with no value (`{ leadId: undefined }`) matches records missing that field
- * and an operator whose operand is missing, null or the wrong type matches nothing (`normaliseFilterConditions`).
- * Neither is ever dropped, which would read every record.
+ * The filters are read by `normaliseFilterConditions` first: a field with no value matches records missing it, and any
+ * node it cannot read makes the whole query match nothing. Nothing is ever dropped, which would read every record.
  *
  * @param filters  The filter object (may be undefined for "no filter").
- * @param _rootPath  Internal — used by $elemMatch recursion; leave empty externally.
  * @returns `{ where, params }` — `where` is empty string when there is no filter.
  *          All user-supplied values are in `params`; nothing is interpolated into SQL.
  */
-export function filtersToSql<T extends object = object>(
-  rawFilters: DataFilters<T> | undefined,
-  _rootPath?: string,
-): SqlFragment {
+export function filtersToSql<T extends object = object>(rawFilters: DataFilters<T> | undefined): SqlFragment {
   const filters = normaliseFilterConditions(rawFilters);
-  if (filters == null) return { where: '', params: [] };
-
-  const entries = Object.entries(filters as Record<string, unknown>).filter(([, v]) => v !== undefined);
-  if (entries.length === 0) return { where: '', params: [] };
-
-  const parts: string[] = [];
-  const params: unknown[] = [];
-
-  for (const [key, value] of entries) {
-    if (key === '$or') {
-      const branches = (value as DataFilters<T>[]).map(f => filtersToSql(f));
-      const orParts = branches.map(b => b.where).filter(w => w);
-      if (orParts.length > 0) {
-        parts.push(orParts.length === 1 ? orParts[0]! : `(${orParts.join(' OR ')})`);
-        branches.forEach(b => params.push(...b.params));
-      }
-    } else if (key === '$and') {
-      const branches = (value as DataFilters<T>[]).map(f => filtersToSql(f));
-      const andParts = branches.map(b => b.where).filter(w => w);
-      if (andParts.length > 0) {
-        parts.push(andParts.length === 1 ? andParts[0]! : `(${andParts.join(' AND ')})`);
-        branches.forEach(b => params.push(...b.params));
-      }
-    } else {
-      const frag = translateValue([key], value);
-      if (frag.where) {
-        parts.push(frag.where);
-        params.push(...frag.params);
-      }
-    }
-  }
-
-  if (parts.length === 0) return { where: '', params: [] };
-  return {
-    where: parts.length === 1 ? parts[0]! : parts.join(' AND '),
-    params,
-  };
+  if (filters == null || Object.keys(filters).length === 0) return { where: '', params: [] };
+  return filterToSql(filters as Record<string, unknown>);
 }

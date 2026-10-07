@@ -66,12 +66,16 @@ lists it was most of the CPU the page spent (Vision's Pipeline, 29 Sep 2026: abo
 
 ### An empty or broken condition fails closed, never "no condition"
 `{ filters: { leadId: undefined } }` matches the records with **no** `leadId`, on the device (SQLite and the in-memory
-path), in live lists, and on the server — the same as `{ leadId: null }`. An operator whose operand is missing, `null`
-or of the wrong type matches **nothing**: `{ id: { $in: contact?.addressIds } }` with no contact, `$gte: undefined`,
-`$eq: null`, `$exists: 'yes'`, `$all: []`, and a `$or` / `$and` / `$nor` without a non-empty list of filters. These
-used to be dropped, so a screen whose key was missing read every record in the collection, and the server could not
-tell it from a deliberate read of everything (Vision sc-2518). One function decides all of it for client and server
-(`src/common/filters/normaliseFilterConditions.ts`); `filterOperandCases.fixture.ts` pins every operator on both.
+path), in live lists, and on the server — the same as `{ leadId: null }`. Any node MXDB cannot read makes the **whole
+query** match nothing, wherever it sits (under `$and`, `$or`, `$nor`, `$not` or `$elemMatch`): an operator whose operand
+is missing, `null`, of the wrong type or empty (`{ id: { $in: contact?.addressIds } }` with no contact,
+`$gte: undefined`, `$eq: null`, `$exists: 'yes'`, `$all: []`, `$elemMatch: {}`), an empty condition (`{ value: {} }`),
+an operator MXDB does not know (`$where`, `$type`), a `$or` / `$and` / `$nor` without a list of filters, operators
+and fields mixed in one condition. These used to be dropped, so a screen whose key was missing read every record in
+the collection, and the server could not tell it from a deliberate read of everything (Vision sc-2518). One function
+reads every filter for client and server (`src/common/filters/normaliseFilterConditions.ts`);
+`filterOperandCases.fixture.ts` pins every operator on both, and `filterFuzzCases.fixture.ts` fuzzes broken nodes at
+every depth.
 
 - A filter with no conditions at all (`undefined` or `{}`) still reads everything.
 - Want "any value"? Leave the key out of the filter. Want "unbounded"? Leave the bound out. Want "missing"? Write

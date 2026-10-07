@@ -1,137 +1,168 @@
-import { is, type DataFilters } from '@anupheaus/common';
+import { is, ValidationError, type DataFilters } from '@anupheaus/common';
 import { DateTime } from 'luxon';
 
-/** Logical operators: their operand is a list of whole filters (branches). */
+// ─── The grammar ──────────────────────────────────────────────────────────────
+//
+// A filter is an object whose keys are logical operators ($and / $or / $nor) or field paths. A field's value is a
+// value to compare (equality), a bare list (shorthand for $in), a nested filter (keys are sub-paths) or an operator
+// object (every key an operator). Anything else is not a filter MXDB can read the same way everywhere.
+
+/** Logical operators: their operand is a non-empty list of filters. */
 const LOGICAL_OPERATORS = new Set(['$or', '$and', '$nor']);
 
-/** Operators whose operand must be a list of values. */
+/** Operators whose operand must be a list of values (`$all` a non-empty one). */
 const LIST_OPERATORS = new Set(['$in', '$nin', '$ni', '$all']);
 
-/** Operators that order against one value: a number, string, boolean, Date or DateTime. */
-const RANGE_OPERATORS = new Set(['$gt', '$gte', '$lt', '$lte']);
+/** Operators whose operand is one value to compare. */
+const COMPARISON_OPERATORS = new Set(['$eq', '$ne', '$gt', '$gte', '$lt', '$lte']);
 
 /** Device-side text operators: their operand must be a string. */
 const TEXT_OPERATORS = new Set(['$like', '$beginsWith', '$endsWith']);
 
-/** Marks an operand that cannot be trusted, so the whole condition holding it matches nothing. */
-const MATCH_NOTHING = Symbol('MatchNothing');
-
 type FilterObject = { [key: string]: unknown };
 
+/** Where an unreadable node's error says it was found; the walk does not track paths, it only needs to stop. */
+const FILTER_PATH = 'filters';
+
 /**
- * A field condition no record meets (`{ field: { $in: [] } }`). Every engine reads it the same way: SQLite (`0`),
- * sift and MongoDB all match nothing. A new object each time, so no caller can change another's.
+ * Stops the walk at the first node it cannot read. The error never escapes `normaliseFilterConditions`: it turns the
+ * WHOLE query into one that matches nothing, so no broken node can be dropped, negated into "everything" by
+ * `$nor` / `$not`, or read differently by each engine.
  */
-function matchNothingCondition(): FilterObject {
-  return { $in: [] };
+function unreadable(reason: string): never {
+  throw new ValidationError(reason, FILTER_PATH);
 }
 
-/** A whole filter no record meets, standing in for a broken `$or` / `$and` / `$nor`. */
+/**
+ * The query no record meets: `{ id: { $in: [] } }`. SQLite (`0`), sift and MongoDB all read it as nothing, and it
+ * survives JSON. A new object each time, so no caller can change another's.
+ */
 function matchNothingFilter(): FilterObject {
-  return { id: matchNothingCondition() };
+  return { id: { $in: [] } };
 }
 
-/** A missing value inside a list stands for a missing field: `null`, which every engine reads as null or missing. */
-function toMissing(value: unknown): unknown {
-  return value === undefined ? null : value;
+// ─── Values ───────────────────────────────────────────────────────────────────
+
+/** A single value every engine compares the same way: text, a finite number, a boolean, a Date or a DateTime. */
+function isScalar(value: unknown): boolean {
+  if (value instanceof Date) return !Number.isNaN(value.getTime());
+  if (DateTime.isDateTime(value)) return value.isValid;
+  if (is.number(value)) return Number.isFinite(value);
+  return is.string(value) || is.boolean(value);
 }
 
-/** A value an ordering operator can compare: never an object, list, null or undefined. */
-function isComparable(value: unknown): boolean {
-  if (value instanceof Date || DateTime.isDateTime(value)) return true;
-  return is.string(value) || is.number(value) || is.boolean(value);
+/** A list element: a scalar, or a missing value (`undefined` / `null`, read as "the field is missing"). */
+function normaliseListElement(value: unknown): unknown {
+  if (value == null) return null;
+  return isScalar(value) ? value : unreadable('a list may only hold single values');
 }
 
-/**
- * Whether an operator's operand is one it can be trusted with. Anything else — no operand, `null`, a value of the
- * wrong type — would otherwise be dropped (reading every record) or read differently by each engine.
- */
-function isValidOperand(operator: string, operand: unknown): boolean {
-  if (operand == null) return false;
-  if (LIST_OPERATORS.has(operator)) return Array.isArray(operand) && (operator !== '$all' || operand.length > 0);
-  if (RANGE_OPERATORS.has(operator)) return isComparable(operand);
-  if (TEXT_OPERATORS.has(operator)) return is.string(operand);
-  switch (operator) {
-    case '$regex': return is.string(operand) || operand instanceof RegExp;
-    case '$exists': return is.boolean(operand);
-    case '$size': return is.number(operand);
-    case '$elemMatch': return is.plainObject(operand);
-    default: return true; // $eq / $ne take any defined value; operators MXDB does not know are MongoDB's to judge
-  }
+function normaliseList(operand: unknown, { allowEmpty }: { allowEmpty: boolean }): unknown[] {
+  if (!Array.isArray(operand)) return unreadable('a list operator needs a list');
+  if (!allowEmpty && operand.length === 0) return unreadable('an empty list here would match everything or nothing by accident');
+  return operand.map(normaliseListElement);
 }
+
+// ─── Operators ────────────────────────────────────────────────────────────────
 
 function normaliseOperand(operator: string, operand: unknown): unknown {
-  if (LIST_OPERATORS.has(operator)) return (operand as unknown[]).map(toMissing);
-  if (operator === '$elemMatch') return normaliseFilters(operand as FilterObject);
-  return operand;
+  if (operand == null) return unreadable(`${operator} has no operand`);
+  if (COMPARISON_OPERATORS.has(operator)) return isScalar(operand) ? operand : unreadable(`${operator} needs a single value`);
+  if (LIST_OPERATORS.has(operator)) return normaliseList(operand, { allowEmpty: operator !== '$all' });
+  if (TEXT_OPERATORS.has(operator)) return is.string(operand) ? operand : unreadable(`${operator} needs text`);
+  switch (operator) {
+    case '$regex': return is.string(operand) || operand instanceof RegExp ? operand : unreadable('$regex needs a pattern');
+    case '$exists': return is.boolean(operand) ? operand : unreadable('$exists needs true or false');
+    case '$size': return Number.isInteger(operand) && (operand as number) >= 0 ? operand : unreadable('$size needs a whole number');
+    case '$not': return normaliseNot(operand);
+    case '$elemMatch': return normaliseElemMatch(operand);
+    default: return unreadable(`${operator} is not an operator MXDB knows`);
+  }
 }
 
-function normaliseOperators(source: FilterObject): FilterObject | typeof MATCH_NOTHING {
-  const result: FilterObject = {};
-  for (const [key, value] of Object.entries(source)) {
-    if (!key.startsWith('$')) {
-      result[key] = normaliseFieldValue(value); // a nested field path: the same rules as a top-level field
-      continue;
-    }
-    if (!isValidOperand(key, value)) return MATCH_NOTHING;
-    result[key] = normaliseOperand(key, value);
-  }
-  return result;
+/** `$not` negates an operator object (or a pattern); anything else could negate "nothing" into "everything". */
+function normaliseNot(operand: unknown): unknown {
+  if (operand instanceof RegExp) return operand;
+  if (!is.plainObject(operand) || !isOperatorObject(operand)) return unreadable('$not needs operators to negate');
+  return normaliseOperators(operand);
 }
+
+/** `$elemMatch` holds either operators for each element (`{ $gt: 5 }`) or a filter over element fields. */
+function normaliseElemMatch(operand: unknown): FilterObject {
+  if (!is.plainObject(operand) || Object.keys(operand).length === 0) return unreadable('$elemMatch needs a condition');
+  return isOperatorObject(operand) ? normaliseOperators(operand) : normaliseFilter(operand, { allowEmpty: false });
+}
+
+function isOperatorObject(value: FilterObject): boolean {
+  const keys = Object.keys(value);
+  const operatorKeys = keys.filter(key => key.startsWith('$'));
+  if (operatorKeys.length > 0 && operatorKeys.length < keys.length) return unreadable('operators and fields cannot be mixed in one condition');
+  return keys.length > 0 && operatorKeys.length === keys.length;
+}
+
+function normaliseOperators(operators: FilterObject): FilterObject {
+  return Object.fromEntries(Object.entries(operators).map(([operator, operand]) => [operator, normaliseOperand(operator, operand)]));
+}
+
+// ─── Fields and filters ───────────────────────────────────────────────────────
 
 function normaliseFieldValue(value: unknown): unknown {
-  if (value === undefined) return null; // "the field is missing"
-  if (Array.isArray(value)) return value.map(toMissing); // a bare array is shorthand for $in
-  // Dates, DateTimes, RegExps and other class instances are values to compare, not nested conditions.
-  if (!is.plainObject(value)) return value;
-  const normalised = normaliseOperators(value);
-  return normalised === MATCH_NOTHING ? matchNothingCondition() : normalised;
+  if (value === undefined || value === null) return null; // "the field is missing"
+  if (Array.isArray(value)) return normaliseList(value, { allowEmpty: true }); // shorthand for $in
+  // A bare pattern is MongoDB shorthand for $regex; SQLite would compare it as a value, so say so explicitly.
+  if (value instanceof RegExp) return { $regex: value };
+  if (isScalar(value)) return value;
+  if (!is.plainObject<FilterObject>(value)) return unreadable('a field can only be compared with a single value, a list or conditions');
+  if (Object.keys(value).length === 0) return unreadable('a field condition with nothing in it');
+  return isOperatorObject(value) ? normaliseOperators(value) : normaliseFilter(value, { allowEmpty: false });
 }
 
-/** A logical operator's branches, or nothing at all when they are missing, empty or not filters. */
-function normaliseBranches(branches: unknown): FilterObject[] | typeof MATCH_NOTHING {
-  if (!Array.isArray(branches) || branches.length === 0) return MATCH_NOTHING;
-  if (!branches.every(branch => is.plainObject(branch))) return MATCH_NOTHING;
-  return branches.map(branch => normaliseFilters(branch as FilterObject));
-}
-
-function normaliseFilters(filters: FilterObject): FilterObject {
-  const result: FilterObject = {};
-  const mustAlsoMatch: FilterObject[] = [];
-  for (const [key, value] of Object.entries(filters)) {
-    if (LOGICAL_OPERATORS.has(key)) {
-      const branches = normaliseBranches(value);
-      if (branches === MATCH_NOTHING) mustAlsoMatch.push(matchNothingFilter());
-      else if (key === '$and') mustAlsoMatch.push(...branches);
-      else result[key] = branches;
-      continue;
-    }
-    result[key] = normaliseFieldValue(value);
-  }
-  // $and branches (and the stand-in for a broken logical operator) are gathered so none overwrites another.
-  if (mustAlsoMatch.length > 0) result.$and = mustAlsoMatch;
-  return result;
+function normaliseBranches(operator: string, branches: unknown): FilterObject[] {
+  if (!Array.isArray(branches) || branches.length === 0) return unreadable(`${operator} needs a list of filters`);
+  return branches.map(branch => (is.plainObject(branch) ? normaliseFilter(branch, { allowEmpty: true }) : unreadable(`${operator} needs a list of filters`)));
 }
 
 /**
- * The one place MXDB decides what an empty or broken filter condition means, used by the client before a request
- * leaves the hook, by both device query engines (SQLite and the in-memory path) and by the server. It fails closed:
+ * A filter (the query itself, a logical branch, a nested path or an `$elemMatch` filter). An empty filter is "no
+ * condition" — every record — which is what a whole query or a branch of a logical operator legitimately means
+ * (`{ $and: [request.filters ?? {}, gate] }`), but never what an empty nested path or `$elemMatch` means.
+ */
+function normaliseFilter(filter: FilterObject, { allowEmpty }: { allowEmpty: boolean }): FilterObject {
+  const entries = Object.entries(filter);
+  if (!allowEmpty && entries.length === 0) return unreadable('an empty condition');
+  return Object.fromEntries(entries.map(([key, value]) => {
+    if (LOGICAL_OPERATORS.has(key)) return [key, normaliseBranches(key, value)];
+    if (key.startsWith('$')) return unreadable(`${key} is not an operator MXDB knows here`);
+    return [key, normaliseFieldValue(value)];
+  }));
+}
+
+/**
+ * The one place MXDB reads a filter, used by the client before a request leaves the hook, by both device query
+ * engines (SQLite and the in-memory path) and by the server. It walks the WHOLE query and fails closed:
  *
- * - A field written with no value (`{ leadId: undefined }`) means "the field is missing", written as `null` — which
- *   SQLite (`IS NULL`), sift and MongoDB all read as null or missing, and which survives the JSON trip to the server.
- *   A missing value inside a list (`$in: [undefined]`, a bare array) means the same.
- * - An operator whose operand is missing, `null` or of the wrong type matches NOTHING, never everything: `$in` /
- *   `$nin` / `$all` without a list (and `$all: []`), `$eq` / `$ne` / `$gt` / … with no value, `$exists` without a
- *   boolean, `$size` without a number, `$regex` / `$like` without a pattern, `$elemMatch` without a filter. Write
- *   `{ field: null }` to ask for a missing field; leave a bound out to leave it unbounded.
- * - `$or` / `$and` / `$nor` without a non-empty list of filters match nothing.
+ * - A field written with no value (`{ leadId: undefined }` or `null`) means "the field is missing", written as `null`
+ *   — which SQLite (`IS NULL`), sift and MongoDB all read as null or missing, and which survives the JSON trip to the
+ *   server. A missing value inside a list (`$in: [undefined]`, a bare array) means the same.
+ * - Any node it cannot read — an operator with a missing, `null`, wrong-type or empty operand; an operator it does not
+ *   know; an empty condition object (`{ field: {} }`, `$elemMatch: {}`); a `$or` / `$and` / `$nor` without a list of
+ *   filters; operators and fields mixed in one condition — makes the WHOLE query match nothing, wherever it sits
+ *   (under `$and`, `$or`, `$nor`, `$not` or `$elemMatch`). Nothing is dropped, and nothing broken can be negated into
+ *   "everything".
  *
- * Dropping such a condition instead turned a lookup by a missing key into a read of every record (Vision sc-2518).
- * No filters, or `{}`, still read every record. Returns new objects; the filters given are never changed.
+ * Want "any value"? Leave the key out. "Unbounded"? Leave the bound out. "Missing"? `{ field: null }`. No filters, or
+ * `{}`, still read every record. Returns new objects; the filters given are never changed. Vision sc-2518.
  */
 export function normaliseFilterConditions<T extends object>(filters: DataFilters<T>): DataFilters<T>;
 export function normaliseFilterConditions<T extends object>(filters: DataFilters<T> | undefined): DataFilters<T> | undefined;
 export function normaliseFilterConditions<T extends object>(filters: DataFilters<T> | undefined): DataFilters<T> | undefined {
   if (filters == null) return filters;
-  return normaliseFilters(filters as FilterObject) as DataFilters<T>;
+  try {
+    if (!is.plainObject(filters)) return unreadable('a filter must be an object');
+    return normaliseFilter(filters, { allowEmpty: true }) as DataFilters<T>;
+  } catch (error) {
+    // Only the walk throws a ValidationError here: anything else is a bug and is not swallowed.
+    if (error instanceof ValidationError) return matchNothingFilter() as DataFilters<T>;
+    throw error;
+  }
 }

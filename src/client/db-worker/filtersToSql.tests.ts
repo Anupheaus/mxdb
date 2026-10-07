@@ -239,7 +239,7 @@ describe('filtersToSql — edge cases', () => {
   // sc-2518: a condition with no value is "the field is missing", never dropped — dropping it read every record.
   it('reads an undefined value at top level as "missing", not as no condition', () => {
     const { where, params } = filtersToSql({ name: 'alice', extra: undefined });
-    expect(where).toBe(`${field('name')} = ? AND ${field('extra')} IS NULL`);
+    expect(where).toBe(`(${field('name')} = ? AND ${field('extra')} IS NULL)`);
     expect(params).toEqual(['alice']);
   });
 
@@ -253,7 +253,7 @@ describe('filtersToSql — edge cases', () => {
 
   it('reads an undefined value inside $or / $and branches as "missing"', () => {
     const { where, params } = filtersToSql({ $or: [{ leadId: undefined }, { status: 'a' }], $and: [{ addressId: undefined }] });
-    expect(where).toBe(`(${field('leadId')} IS NULL OR ${field('status')} = ?) AND ${field('addressId')} IS NULL`);
+    expect(where).toBe(`((${field('leadId')} IS NULL OR ${field('status')} = ?) AND ${field('addressId')} IS NULL)`);
     expect(params).toEqual(['a']);
   });
 
@@ -294,14 +294,26 @@ describe('filtersToSql — edge cases', () => {
     expect(params).toEqual([]);
   });
 
-  it('$elemMatch returns pass-through 1 condition', () => {
+  it('$elemMatch, not translated to SQL yet (sc-2758), matches nothing rather than everything', () => {
     const { where } = filtersToSql({ items: { $elemMatch: { value: 10 } } });
-    expect(where).toContain('1');
+    expect(where).toBe('0');
   });
 
-  it('unknown operator returns pass-through 1 condition', () => {
-    const { where } = filtersToSql({ field: { $unknownOp: 'value' } } as any);
-    expect(where).toContain('1');
+  it('an unknown operator makes the whole query match nothing', () => {
+    const { where } = filtersToSql({ status: 'a', field: { $unknownOp: 'value' } } as any);
+    expect(where).toBe('0');
+  });
+
+  it('$not negates operators, counting a missing field as "not"', () => {
+    const { where, params } = filtersToSql(filters({ value: { $not: { $gt: 5 } } }));
+    expect(where).toBe(`NOT COALESCE(${field('value')} > ?, 0)`);
+    expect(params).toEqual([5]);
+  });
+
+  it('$nor matches records no branch matches, a missing field counting as no match', () => {
+    const { where, params } = filtersToSql(filters({ $nor: [{ status: 'a' }, { status: 'b' }] }));
+    expect(where).toBe(`NOT COALESCE((${field('status')} = ? OR ${field('status')} = ?), 0)`);
+    expect(params).toEqual(['a', 'b']);
   });
 
   it('$or with a single branch does not double-wrap in parentheses', () => {

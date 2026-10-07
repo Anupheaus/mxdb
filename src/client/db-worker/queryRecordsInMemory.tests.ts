@@ -117,7 +117,8 @@ describe('queryRecordsInMemory', () => {
     ['$nin', { size: { $nin: [20] } }],
     ['$ni', { size: { $ni: [20] } }],
     ['$exists', { start: { $exists: true } }],
-    ['$elemMatch', { tags: { $elemMatch: { $eq: 'red' } } }],
+    ['$elemMatch over an operator not reproduced here', { tags: { $elemMatch: { $ne: 'red' } } }],
+    ['$not', { size: { $not: { $gt: 20 } } }],
     ['$regex', { name: { $regex: '^A' } }],
     ['$beginsWith', { name: { $beginsWith: 'A' } }],
     ['$all', { tags: { $all: ['red'] } }],
@@ -126,6 +127,13 @@ describe('queryRecordsInMemory', () => {
   it.each(unsupportedFilters)('returns null (falls back to worker) for unsupported operator %s', (_label, filters) => {
     const result = queryRecordsInMemory(makeWidgets(), { filters: filters as never });
     expect(result).toBeNull();
+  });
+
+  // The SQL path does not translate $elemMatch yet (sc-2758), so the in-memory path answers it.
+  it('answers $elemMatch over supported operators in memory', () => {
+    const result = queryRecordsInMemory(makeWidgets(), { filters: { tags: { $elemMatch: { $eq: 'red' } } } as never });
+    expect(result).not.toBeNull();
+    expect(idsOf(result!.records)).toEqual(idsOf(makeWidgets().filter(({ tags }) => (tags ?? []).includes('red'))));
   });
 });
 

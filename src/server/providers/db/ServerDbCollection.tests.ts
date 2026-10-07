@@ -10,6 +10,7 @@ import { AuditEntryType } from '../../../common/auditor/auditor-models';
 import { DateTime } from 'luxon';
 import { normaliseFilterConditions } from '../../../common/filters';
 import { OPERAND_CASE_RECORDS, operandCasesFor, type OperandCaseRecord } from '../../../common/filters/filterOperandCases.fixture';
+import { generateFuzzCases } from '../../../common/filters/filterFuzzCases.fixture';
 
 // The acting user comes from the nexus socket/auth context (external); stub it so audit
 // attribution can be exercised both with and without an authenticated user.
@@ -682,6 +683,17 @@ describe('ServerDbCollection', () => {
         const sent = JSON.parse(JSON.stringify(normaliseFilterConditions(filters)));
         const { data } = await operandCol.query({ filters: sent });
         expect(data.ids().sort()).toEqual(expectedIds);
+      });
+
+      // Random nested queries with one broken node at every depth: never more than the same query with the node
+      // replaced by match-nothing, and in fact nothing at all — as server code and as a client sends it.
+      it.each(generateFuzzCases())('fuzz %s', async (_label, { broken, matchNothing }) => {
+        const idsFor = async (filters: unknown) => (await operandCol.query({ filters: filters as never })).data.ids().sort();
+        const matchNothingIds = await idsFor(matchNothing);
+        for (const brokenIds of [await idsFor(broken), await idsFor(JSON.parse(JSON.stringify(normaliseFilterConditions(broken))))]) {
+          expect(brokenIds.filter(id => !matchNothingIds.includes(id))).toEqual([]);
+          expect(brokenIds).toEqual([]);
+        }
       });
     });
 

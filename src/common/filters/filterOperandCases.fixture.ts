@@ -23,7 +23,7 @@ export const OPERAND_CASE_RECORDS: OperandCaseRecord[] = [
 const ALL_IDS = OPERAND_CASE_RECORDS.map(({ id }) => id);
 const NOTHING: string[] = [];
 
-/** Which engines understand the operator: MongoDB has no `$ni` / `$like` / …, and the device has no `$nor`. */
+/** Which engines understand the operator: MongoDB has no `$ni` / `$like` / `$beginsWith` / `$endsWith`. */
 export type OperandCaseEngines = 'both' | 'device' | 'server';
 
 export interface OperandCase {
@@ -31,6 +31,11 @@ export interface OperandCase {
   filters: DataFilters<OperandCaseRecord>;
   expectedIds: string[];
   engines: OperandCaseEngines;
+  /**
+   * What the device's SQL path alone returns, where it differs: it does not translate `$elemMatch` yet (sc-2758) and
+   * matches nothing for it — never everything — leaving `$elemMatch` to the in-memory path.
+   */
+  deviceSqlIds?: string[];
 }
 
 type Loose = DataFilters<OperandCaseRecord>;
@@ -59,7 +64,9 @@ const OPERATOR_ROWS: OperatorRow[] = [
   { operator: '$size', field: 'tags', engines: 'both', empty: { operand: 0, expectedIds: ['r3'] }, wrongType: '1' },
   { operator: '$exists', field: 'category', engines: 'both', wrongType: 'yes' },
   { operator: '$regex', field: 'category', engines: 'both', empty: { operand: '', expectedIds: ['r1', 'r2', 'r3'] }, wrongType: 5 },
-  { operator: '$elemMatch', field: 'tags', engines: 'both', wrongType: 'x' },
+  { operator: '$elemMatch', field: 'tags', engines: 'both', empty: { operand: {}, expectedIds: NOTHING }, wrongType: 'x' },
+  { operator: '$not', field: 'category', engines: 'both', empty: { operand: {}, expectedIds: NOTHING }, wrongType: 'x' },
+  { operator: '$bogus', field: 'category', engines: 'both', wrongType: 1 },
   { operator: '$like', field: 'category', engines: 'device', empty: { operand: '', expectedIds: ['r3'] }, wrongType: 5 },
   { operator: '$beginsWith', field: 'category', engines: 'device', empty: { operand: '', expectedIds: ['r1', 'r2', 'r3'] }, wrongType: 5 },
   { operator: '$endsWith', field: 'category', engines: 'device', empty: { operand: '', expectedIds: ['r1', 'r2', 'r3'] }, wrongType: 5 },
@@ -68,7 +75,7 @@ const OPERATOR_ROWS: OperatorRow[] = [
 const LOGICAL_ROWS: { operator: '$or' | '$and' | '$nor'; engines: OperandCaseEngines }[] = [
   { operator: '$or', engines: 'both' },
   { operator: '$and', engines: 'both' },
-  { operator: '$nor', engines: 'server' },
+  { operator: '$nor', engines: 'both' },
 ];
 
 function operatorCases({ operator, field, engines, empty, wrongType }: OperatorRow): OperandCase[] {
@@ -100,8 +107,23 @@ export const OPERAND_CASES: OperandCase[] = [
   ...OPERATOR_ROWS.flatMap(operatorCases),
   ...LOGICAL_ROWS.flatMap(logicalCases),
   { label: 'a broken operand beside a sound condition', filters: { name: 'One', category: { $in: undefined } } as Loose, expectedIds: NOTHING, engines: 'both' },
-  { label: 'a broken operand inside one $or branch', filters: { $or: [{ category: { $in: undefined } }, { name: 'Two' }] } as Loose, expectedIds: ['r2'], engines: 'both' },
+  // A broken node anywhere makes the WHOLE query match nothing, so nothing broken can be negated into "everything".
+  { label: 'a broken operand inside one $or branch', filters: { $or: [{ category: { $in: undefined } }, { name: 'Two' }] } as Loose, expectedIds: NOTHING, engines: 'both' },
   { label: 'a broken operand in a nested $and', filters: { $and: [{ name: { $in: ['One', 'Two'] } }, { $or: [{ value: { $gt: undefined } }] }] } as Loose, expectedIds: NOTHING, engines: 'both' },
+  { label: 'a broken operand inside a $nor branch', filters: { $nor: [{ category: { $in: undefined } }] } as Loose, expectedIds: NOTHING, engines: 'both' },
+  { label: 'a broken operand inside $not', filters: { category: { $not: { $in: undefined } } } as Loose, expectedIds: NOTHING, engines: 'both' },
+  { label: 'a broken operand inside $elemMatch', filters: { tags: { $elemMatch: { $in: undefined } } } as Loose, expectedIds: NOTHING, engines: 'both' },
+  { label: 'a broken operand under $nor and $not', filters: { $nor: [{ $or: [{ category: { $not: { $eq: null } } }] }] } as Loose, expectedIds: NOTHING, engines: 'both' },
+  { label: 'an empty field condition', filters: { value: {} } as Loose, expectedIds: NOTHING, engines: 'both' },
+  { label: 'an empty field condition inside $or', filters: { $or: [{ category: {} }] } as Loose, expectedIds: NOTHING, engines: 'both' },
+  { label: 'an empty nested path', filters: { category: { sub: {} } } as Loose, expectedIds: NOTHING, engines: 'both' },
+  { label: 'operators and fields mixed in one condition', filters: { category: { $eq: 'a', sub: 1 } } as Loose, expectedIds: NOTHING, engines: 'both' },
+  { label: 'an unknown top-level operator', filters: { $where: 'true' } as Loose, expectedIds: NOTHING, engines: 'both' },
+  // Sound queries using the same operators keep working, on both engines.
+  { label: 'a sound $nor', filters: { $nor: [{ category: 'a' }, { value: { $gte: 30 } }] } as Loose, expectedIds: ['r2', 'r5'], engines: 'both' },
+  { label: 'a sound $not', filters: { value: { $not: { $gt: 15 } } } as Loose, expectedIds: ['r1', 'r5'], engines: 'both' },
+  { label: 'a sound $elemMatch', filters: { tags: { $elemMatch: { $eq: 'y' } } } as Loose, expectedIds: ['r1'], engines: 'both', deviceSqlIds: NOTHING },
+  { label: 'an empty branch is "no condition"', filters: { $and: [{}, { name: 'Two' }] } as Loose, expectedIds: ['r2'], engines: 'both' },
   { label: 'a field with no value matches records missing it', filters: { category: undefined } as Loose, expectedIds: ['r4', 'r5'], engines: 'both' },
   { label: 'a list holding a missing value matches records missing the field', filters: { category: { $in: ['a', undefined] } } as Loose, expectedIds: ['r1', 'r4', 'r5'], engines: 'both' },
   { label: 'an empty filter reads everything', filters: {}, expectedIds: ALL_IDS, engines: 'both' },

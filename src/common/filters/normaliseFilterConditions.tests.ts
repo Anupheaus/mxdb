@@ -6,12 +6,12 @@ import { normaliseFilterConditions } from './normaliseFilterConditions';
 // Vision sc-2518: a condition whose value is missing (`{ leadId: undefined }`) used to be dropped, so a screen with a
 // missing key read every record in the collection. It now means "the field is missing", written as `null` — the value
 // every query engine (SQLite, sift, MongoDB) reads as "null or missing", and which survives the JSON trip to the server.
-// An operator whose operand is missing, null or the wrong type matches nothing (`{ $in: [] }`). What each engine then
-// returns, operator by operator, is pinned by filterOperandCases.fixture.ts on the device and on the server.
+// Any node it cannot read makes the WHOLE query match nothing (`{ id: { $in: [] } }`), wherever it sits. What each
+// engine then returns is pinned by filterOperandCases.fixture.ts and filterFuzzCases.fixture.ts on device and server.
 
 type Loose = DataFilters<{ [key: string]: unknown }>;
 const normalise = (filters: Loose | undefined) => normaliseFilterConditions(filters);
-const NOTHING = { $in: [] };
+const MATCH_NOTHING = { id: { $in: [] } };
 
 describe('normaliseFilterConditions', () => {
   it('leaves "no filter" alone: undefined, and an empty object, still read everything', () => {
@@ -45,13 +45,31 @@ describe('normaliseFilterConditions', () => {
     ['$gte with no value', { $gte: undefined }], ['$lt with an object', { $lt: { at: 1 } }],
     ['$exists without a boolean', { $exists: 'yes' }], ['$size without a number', { $size: '1' }],
     ['$regex without a pattern', { $regex: 5 }], ['$like with no value', { $like: undefined }],
-    ['$elemMatch without a filter', { $elemMatch: 'x' }], ['an operator MXDB does not know, with no operand', { $not: undefined }],
-  ])('makes a field condition match nothing for %s — never drops it', (_label, condition) => {
-    expect(normalise({ category: condition })).toEqual({ category: NOTHING });
+    ['$elemMatch without a filter', { $elemMatch: 'x' }], ['$elemMatch with an empty filter', { $elemMatch: {} }],
+    ['$elemMatch over a broken operator', { $elemMatch: { $in: undefined } }], ['$not with no operand', { $not: undefined }],
+    ['$not with nothing to negate', { $not: {} }], ['$not over a broken operator', { $not: { $in: undefined } }],
+    ['an operator MXDB does not know', { $bogus: 1 }], ['an empty condition', {}], ['an empty nested path', { sub: {} }],
+    ['operators and fields mixed', { $eq: 'a', sub: 1 }], ['a NaN bound', { $gt: Number.NaN }], ['a negative size', { $size: -1 }],
+  ])('makes the whole query match nothing for %s — never drops it', (_label, condition) => {
+    expect(normalise({ name: 'kept?', category: condition })).toEqual(MATCH_NOTHING);
   });
 
-  it('fails the whole field condition closed, even beside a sound operator', () => {
-    expect(normalise({ start: { $gte: undefined, $lt: 5 } })).toEqual({ start: NOTHING });
+  it.each([
+    ['a $or branch', { $or: [{ category: { $in: undefined } }, { name: 'Two' }] }],
+    ['a $nor branch', { $nor: [{ category: { $in: undefined } }] }],
+    ['a nested $and', { $and: [{ name: 'One' }, { $or: [{ value: { $gt: undefined } }] }] }],
+    ['an unknown top-level operator', { $where: 'true' }],
+  ])('makes the whole query match nothing for a broken node in %s — nothing broken can be negated', (_label, filters) => {
+    expect(normalise(filters as Loose)).toEqual(MATCH_NOTHING);
+  });
+
+  it('fails closed even beside a sound operator', () => {
+    expect(normalise({ start: { $gte: undefined, $lt: 5 } })).toEqual(MATCH_NOTHING);
+  });
+
+  it('keeps sound $not, $nor and $elemMatch, and an empty branch as "no condition"', () => {
+    const filters = { a: { $not: { $gt: 5 } }, $nor: [{ b: 1 }], c: { $elemMatch: { $eq: 'x' } }, d: { $elemMatch: { e: undefined } }, $and: [{}] };
+    expect(normalise(filters as Loose)).toEqual({ a: { $not: { $gt: 5 } }, $nor: [{ b: 1 }], c: { $elemMatch: { $eq: 'x' } }, d: { $elemMatch: { e: null } }, $and: [{}] });
   });
 
   it('keeps a sound list, and an empty $in / $nin (which already mean "nothing" / "anything")', () => {
@@ -62,16 +80,12 @@ describe('normaliseFilterConditions', () => {
     ['missing', undefined], ['null', null], ['empty', []], ['not a list', 'x'], ['not a list of filters', ['x']],
   ])('makes a $or / $and / $nor whose branches are %s match nothing', (_label, branches) => {
     for (const operator of ['$or', '$and', '$nor']) {
-      expect(normalise({ [operator]: branches } as Loose)).toEqual({ $and: [{ id: NOTHING }] });
+      expect(normalise({ [operator]: branches } as Loose)).toEqual(MATCH_NOTHING);
     }
   });
 
-  it('keeps every $and branch when a broken logical operator stands in beside one', () => {
-    expect(normalise({ $and: [{ a: 1 }], $or: undefined } as Loose)).toEqual({ $and: [{ a: 1 }, { id: NOTHING }] });
-  });
-
   it('survives the JSON trip to the server: a broken list is still "nothing", not `{}`', () => {
-    expect(JSON.parse(JSON.stringify(normalise({ category: { $in: undefined } })))).toEqual({ category: NOTHING });
+    expect(JSON.parse(JSON.stringify(normalise({ category: { $in: undefined } })))).toEqual(MATCH_NOTHING);
   });
 
   it('turns a missing value in a list into "missing" (bare array, $in, $nin, $all)', () => {
@@ -83,14 +97,14 @@ describe('normaliseFilterConditions', () => {
     expect(normalise({ items: { $elemMatch: { productId: undefined } } })).toEqual({ items: { $elemMatch: { productId: null } } });
   });
 
-  it('leaves dates, DateTimes and regexes as values, not as nested conditions', () => {
+  it('leaves dates and DateTimes as values, and spells a bare pattern out as $regex', () => {
     const date = new Date('2026-01-01T00:00:00Z');
     const dateTime = DateTime.fromISO('2026-01-01T00:00:00Z');
     const pattern = /derby/i;
     const result = normalise({ a: date, b: dateTime, c: pattern, d: { $gt: dateTime } }) as { [key: string]: unknown };
     expect(result.a).toBe(date);
     expect(result.b).toBe(dateTime);
-    expect(result.c).toBe(pattern);
+    expect(result.c).toEqual({ $regex: pattern });
     expect((result.d as { $gt: DateTime }).$gt).toBe(dateTime);
   });
 
