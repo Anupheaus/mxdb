@@ -194,14 +194,16 @@ export async function handleClientToServerSync(request: ClientDispatcherRequest)
     onUpdate: async (records: MXDBRecordStates): Promise<MXDBSyncEngineResponse> => {
       const response: MXDBSyncEngineResponse = [];
       for (const col of records) {
-        let collection: ReturnType<typeof db.use> | undefined;
-        try { collection = db.use(col.collectionName); }
-        catch { collection = undefined; }
+        let usedCollection: ReturnType<typeof db.use> | undefined;
+        try { usedCollection = db.use(col.collectionName); }
+        catch { usedCollection = undefined; }
         // `db.use` returns undefined (it does not throw) for an unknown collection.
-        if (collection == null) {
+        if (usedCollection == null) {
           logger.warn(`C2S onUpdate: unknown collection "${col.collectionName}" — skipping`);
           continue;
         }
+        // A const, so the write-lock closure below keeps the narrowing.
+        const collection = usedCollection;
 
         // Judged before the hooks run: a hook's amendment is the server's own change, not a conflict.
         const conflictedIds = new Set(col.records
