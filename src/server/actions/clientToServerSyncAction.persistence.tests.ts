@@ -35,6 +35,7 @@ vi.mock('@anupheaus/nexus/server', () => ({
 }));
 
 import { handleClientToServerSync } from './clientToServerSyncAction';
+import { C2S_SYNC_SUMMARY_MESSAGE } from './buildC2SSyncSummary';
 
 // ─── Fixtures ──────────────────────────────────────────────────────────────────
 
@@ -909,5 +910,98 @@ describe('handleClientToServerSync — slow read diagnostics', () => {
 
     const warnedMessages = harness.logger.warn.mock.calls.map(([message]) => message);
     expect([warnedMessages.includes('[C2S] slow retrieve'), warnedMessages.includes('[C2S] slow retrieve total')]).toEqual([perCollection, total]);
+  });
+});
+
+// ─── Write summary logging ────────────────────────────────────────────────────
+
+describe('handleClientToServerSync — write summary logging', () => {
+  let harness: Harness;
+
+  beforeEach(() => {
+    harness = installHarness();
+  });
+
+  const summaryCalls = (logger: MockLogger): unknown[][] => logger.info.mock.calls.filter(([message]) => message === C2S_SYNC_SUMMARY_MESSAGE);
+
+  it('logs exactly one info summary, with counts, for a sync that wrote', async () => {
+    harness.seed({ id: 'old', name: 'gone' }, [createdEntry({ id: 'old', name: 'gone' }, 1)]);
+
+    await handleClientToServerSync([{
+      collectionName: ITEMS,
+      records: [
+        { id: 'n1', hash: 'h1', entries: [createdEntry({ id: 'n1', name: 'a' }, 2)] },
+        { id: 'n2', hash: 'h2', entries: [createdEntry({ id: 'n2', name: 'b' }, 3)] },
+        { id: 'old', entries: [branchedEntry(1), deletedEntry(4)] },
+      ],
+    }]);
+
+    expect(summaryCalls(harness.logger)).toEqual([[C2S_SYNC_SUMMARY_MESSAGE, {
+      upserted: 2, deleted: 1, conflicts: 0, rejected: 0, failed: 0,
+      collections: [{ collectionName: ITEMS, upserted: 2, deleted: 1, conflicts: 0, rejected: 0, failed: 0 }],
+    }]]);
+  });
+
+  it('logs no info for a sync with no changes (a branched-only probe)', async () => {
+    const record: Item = { id: 'i1', name: 'same' };
+    harness.seed(record, [createdEntry(record, 1)]);
+
+    await handleClientToServerSync(request(ITEMS, 'i1', [branchedEntry(1)], await hashRecord(record)));
+
+    expect(harness.logger.info).not.toHaveBeenCalled();
+  });
+
+  it('counts a change merged with one the client had not seen as a conflict', async () => {
+    harness.seed({ id: 'i1', name: 'base', colour: 'grey' }, [createdEntry({ id: 'i1', name: 'base', colour: 'grey' }, 1), replaceEntry(2, 'name', 'from-a')]);
+
+    await handleClientToServerSync(request(ITEMS, 'i1', [branchedEntry(1), replaceEntry(3, 'colour', 'blue')], 'hash-b'));
+
+    expect(summaryCalls(harness.logger)[0]![1]).toEqual(expect.objectContaining({ upserted: 1, conflicts: 1 }));
+  });
+
+  it('counts a failed write and leaves it out of the written counts', async () => {
+    harness.collection.sync.mockImplementationOnce(async ({ updated }) => updated.map(({ id }) => ({ id, ...(id === 'bad' ? { error: new Error('document too large') } : {}) })));
+
+    await handleClientToServerSync([{
+      collectionName: ITEMS,
+      records: [
+        { id: 'ok', hash: 'h1', entries: [createdEntry({ id: 'ok' }, 1)] },
+        { id: 'bad', hash: 'h2', entries: [createdEntry({ id: 'bad' }, 2)] },
+      ],
+    }]);
+
+    expect(summaryCalls(harness.logger)[0]![1]).toEqual(expect.objectContaining({ upserted: 1, failed: 1 }));
+  });
+
+  it('never puts record values or ids in the summary', async () => {
+    await handleClientToServerSync(request(ITEMS, 'secret-id', [createdEntry({ id: 'secret-id', name: 'Mrs Customer, 1 High St' }, 1)], 'h1'));
+
+    const serialised = JSON.stringify(summaryCalls(harness.logger));
+    expect([serialised.includes('Mrs Customer'), serialised.includes('secret-id')]).toEqual([false, false]);
+  });
+
+  it('logs each write at debug with the collection, operation, count and ids, but no values', async () => {
+    await handleClientToServerSync(request(ITEMS, 'n1', [createdEntry({ id: 'n1', name: 'Mrs Customer' }, 1)], 'h1'));
+
+    const writeCall = harness.logger.debug.mock.calls.find(([message]) => message === 'C2S write');
+    expect([writeCall?.[1], JSON.stringify(writeCall).includes('Mrs Customer')]).toEqual([{ collectionName: ITEMS, op: 'upsert', count: 1, recordIds: ['n1'] }, false]);
+  });
+
+  it('counts a record a before-write hook rejected', async () => {
+    harness = installHarness({ definition: hookedItemsCollection });
+    hooks.onBeforeDelete.mockReset().mockResolvedValue(undefined);
+    hooks.onBeforeUpsert.mockReset().mockImplementation(async ({ records }) => {
+      if (records.some(({ name }) => name === 'forbidden')) throw new Error('not allowed');
+    });
+
+    await handleClientToServerSync([{
+      collectionName: HOOKED,
+      records: [
+        { id: 'n1', hash: 'h1', entries: [createdEntry({ id: 'n1', name: 'forbidden' }, 1)] },
+        { id: 'ok', hash: 'h2', entries: [createdEntry({ id: 'ok', name: 'fine' }, 2)] },
+      ],
+    }]);
+
+    expect(summaryCalls(harness.logger)[0]![1]).toEqual(expect.objectContaining({ upserted: 1, rejected: 1 }));
   });
 });

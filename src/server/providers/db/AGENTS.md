@@ -26,6 +26,10 @@ MongoDB persistence layer: connection, collection CRUD with audit, change stream
 - `server-db-models.ts` — `ServerDbChangeEvent` and related shapes
 - `db-transforms.ts` — MongoDB serialization/deserialization (`serialize`/`deserialize`): maps `id` ↔ `_id` and converts Luxon `DateTime` ↔ native BSON `Date` (via `Object.clone` with a value transformer). Dates are stored as BSON `Date`s — **not** ISO strings — so `$lt`/`$gt` range queries match (the query path converts `DateTime` filter bounds to `Date`). On read, stored `Date`s (and any legacy ISO-string dates) are revived into `DateTime`s
 - `clientS2CStore.ts` — per-client store used by the S2C dispatch path
+- `classifyMongoError.ts` — `classifyMongoError(code)` / `classifyMongoFailure(failure)`: `warn` for expected or handled Mongo failures (duplicate key E11000, `NamespaceNotFound`, write conflict, election/network errors, retry labels, client-closed errors), `error` for everything else. The one place to extend when another failure should be expected
+- `mongoCommandLogging.ts` — `createMongoCommandLogging(logger)`: the driver's `commandStarted`/`commandSucceeded` (debug) and `commandFailed` (warn or error via `classifyMongoFailure`) handlers. Logs command name, collection, database, duration and code only — **never the filter, document or error message** (an E11000 message quotes the document's values)
+- `redactMongoErrorMessage.ts` — strips the quoted `dup key: { ... }` values from an error message/stack before it is logged
+- `slowQueryThreshold.ts` — `getSlowQueryThresholdMs()`: the slow-query warning threshold, 3000 ms by default, overridden by the `MXDB_SLOW_QUERY_MS` environment variable
 
 ## Architecture
 
@@ -49,6 +53,7 @@ Change stream lifecycle:
 - **`changeStreamDebounceMs` trades latency for throughput** — lower values dispatch faster but increase per-event load. Default 20ms.
 - **`AsyncLocalStorage` context must be active** for `useDb()` to work. If you see "no ServerDb in context" in tests, ensure the call is wrapped in `provideDb`.
 - **`watch: false` means no change stream at all** — inserts/updates/deletes on that `ServerDb` never fire `onAfter*` extension hooks and never notify connected clients. Only use it for a `ServerDb` whose collection(s) are already watched elsewhere (e.g. the owning server's own default `ServerDb`), and reuse that one `ServerDb` instance via `withDb()` rather than constructing a fresh watch-free connection per call.
+- **Change-stream log levels** — the driver resumes resumable errors itself and only emits `error` when it could not, so an `error` event logs at `error` unless it classifies as an expected transient failure (then `warn`). The watcher being restarted after a lost connection, or the stream closing while the `ServerDb` is not closing, logs `warn`.
 
 ## Related
 
