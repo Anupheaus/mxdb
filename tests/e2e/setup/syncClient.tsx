@@ -11,7 +11,7 @@ import {
   useClientToServerSyncInstance,
   useDb,
 } from '../../../src/client/providers';
-import type { AuditOf, MXDBError, MXDBSyncRejection, QueryProps } from '../../../src/common';
+import type { AuditOf, MXDBError, MXDBSyncAmendment, MXDBSyncRejection, QueryProps } from '../../../src/common';
 import { E2E_DEFAULT_CLIENT_DB_PREFIX, E2E_SOCKET_API_NAME } from './mongoConstants';
 import type { E2eTestRecord } from './types';
 import { e2eTestCollection, type RunLogDetail, type RunLogEvent } from './types';
@@ -276,6 +276,8 @@ export interface SyncClient {
   getDistinctSnapshot(): unknown[];
   /** Every rejection the server reported to this client (`onSyncRejected`), oldest first. */
   getSyncRejections(): MXDBSyncRejection[];
+  /** Every amendment note the server reported to this client (`onSyncAmended`), oldest first. */
+  getSyncAmendments(): MXDBSyncAmendment[];
   /** Every error the sync engine reported to this client (`onError`), oldest first. */
   getSyncErrors(): MXDBError[];
   /**
@@ -330,6 +332,8 @@ export function createSyncClient(
   let sessionToken: string | undefined;
   const syncRejections: MXDBSyncRejection[] = [];
   const recordSyncRejections = (rejections: MXDBSyncRejection[]) => { syncRejections.push(...rejections); };
+  const syncAmendments: MXDBSyncAmendment[] = [];
+  const recordSyncAmendments = (amendments: MXDBSyncAmendment[]) => { syncAmendments.push(...amendments); };
   const syncErrors: MXDBError[] = [];
   const recordSyncError = (error: MXDBError) => { syncErrors.push(error); };
 
@@ -363,7 +367,7 @@ export function createSyncClient(
       <LoggerProvider logger={reactTreeLogger} loggerName="MXDB">
         <Nexus host={serverUrl} name={socketName} auth={sessionToken != null ? { sessionToken } : undefined}>
           <DbsProvider name={dbName} collections={[e2eTestCollection]} encryptionKey={encryptionKey} logger={reactTreeLogger.createSubLogger('db')}>
-            <ClientToServerSyncProvider collections={[e2eTestCollection]} onSyncRejected={recordSyncRejections} onError={recordSyncError}>
+            <ClientToServerSyncProvider collections={[e2eTestCollection]} onSyncRejected={recordSyncRejections} onSyncAmended={recordSyncAmendments} onError={recordSyncError}>
               <ClientToServerProvider />
               <ServerToClientProvider />
               <SyncClientDriverInner ref={saveDriver} clientId={clientId} log={runLogger.log} />
@@ -473,6 +477,10 @@ export function createSyncClient(
     return [...syncRejections];
   }
 
+  function getSyncAmendments(): MXDBSyncAmendment[] {
+    return [...syncAmendments];
+  }
+
   function getSyncErrors(): MXDBError[] {
     return [...syncErrors];
   }
@@ -516,6 +524,7 @@ export function createSyncClient(
     subscribeDistinct,
     getDistinctSnapshot,
     getSyncRejections,
+    getSyncAmendments,
     getSyncErrors,
     sendRawRequest,
     getReceivedEvents,

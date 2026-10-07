@@ -56,6 +56,18 @@ export interface MXDBSyncEngineResponseItem {
    * not applied on the server (the device keeps its delete). Absent ⇒ nothing rejected.
    */
   rejectedRecords?: MXDBSyncRejectedRecord[];
+  /**
+   * C2S only: records whose change the server saved but partly amended (a before-write hook put some protected
+   * fields back and said why). They are in `successfulRecordIds` and the amended record is pushed back to the
+   * client as usual. Absent ⇒ nothing amended with a note, and from a server older than mxdb 0.2.8.
+   */
+  amendedRecords?: MXDBSyncAmendedRecord[];
+}
+
+/** A synced record the server saved but partly amended, and the hook's note for the user. */
+export interface MXDBSyncAmendedRecord {
+  id: string;
+  note: string;
 }
 
 /** A synced record the server refused, and why (the throwing hook's message). */

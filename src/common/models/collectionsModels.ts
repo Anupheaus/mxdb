@@ -206,3 +206,15 @@ export interface MXDBOnDeleteChangeEvent {
 }
 
 export type MXDBOnChangeEvent = MXDBOnUpsertChangeEvent | MXDBOnDeleteChangeEvent;
+
+/**
+ * A part of a synced change the server quietly put back instead of refusing the whole change: a collection's
+ * `onBeforeUpsert` hook restored some protected fields and let the rest of the change save. The device has
+ * already received the amended record; this is how the app learns that it happened and why.
+ */
+export interface MXDBSyncAmendment {
+  collectionName: string;
+  recordId: string;
+  /** What was put back and why, written by the hook for the user (e.g. "Only an admin can change the business name, so it was put back."). */
+  note: string;
+}

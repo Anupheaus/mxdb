@@ -3,7 +3,7 @@ import type { ReactNode } from 'react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useAction, useNexus } from '@anupheaus/nexus/client';
 import { mxdbClientToServerSyncAction } from '../../../common';
-import type { MXDBCollection, MXDBError, MXDBSyncRejection } from '../../../common';
+import type { MXDBCollection, MXDBError, MXDBSyncAmendment, MXDBSyncRejection } from '../../../common';
 import type { Record as MXDBRecord } from '@anupheaus/common';
 import {
   ClientReceiver,
@@ -29,6 +29,8 @@ interface Props {
   onUnauthorized?(): void;
   /** Called with local changes the server refused (a collection before-write hook threw); see {@link MXDBSyncRejection}. */
   onSyncRejected?(rejections: MXDBSyncRejection[]): void;
+  /** Called with synced changes the server saved but partly amended, with the hook's note for the user; see {@link MXDBSyncAmendment}. */
+  onSyncAmended?(amendments: MXDBSyncAmendment[]): void;
   children?: ReactNode;
 }
 
@@ -70,6 +72,7 @@ export const ClientToServerSyncProvider = createComponent('ClientToServerSyncPro
   onError,
   onUnauthorized,
   onSyncRejected,
+  onSyncAmended,
   children,
 }: Props) => {
   const { db } = useDb();
@@ -79,6 +82,8 @@ export const ClientToServerSyncProvider = createComponent('ClientToServerSyncPro
   // The engine is built once per Db, so it reads the latest callback through a ref rather than capturing one.
   const onSyncRejectedRef = useRef(onSyncRejected);
   onSyncRejectedRef.current = onSyncRejected;
+  const onSyncAmendedRef = useRef(onSyncAmended);
+  onSyncAmendedRef.current = onSyncAmended;
   const onErrorRef = useRef(onError);
   onErrorRef.current = onError;
 
@@ -147,6 +152,7 @@ export const ClientToServerSyncProvider = createComponent('ClientToServerSyncPro
       logger: logger.createSubLogger('c2s'),
       onUnauthorized,
       onRejected: rejections => onSyncRejectedRef.current?.(rejections),
+      onAmended: amendments => onSyncAmendedRef.current?.(amendments),
       onStalled: stall => onErrorRef.current?.(toSyncStalledError(stall)),
       onTooLarge: refusal => onErrorRef.current?.(toSyncTooLargeError(refusal)),
     });

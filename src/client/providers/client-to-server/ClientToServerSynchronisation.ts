@@ -1,5 +1,5 @@
 import type { Logger } from '@anupheaus/common';
-import type { MXDBCollection, MXDBSyncRejection } from '../../../common';
+import type { MXDBCollection, MXDBSyncAmendment, MXDBSyncRejection } from '../../../common';
 import { auditor } from '../../../common';
 import {
   ClientDispatcher,
@@ -33,6 +33,8 @@ export interface ClientToServerSynchronisationProps {
   onUnauthorized?(): void;
   /** Called with local changes the server refused (a collection before-write hook threw); see {@link MXDBSyncRejection}. */
   onRejected?(rejections: MXDBSyncRejection[]): void;
+  /** Called with synced changes the server saved but partly amended (a before-write hook put fields back); see {@link MXDBSyncAmendment}. */
+  onAmended?(amendments: MXDBSyncAmendment[]): void;
   /** Called once when a change keeps failing to reach the server (it keeps retrying with backoff). */
   onStalled?(stall: MXDBSyncStall): void;
   /** Called once per session for each change too large to ever reach the server (not sent, not retried). */
@@ -66,6 +68,7 @@ export class ClientToServerSynchronisation {
       timerInterval: props.timerInterval,
       onUnauthorized: props.onUnauthorized,
       onRejected: props.onRejected,
+      onAmended: props.onAmended,
       onStalled: props.onStalled,
       onTooLarge: props.onTooLarge,
     });

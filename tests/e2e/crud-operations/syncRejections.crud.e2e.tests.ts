@@ -5,6 +5,9 @@ import { e2eTestCollection } from '../setup/types';
 import { resetE2E, setupE2E, teardownE2E, useClient, useServer, waitForAllClientsIdle, waitUntilAsync } from '../setup';
 import { getServerAudit, newRecordId } from './utils';
 import {
+  AMEND_WITH_NOTE_VALUE,
+  AMENDED_BY_SERVER_VALUE,
+  AMENDMENT_NOTE,
   DELETE_REJECTION_REASON,
   REFUSE_FOR_USER_VALUE,
   REJECT_ON_UPSERT_VALUE,
@@ -146,5 +149,23 @@ describe('e2e sync rejections by before-write hooks', () => {
     await waitForRejection(client, rejectedId);
 
     expect([(await serverRecord(acceptedId))?.value, await serverRecord(rejectedId)]).toEqual(['accepted', undefined]);
+  }, 120_000);
+
+  it('tells the app what a hook put back, saves the rest of the change and pushes the amended record, once', async () => {
+    const client = await connectedClient();
+    const id = newRecordId('e2e-amend-note');
+    await createOnServer(client, { id, clientId: 'a', value: 'original', name: 'before' });
+
+    await client.upsert({ id, clientId: 'a', value: AMEND_WITH_NOTE_VALUE, name: 'after' });
+    await waitUntilAsync(async () => client.getSyncAmendments().some(amendment => amendment.recordId === id), `client told "${id}" was amended`, 30_000);
+    await waitForClientValue(client, id, AMENDED_BY_SERVER_VALUE);
+    await waitForAllClientsIdle([client], { stableTicksRequired: 30 });
+
+    expect([client.getSyncAmendments(), client.getSyncRejections(), (await serverRecord(id))?.name, (await serverRecord(id))?.value]).toEqual([
+      [{ collectionName: e2eTestCollection.name, recordId: id, note: AMENDMENT_NOTE }],
+      [],
+      'after',
+      AMENDED_BY_SERVER_VALUE,
+    ]);
   }, 120_000);
 });
