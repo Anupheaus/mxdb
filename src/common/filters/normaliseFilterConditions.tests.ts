@@ -2,6 +2,8 @@ import { describe, it, expect } from 'vitest';
 import { DateTime } from 'luxon';
 import type { DataFilters } from '@anupheaus/common';
 import { normaliseFilterConditions } from './normaliseFilterConditions';
+import { isReadableFilter } from './isReadableFilter';
+import { generateGarbageCases } from './filterFuzzCases.fixture';
 
 // Vision sc-2518: a condition whose value is missing (`{ leadId: undefined }`) used to be dropped, so a screen with a
 // missing key read every record in the collection. It now means "the field is missing", written as `null` — the value
@@ -28,8 +30,8 @@ describe('normaliseFilterConditions', () => {
     expect(sent).toEqual({ addressId: null });
   });
 
-  it('does the same on a nested field path', () => {
-    expect(normalise({ address: { id: undefined, city: 'Derby' } })).toEqual({ address: { id: null, city: 'Derby' } });
+  it('does the same on a dotted field path', () => {
+    expect(normalise({ 'address.id': undefined, 'address.city': 'Derby' })).toEqual({ 'address.id': null, 'address.city': 'Derby' });
   });
 
   it('does the same inside $or / $and / $nor branches', () => {
@@ -67,9 +69,17 @@ describe('normaliseFilterConditions', () => {
     expect(normalise({ start: { $gte: undefined, $lt: 5 } })).toEqual(MATCH_NOTHING);
   });
 
-  it('keeps sound $not, $nor and $elemMatch, and an empty branch as "no condition"', () => {
-    const filters = { a: { $not: { $gt: 5 } }, $nor: [{ b: 1 }], c: { $elemMatch: { $eq: 'x' } }, d: { $elemMatch: { e: undefined } }, $and: [{}] };
-    expect(normalise(filters as Loose)).toEqual({ a: { $not: { $gt: 5 } }, $nor: [{ b: 1 }], c: { $elemMatch: { $eq: 'x' } }, d: { $elemMatch: { e: null } }, $and: [{}] });
+  it('keeps sound $not and $nor, and an empty branch as "no condition"', () => {
+    const filters = { a: { $not: { $gt: 5 } }, $nor: [{ b: 1 }], c: { $regex: '^x' }, $and: [{}] };
+    expect(normalise(filters as Loose)).toEqual({ a: { $not: { $gt: 5 } }, $nor: [{ b: 1 }], c: { $regex: '^x' }, $and: [{}] });
+  });
+
+  it.each([
+    ['$elemMatch (sc-2758)', { c: { $elemMatch: { $eq: 'x' } } }], ['a nested-object value (sc-2783)', { address: { city: 'Derby' } }],
+    ['a RegExp', { c: /x/ }], ['$regex with flags', { c: { $regex: 'x', $options: 'i' } }], ['a field path with an index', { 'tags.0': 'x' }],
+    ['a field name that is not a path', { 'a b': 1 }], ['__proto__', JSON.parse('{"__proto__": 1}')], ['a filter that is not an object', 'x'],
+  ])('reads %s, outside the whitelist, as matching nothing', (_label, filters) => {
+    expect(normalise(filters as Loose)).toEqual(MATCH_NOTHING);
   });
 
   it('keeps a sound list, and an empty $in / $nin (which already mean "nothing" / "anything")', () => {
@@ -93,18 +103,18 @@ describe('normaliseFilterConditions', () => {
       .toEqual({ id: ['a', null], leadId: { $in: [null] }, tag: { $nin: [null, 'x'] }, tags: { $all: [null] } });
   });
 
-  it('normalises an $elemMatch sub-filter as a filter of its own', () => {
-    expect(normalise({ items: { $elemMatch: { productId: undefined } } })).toEqual({ items: { $elemMatch: { productId: null } } });
+  it('the garbage fuzz offers readable filters as well as unreadable ones, so both halves of its contract are tested', () => {
+    const readableCount = generateGarbageCases().filter(([, garbage]) => isReadableFilter(garbage)).length;
+    expect(readableCount).toBeGreaterThan(40);
+    expect(readableCount).toBeLessThan(360);
   });
 
-  it('leaves dates and DateTimes as values, and spells a bare pattern out as $regex', () => {
+  it('leaves dates and DateTimes as values', () => {
     const date = new Date('2026-01-01T00:00:00Z');
     const dateTime = DateTime.fromISO('2026-01-01T00:00:00Z');
-    const pattern = /derby/i;
-    const result = normalise({ a: date, b: dateTime, c: pattern, d: { $gt: dateTime } }) as { [key: string]: unknown };
+    const result = normalise({ a: date, b: dateTime, d: { $gt: dateTime } }) as { [key: string]: unknown };
     expect(result.a).toBe(date);
     expect(result.b).toBe(dateTime);
-    expect(result.c).toEqual({ $regex: pattern });
     expect((result.d as { $gt: DateTime }).$gt).toBe(dateTime);
   });
 

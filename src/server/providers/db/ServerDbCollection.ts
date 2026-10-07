@@ -249,7 +249,8 @@ export class ServerDbCollection<RecordType extends Record = Record> {
       const data = rawDocs.mapWithoutNull(dbUtils.deserialize);
       return { data, total: data.length };
     } else {
-      const filters = request.filters != null && Object.keys(request.filters).length > 0 ? (() => {
+      // Every filter that is there is read — a non-object (`true`, `''`) too, which the whitelist turns into "nothing".
+      const filters = request.filters != null ? (() => {
         const startTime = performance.now();
         const result = this.#parseFilters(request!.filters);
         const endTime = performance.now();
@@ -910,7 +911,9 @@ export class ServerDbCollection<RecordType extends Record = Record> {
     if (request == null) return;
     if (request.pagination != null && Object.keys(request.pagination).length > 0) return request;
     if (request.sorts != null && Object.keys(request.sorts).length > 0) return request;
-    if (request.filters != null && Object.keys(request.filters).length > 0) return request;
+    // Only an empty plain object is "no filter": anything else (`true`, `''`, `[]`) must reach #parseFilters, which
+    // reads it as nothing, never fall through to the full scan below.
+    if (request.filters != null && !(is.plainObject(request.filters) && Object.keys(request.filters).length === 0)) return request;
     if (request.getAccurateTotal === true) return request;
     if (request.serverHints != null && Object.values(request.serverHints).some(v => v !== undefined)) return request;
     return;

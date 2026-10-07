@@ -8,9 +8,9 @@ import { hashRecord } from '../../../common/auditor/hash';
 import { auditor } from '../../../common/auditor';
 import { AuditEntryType } from '../../../common/auditor/auditor-models';
 import { DateTime } from 'luxon';
-import { normaliseFilterConditions } from '../../../common/filters';
+import { isReadableFilter, normaliseFilterConditions } from '../../../common/filters';
 import { OPERAND_CASE_RECORDS, operandCasesFor, type OperandCaseRecord } from '../../../common/filters/filterOperandCases.fixture';
-import { generateFuzzCases } from '../../../common/filters/filterFuzzCases.fixture';
+import { generateFuzzCases, generateGarbageCases, withMissingAsNull } from '../../../common/filters/filterFuzzCases.fixture';
 
 // The acting user comes from the nexus socket/auth context (external); stub it so audit
 // attribution can be exercised both with and without an authenticated user.
@@ -683,6 +683,20 @@ describe('ServerDbCollection', () => {
         const sent = JSON.parse(JSON.stringify(normaliseFilterConditions(filters)));
         const { data } = await operandCol.query({ filters: sent });
         expect(data.ids().sort()).toEqual(expectedIds);
+      });
+
+      // Arbitrary values of any shape: an unreadable one returns nothing, as server code and as a client sends it; a
+      // readable one passes the whitelist unchanged, so MongoDB evaluates it exactly as before.
+      it.each(generateGarbageCases())('%s', async (_label, garbage) => {
+        const query = async (filters: unknown) => (await operandCol.query({ filters: filters as never, getAccurateTotal: true }));
+        const direct = await query(garbage);
+        if (!isReadableFilter(garbage)) {
+          const sent = await query(JSON.parse(JSON.stringify(normaliseFilterConditions(garbage as never)) ?? 'null'));
+          expect({ ids: direct.data.ids(), total: direct.total, sentIds: sent.data.ids() }).toEqual({ ids: [], total: 0, sentIds: [] });
+          expect(await operandCol.queryIds(garbage as never)).toEqual([]);
+          return;
+        }
+        if (garbage != null) expect(normaliseFilterConditions(garbage as never)).toEqual(withMissingAsNull(garbage));
       });
 
       // Random nested queries with one broken node at every depth: never more than the same query with the node

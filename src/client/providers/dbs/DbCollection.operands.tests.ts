@@ -8,7 +8,8 @@ import { buildTableDDL, LIVE_TABLE_SUFFIX, q } from '../../db-worker/buildTableD
 import { filtersToSql } from '../../db-worker/filtersToSql';
 import { queryRecordsInMemory } from '../../db-worker/queryRecordsInMemory';
 import { OPERAND_CASE_RECORDS, operandCasesFor, type OperandCaseRecord } from '../../../common/filters/filterOperandCases.fixture';
-import { generateFuzzCases } from '../../../common/filters/filterFuzzCases.fixture';
+import { generateFuzzCases, generateGarbageCases, withMissingAsNull } from '../../../common/filters/filterFuzzCases.fixture';
+import { isReadableFilter, normaliseFilterConditions } from '../../../common/filters';
 import type { MXDBCollectionConfig } from '../../../common/models';
 import { DbCollection } from './DbCollection';
 
@@ -52,6 +53,19 @@ describe('filter operands on the device', () => {
     const [brokenSqlIds, matchNothingSqlIds] = [await viaSql(broken), await viaSql(matchNothing)];
     expect(brokenSqlIds.filter(id => !matchNothingSqlIds.includes(id))).toEqual([]);
     expect(brokenSqlIds).toEqual([]);
+  });
+
+  // Arbitrary values of any shape: an unreadable one returns nothing on every device path; a readable one passes the
+  // whitelist unchanged, so the engines evaluate it exactly as before.
+  it.each(generateGarbageCases())('%s', async (_label, garbage) => {
+    const filters = garbage as DataFilters<OperandCaseRecord>;
+    const ids = sortedIds((await collection.query({ filters })).records);
+    const sqlIds = await viaSql(filters);
+    if (!isReadableFilter(garbage)) {
+      expect({ ids, sqlIds }).toEqual({ ids: [], sqlIds: [] });
+      return;
+    }
+    if (garbage != null) expect(normaliseFilterConditions(filters)).toEqual(withMissingAsNull(garbage));
   });
 
   it.each(operandCasesFor('device'))('%s — the in-memory path, where it answers', (_label, { filters, expectedIds }) => {

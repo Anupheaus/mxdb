@@ -59,7 +59,7 @@ describe('queryRecordsInMemory', () => {
   });
 
   it('matches nested field paths', () => {
-    const result = queryRecordsInMemory(makeWidgets(), { filters: { nested: { level: 2 } } });
+    const result = queryRecordsInMemory(makeWidgets(), { filters: { 'nested.level': 2 } as never });
     expect(idsOf(result!.records)).toEqual(['b', 'd']);
   });
 
@@ -115,12 +115,9 @@ describe('queryRecordsInMemory', () => {
   const unsupportedFilters: Array<[string, { [key: string]: unknown }]> = [
     ['$ne', { size: { $ne: 20 } }],
     ['$nin', { size: { $nin: [20] } }],
-    ['$ni', { size: { $ni: [20] } }],
     ['$exists', { start: { $exists: true } }],
-    ['$elemMatch over an operator not reproduced here', { tags: { $elemMatch: { $ne: 'red' } } }],
     ['$not', { size: { $not: { $gt: 20 } } }],
     ['$regex', { name: { $regex: '^A' } }],
-    ['$beginsWith', { name: { $beginsWith: 'A' } }],
     ['$all', { tags: { $all: ['red'] } }],
   ];
 
@@ -129,11 +126,12 @@ describe('queryRecordsInMemory', () => {
     expect(result).toBeNull();
   });
 
-  // The SQL path does not translate $elemMatch yet (sc-2758), so the in-memory path answers it.
-  it('answers $elemMatch over supported operators in memory', () => {
-    const result = queryRecordsInMemory(makeWidgets(), { filters: { tags: { $elemMatch: { $eq: 'red' } } } as never });
-    expect(result).not.toBeNull();
-    expect(idsOf(result!.records)).toEqual(idsOf(makeWidgets().filter(({ tags }) => (tags ?? []).includes('red'))));
+  // sc-2518: outside MXDB's filter whitelist — the whole query matches nothing, here as on every other path.
+  it.each([
+    ['$ni', { size: { $ni: [20] } }], ['$beginsWith', { name: { $beginsWith: 'A' } }],
+    ['$elemMatch (sc-2758)', { tags: { $elemMatch: { $eq: 'red' } } }],
+  ])('matches nothing for %s', (_label, filters) => {
+    expect(idsOf(queryRecordsInMemory(makeWidgets(), { filters: filters as never })!.records)).toEqual([]);
   });
 });
 

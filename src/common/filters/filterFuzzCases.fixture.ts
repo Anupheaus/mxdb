@@ -115,6 +115,56 @@ const BROKEN_BY_KIND: { [kind in FuzzHoleKind]: unknown[] } = {
   elemMatch: BROKEN_OPERATORS,
 };
 
+// ─── Garbage ──────────────────────────────────────────────────────────────────
+//
+// Arbitrary values of any shape, biased towards filter-like ones (real field names, real and fake operators, odd
+// values) so that some come out readable and many come out nearly-but-not-quite readable.
+
+const GARBAGE_KEYS = [
+  'name', 'category', 'value', 'tags', 'id', 'missing.path', '$and', '$or', '$nor', '$not', '$eq', '$ne', '$gt', '$gte',
+  '$lt', '$lte', '$in', '$nin', '$all', '$exists', '$regex', '$options', '$elemMatch', '$size', '$type', '$where',
+  '$expr', '$ni', '$like', '$bogus', '__proto__', 'constructor', 'tags.0', '', 'x\') OR 1=1 OR (\'', 'a b',
+] as const;
+
+const GARBAGE_SCALARS: unknown[] = [
+  undefined, null, true, false, 0, 1, -1, 1.5, 15, 25, Number.NaN, Number.POSITIVE_INFINITY, '', 'a', 'b', 'One', 'x', 'y',
+  '^T', '(', '[', 'string', new Date('2026-01-01T00:00:00Z'), new Date(Number.NaN),
+];
+
+function generateGarbage(generator: Generator, depth: number): unknown {
+  const roll = generator.pick([0, 1, 2, 3, 4, 5] as const);
+  if (depth <= 0 || roll <= 1) return generator.pick(GARBAGE_SCALARS);
+  if (roll === 2) return Array.from({ length: generator.pick([0, 1, 2, 3]) }, () => generateGarbage(generator, depth - 1));
+  const entries = Array.from({ length: generator.pick([0, 1, 1, 2, 3]) }, () => [generator.pick(GARBAGE_KEYS), generateGarbage(generator, depth - 1)] as const);
+  return Object.fromEntries(entries);
+}
+
+/**
+ * `filters` with every missing value written as `null` — exactly what a readable filter reaches the engines as. The
+ * garbage tests compare against it: a readable filter must pass the whitelist unchanged, so the engines evaluate it
+ * exactly as they did before the whitelist existed.
+ */
+export function withMissingAsNull(filters: unknown): unknown {
+  if (filters === undefined) return null;
+  if (Array.isArray(filters)) return filters.map(withMissingAsNull);
+  if (filters != null && typeof filters === 'object' && Object.getPrototypeOf(filters) === Object.prototype) {
+    return Object.fromEntries(Object.entries(filters).map(([key, value]) => [key, withMissingAsNull(value)]));
+  }
+  return filters;
+}
+
+/** How many garbage values are generated. */
+const GARBAGE_CASE_COUNT = 400;
+
+/** Arbitrary values of any shape, offered as filters. */
+export function generateGarbageCases(): [string, unknown][] {
+  return Array.from({ length: GARBAGE_CASE_COUNT }, (_, index): [string, unknown] => {
+    const generator = createGenerator(90_000 + index);
+    const garbage = generateGarbage(generator, generator.pick([1, 2, 3, 4, 5]));
+    return [`garbage ${index}: ${JSON.stringify(garbage) ?? String(garbage)}`, garbage];
+  });
+}
+
 /** How deep the generated queries go (0 = the broken node is in the query itself). */
 const MAX_DEPTH = 3;
 

@@ -1,5 +1,6 @@
 import { is, ValidationError, type DataFilters } from '@anupheaus/common';
 import { DateTime } from 'luxon';
+import { isReadableFilter } from './isReadableFilter';
 
 // ─── The grammar ──────────────────────────────────────────────────────────────
 //
@@ -139,7 +140,12 @@ function normaliseFilter(filter: FilterObject, { allowEmpty }: { allowEmpty: boo
 
 /**
  * The one place MXDB reads a filter, used by the client before a request leaves the hook, by both device query
- * engines (SQLite and the in-memory path) and by the server. It walks the WHOLE query and fails closed:
+ * engines (SQLite and the in-memory path) and by the server.
+ *
+ * First the WHITELIST (`isReadableFilter`) runs on the raw filter: a filter not built only from MXDB's small grammar
+ * — an unknown operator, a wrong operand type, a non-object filter, a bad field name, a regex that does not compile or
+ * has flags, a depth beyond the limit — matches NOTHING, whatever surrounds it (a negation of an unreadable node is
+ * unreadable too). Only then does the walk below read it, failing closed again on anything it cannot read:
  *
  * - A field written with no value (`{ leadId: undefined }` or `null`) means "the field is missing", written as `null`
  *   — which SQLite (`IS NULL`), sift and MongoDB all read as null or missing, and which survives the JSON trip to the
@@ -157,6 +163,7 @@ export function normaliseFilterConditions<T extends object>(filters: DataFilters
 export function normaliseFilterConditions<T extends object>(filters: DataFilters<T> | undefined): DataFilters<T> | undefined;
 export function normaliseFilterConditions<T extends object>(filters: DataFilters<T> | undefined): DataFilters<T> | undefined {
   if (filters == null) return filters;
+  if (!isReadableFilter(filters)) return matchNothingFilter() as DataFilters<T>;
   try {
     if (!is.plainObject(filters)) return unreadable('a filter must be an object');
     return normaliseFilter(filters, { allowEmpty: true }) as DataFilters<T>;

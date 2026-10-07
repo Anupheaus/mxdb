@@ -1,6 +1,6 @@
-import type { DataFilters } from '@anupheaus/common';
+import { ValidationError, type DataFilters } from '@anupheaus/common';
 import { DateTime } from 'luxon';
-import { normaliseFilterConditions } from '../../common/filters';
+import { isReadableFieldPath, normaliseFilterConditions } from '../../common/filters';
 
 export interface SqlFragment {
   where: string;   // empty string means "no filter"
@@ -17,7 +17,18 @@ function serializeParam(value: unknown): unknown {
 // ─── Field path → json_extract expression ────────────────────────────────────
 
 function jsonExtract(path: string[]): string {
-  return `json_extract(data, '$.${path.join('.')}')`;
+  const fieldPath = path.join('.');
+  // The path is written into the SQL text, so only a plain field path may ever get here (the whitelist already says so).
+  if (!isReadableFieldPath(fieldPath)) return untranslatable(`"${fieldPath}" is not a field path`);
+  return `json_extract(data, '$.${fieldPath}')`;
+}
+
+/**
+ * Stops the translation: the WHOLE query then matches nothing (see filtersToSql). A part SQL cannot translate must
+ * never become a `0` or `1` inside the query, where a `NOT` around it could flip "nothing" into "everything".
+ */
+function untranslatable(reason: string): never {
+  throw new ValidationError(reason, 'filters');
 }
 
 // ─── Lists (which may hold "missing") → SQL ──────────────────────────────────
@@ -97,13 +108,10 @@ function operatorToSql(path: string[], operator: string, value: unknown): SqlFra
       const inner = value instanceof RegExp ? operatorToSql(path, '$regex', value) : operatorsToSql(path, value as Record<string, unknown>);
       return { where: `NOT COALESCE(${inner.where}, 0)`, params: inner.params };
     }
-    case '$elemMatch':
-      // Not translated to SQL yet (sc-2758): the in-memory path answers $elemMatch. Here it matches NOTHING rather
-      // than everything, so a query the in-memory path declines can come back short, never wide.
-      return MATCH_NOTHING_SQL;
     default:
-      // normaliseFilterConditions lets no other operator through; never read one as "everything".
-      return MATCH_NOTHING_SQL;
+      // The whitelist lets no other operator through ($elemMatch included, until sc-2758 translates it). Should one
+      // arrive, the whole query matches nothing — never a placeholder a NOT could flip.
+      return untranslatable(`${operator} is not translated to SQL`);
   }
 }
 
@@ -175,5 +183,11 @@ function filterToSql(filters: Record<string, unknown>): SqlFragment {
 export function filtersToSql<T extends object = object>(rawFilters: DataFilters<T> | undefined): SqlFragment {
   const filters = normaliseFilterConditions(rawFilters);
   if (filters == null || Object.keys(filters).length === 0) return { where: '', params: [] };
-  return filterToSql(filters as Record<string, unknown>);
+  try {
+    return filterToSql(filters as Record<string, unknown>);
+  } catch (error) {
+    // Only `untranslatable` throws a ValidationError here: the whole query matches nothing. Anything else is a bug.
+    if (error instanceof ValidationError) return MATCH_NOTHING_SQL;
+    throw error;
+  }
 }

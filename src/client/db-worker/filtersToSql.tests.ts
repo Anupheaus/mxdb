@@ -80,34 +80,20 @@ describe('filtersToSql — scalar operators', () => {
 // ─── String operators ─────────────────────────────────────────────────────────
 
 describe('filtersToSql — string operators', () => {
-  it('$like', () => {
-    const { where, params } = filtersToSql({ name: { $like: '%alice%' } });
-    expect(where).toBe(`${field('name')} LIKE ?`);
-    expect(params).toEqual(['%alice%']);
-  });
-
-  it('$beginsWith appends %', () => {
-    const { where, params } = filtersToSql({ name: { $beginsWith: 'Jo' } });
-    expect(where).toBe(`${field('name')} LIKE ?`);
-    expect(params).toEqual(['Jo%']);
-  });
-
-  it('$endsWith prepends %', () => {
-    const { where, params } = filtersToSql({ email: { $endsWith: '@example.com' } });
-    expect(where).toBe(`${field('email')} LIKE ?`);
-    expect(params).toEqual(['%@example.com']);
-  });
-
   it('$regex with string pattern', () => {
     const { where, params } = filtersToSql(filters({ name: { $regex: '^jo' } }));
     expect(where).toBe(`${field('name')} REGEXP ?`);
     expect(params).toEqual(['^jo']);
   });
 
-  it('$regex with RegExp object extracts source', () => {
-    const { where, params } = filtersToSql(filters({ name: { $regex: /^jo/i } }));
-    expect(where).toBe(`${field('name')} REGEXP ?`);
-    expect(params).toEqual(['^jo']);
+  // sc-2518: outside MXDB's filter whitelist, so the whole query matches nothing on every engine.
+  it.each([
+    ['$like', { name: { $like: '%alice%' } }], ['$beginsWith', { name: { $beginsWith: 'Jo' } }],
+    ['$endsWith', { email: { $endsWith: '@example.com' } }], ['$regex with a RegExp (flags, and it does not survive JSON)', { name: { $regex: /^jo/i } }],
+    ['$regex with $options', { name: { $regex: 'jo', $options: 'i' } }], ['$regex that does not compile', { name: { $regex: '(' } }],
+    ['$ni', { role: { $ni: ['admin'] } }], ['$size', { items: { $size: 3 } }], ['a nested-object value (sc-2783)', { address: { city: 'London' } }],
+  ])('%s matches nothing', (_label, condition) => {
+    expect(filtersToSql(filters(condition))).toEqual({ where: '0', params: [] });
   });
 });
 
@@ -132,14 +118,14 @@ describe('filtersToSql — set operators', () => {
     expect(params).toEqual([]);
   });
 
-  it('$ni', () => {
-    const { where, params } = filtersToSql({ role: { $ni: ['admin', 'superuser'] } });
+  it('$nin', () => {
+    const { where, params } = filtersToSql({ role: { $nin: ['admin', 'superuser'] } });
     expect(where).toBe(`(${field('role')} IS NULL OR ${field('role')} NOT IN (?, ?))`);
     expect(params).toEqual(['admin', 'superuser']);
   });
 
-  it('$ni with empty array produces truthy 1 condition', () => {
-    const { where, params } = filtersToSql(filters({ role: { $ni: [] } }));
+  it('$nin with empty array produces truthy 1 condition', () => {
+    const { where, params } = filtersToSql(filters({ role: { $nin: [] } }));
     expect(where).toBe('1');
     expect(params).toEqual([]);
   });
@@ -173,13 +159,6 @@ describe('filtersToSql — array operators', () => {
     // Final param should be the expected count (2)
     expect(params[params.length - 1]).toBe(2);
   });
-
-  it('$size uses json_array_length', () => {
-    const { where, params } = filtersToSql({ items: { $size: 3 } });
-    expect(where).toContain('json_array_length(');
-    expect(where).toContain('= ?');
-    expect(params).toEqual([3]);
-  });
 });
 
 // ─── Null / nested field ──────────────────────────────────────────────────────
@@ -190,10 +169,14 @@ describe('filtersToSql — null and nested fields', () => {
     expect(where).toBe(`${field('deletedAt')} IS NULL`);
   });
 
-  it('nested field path', () => {
-    const { where, params } = filtersToSql({ address: { city: 'London' } });
+  it('dotted field path', () => {
+    const { where, params } = filtersToSql(filters({ 'address.city': 'London' }));
     expect(where).toBe(`${field('address.city')} = ?`);
     expect(params).toEqual(['London']);
+  });
+
+  it('a field name that is not a field path matches nothing — it is never written into the SQL', () => {
+    expect(filtersToSql(filters({ 'x\') OR 1=1 OR (\'': 1 }))).toEqual({ where: '0', params: [] });
   });
 });
 
@@ -248,7 +231,7 @@ describe('filtersToSql — edge cases', () => {
   });
 
   it('reads an undefined nested field as "missing"', () => {
-    expect(filtersToSql({ address: { id: undefined } }).where).toBe(`${field('address.id')} IS NULL`);
+    expect(filtersToSql(filters({ 'address.id': undefined })).where).toBe(`${field('address.id')} IS NULL`);
   });
 
   it('reads an undefined value inside $or / $and branches as "missing"', () => {
@@ -327,7 +310,7 @@ describe('filtersToSql — edge cases', () => {
   });
 
   it('deeply nested field path', () => {
-    const { where, params } = filtersToSql({ a: { b: { c: 42 } } });
+    const { where, params } = filtersToSql(filters({ 'a.b.c': 42 }));
     expect(where).toBe(`${field('a.b.c')} = ?`);
     expect(params).toEqual([42]);
   });

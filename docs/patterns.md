@@ -64,6 +64,15 @@ lists it was most of the CPU the page spent (Vision's Pipeline, 29 Sep 2026: abo
   result is not delivered again. Anything that must show a new zone reads it from somewhere else (a setting, the user's
   locale) — never from a record's DateTime having been re-zoned.
 
+### Filters are whitelisted; anything else matches nothing
+Every filter is checked against a small grammar before any engine sees it (`src/common/filters/isReadableFilter.ts`):
+dotted field paths (`address.city`, no array indexes), `$and` / `$or` / `$nor`, `$eq` / `$ne` / `$gt` / `$gte` / `$lt` /
+`$lte` with a single value, `$in` / `$nin` / `$all` with a list, `$exists`, `$regex` with a pattern string (no flags),
+`$not`. A filter using anything else — `$elemMatch`, `$size`, `$type`, `$where`, regex flags, a RegExp, a nested object
+as a field value (`{ address: { city } }`: write `'address.city'`), a non-object filter — returns **nothing**, on the
+device and the server alike. Write filters only from the grammar; to support a new operator, add it to the whitelist
+with a test on both engines.
+
 ### An empty or broken condition fails closed, never "no condition"
 `{ filters: { leadId: undefined } }` matches the records with **no** `leadId`, on the device (SQLite and the in-memory
 path), in live lists, and on the server — the same as `{ leadId: null }`. Any node MXDB cannot read makes the **whole
