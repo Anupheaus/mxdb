@@ -217,7 +217,11 @@ export class ServerReceiver {
             continue;
           }
 
-          const strippedEntries = rec.entries.filter(e => e.type !== AuditEntryType.Branched);
+          const serverStateForEntries = colServerMap.get(recordId);
+          const strippedEntries = this.#entriesSinceHistoryStart(
+            rec.entries.filter(e => e.type !== AuditEntryType.Branched),
+            serverStateForEntries,
+          );
 
           if (strippedEntries.length === 0) {
             // Branched-only: nothing to merge. Compare with server state and
@@ -625,6 +629,20 @@ export class ServerReceiver {
     const entries = serverState.audit as AuditEntry[];
     if (entries.length > 0 || !isActiveRecordState(serverState)) return entries;
     return [{ type: AuditEntryType.Created, id: generateAnchorUlid(), record: Object.clone(serverState.record) } as AuditEntry];
+  }
+
+  /**
+   * A client's entries from no earlier than the start of the server's history for the record: its first entry when that is a
+   * `Created`. A record rewritten with `upsert(..., { resetAudit: true })` starts again at that entry — an application clears
+   * a record's old versions that way (removing personal data from them, for example) — so a device that was offline through
+   * the reset and comes back with an older edit must not put the old values back into the audit. Such an entry could not
+   * change the record anyway: replay applies the later `Created` over it. Every entry at or after the start is kept, and a
+   * record with no server state, or an audit not starting with `Created`, keeps all of them.
+   */
+  #entriesSinceHistoryStart(entries: AuditEntry[], serverState: MXDBActiveRecordState | MXDBDeletedRecordState | undefined): AuditEntry[] {
+    const historyStart = (serverState?.audit as AuditEntry[] | undefined)?.[0];
+    if (historyStart == null || historyStart.type !== AuditEntryType.Created) return entries;
+    return entries.filter(entry => entry.id >= historyStart.id);
   }
 
   #getLastAuditEntryId(entries: AuditEntry[]): string {

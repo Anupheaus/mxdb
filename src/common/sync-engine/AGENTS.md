@@ -65,7 +65,7 @@ The `ClientDispatcher` tracks consecutive failures per queued record — a dispa
 ## Critical design rules
 
 1. Audit entries are only ever **merged on the server** (`ServerReceiver`).
-2. **No audit entries may ever be lost** — collapse/push/apply must preserve pending entries.
+2. **No audit entries may ever be lost** — collapse/push/apply must preserve pending entries. The one exception is deliberate: a client entry older than the start of the server's history for the record (an audit reset with `resetAudit`, which clears old versions on purpose) is dropped by the `ServerReceiver`, since it could not change the record and would bring the cleared values back.
 3. **Delete is final** — enforced at every boundary (CR, SD, SR, client store).
 4. **In-memory read layer** — sync callbacks are synchronous because they hit an in-memory copy, not SQLite.
 5. **Dispatchers never reject into fire-and-forget calls** — `ServerDispatcher.#dispatch` runs from `void` call sites (`push`, `resume`, retry timer). A failed `onDispatch` (e.g. the socket dropped mid-emit) is logged and retried with exponential backoff (`retryInterval` × 2ⁿ, capped at 30 s; reset on success). The queue is kept, so nothing is marked acknowledged. `close()`/`pause()` stops the retries. A rethrow here used to be an unhandled rejection that could terminate the server.
