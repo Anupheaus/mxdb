@@ -18,6 +18,7 @@ import type { AnyAuditOf, AuditOf } from '../../common';
 import { isActiveRecordState } from '../../common/sync-engine';
 import { isTransientMongoCloseError } from '../utils/isTransientMongoCloseError';
 import { runBeforeWriteHooksOnSyncStates } from './runBeforeWriteHooksOnSyncStates';
+import { runInWriteLock } from '../collections/runInWriteLock';
 import { readReadableRecords } from './readReadableRecords';
 import { rejectWritesOutsideReadGate } from './rejectWritesOutsideReadGate';
 import { assertValidSyncRequest } from './assertValidSyncRequest';
@@ -208,45 +209,56 @@ export async function handleClientToServerSync(request: ClientDispatcherRequest)
           .map(stateIdOf));
 
         try {
-          // First the read gate: an update or delete to a record whose stored version the caller may not read is
-          // refused outright (sc-583). Then the before-write hooks, which may amend or revert the remaining states
-          // in place; the receiver reads them back to push what was persisted to the client. A rejected record is
-          // still acknowledged (so the client stops resending it) and reported back with the reason.
-          const outsideGate = await rejectWritesOutsideReadGate({ collection, states: col.records });
-          // The cause is logged here only: the client is told the same thing whatever it was (sc-998).
-          for (const { id, cause } of outsideGate.refusedWrites) {
-            logger.warn('C2S write refused: the caller may not read the stored record (outside its read gate, or deleted)', { collectionName: col.collectionName, recordId: id, cause });
-          }
-          const hooked = await runBeforeWriteHooksOnSyncStates({ collection, states: col.records, excludedIds: new Set(outsideGate.unpersistedIds) });
-          for (const { id, reason, kind } of hooked.rejectedRecords) {
-            logger.warn('C2S write rejected by a before-write hook — reverting it on the client', { collectionName: col.collectionName, recordId: id, reason, kind });
-          }
-          for (const { id, note } of hooked.amendedRecords) {
-            logger.info('C2S write amended by a before-write hook — telling the client what was put back', { collectionName: col.collectionName, recordId: id, note });
-          }
-          const rejectedRecords = [...outsideGate.rejectedRecords, ...hooked.rejectedRecords];
-          const unpersistedIds = [...outsideGate.unpersistedIds, ...hooked.unpersistedIds];
-          const unpersisted = new Set(unpersistedIds);
-
-          const updated: MXDBRecord[] = [];
-          const removedIds: string[] = [];
-          const updatedAudits: AnyAuditOf<MXDBRecord>[] = [];
-          const attempted: string[] = [];
-
-          for (const state of col.records) {
-            if (unpersisted.has(isActiveRecordState(state) ? state.record.id : state.recordId)) continue;
-            if (isActiveRecordState(state)) {
-              updated.push(state.record);
-              updatedAudits.push({ id: state.record.id, entries: state.audit } as AuditOf<MXDBRecord>);
-              attempted.push(state.record.id);
-            } else {
-              removedIds.push(state.recordId);
-              updatedAudits.push({ id: state.recordId, entries: state.audit } as AuditOf<MXDBRecord>);
-              attempted.push(state.recordId);
+          // Everything from the read gate to the last record saved runs under the collection's write lock (sc-2402),
+          // so no write that takes the lock can land between a record being judged and it being saved.
+          const { hooked, rejectedRecords, unpersistedIds, updated, removedIds, attempted, writeResults } = await runInWriteLock(collection.collection, async () => {
+            // First the read gate: an update or delete to a record whose stored version the caller may not read is
+            // refused outright (sc-583). Then the before-write hooks, which may amend or revert the remaining states
+            // in place; the receiver reads them back to push what was persisted to the client. A rejected record is
+            // still acknowledged (so the client stops resending it) and reported back with the reason.
+            const outsideGate = await rejectWritesOutsideReadGate({ collection, states: col.records });
+            // The cause is logged here only: the client is told the same thing whatever it was (sc-998).
+            for (const { id, cause } of outsideGate.refusedWrites) {
+              logger.warn('C2S write refused: the caller may not read the stored record (outside its read gate, or deleted)', { collectionName: col.collectionName, recordId: id, cause });
             }
-          }
+            const hookResult = await runBeforeWriteHooksOnSyncStates({ collection, states: col.records, excludedIds: new Set(outsideGate.unpersistedIds) });
+            for (const { id, reason, kind } of hookResult.rejectedRecords) {
+              logger.warn('C2S write rejected by a before-write hook — reverting it on the client', { collectionName: col.collectionName, recordId: id, reason, kind });
+            }
+            for (const { id, note } of hookResult.amendedRecords) {
+              logger.info('C2S write amended by a before-write hook — telling the client what was put back', { collectionName: col.collectionName, recordId: id, note });
+            }
+            const allUnpersistedIds = [...outsideGate.unpersistedIds, ...hookResult.unpersistedIds];
+            const unpersisted = new Set(allUnpersistedIds);
 
-          const writeResults = await collection.sync({ updated, updatedAudits, removedIds });
+            const toUpdate: MXDBRecord[] = [];
+            const toRemoveIds: string[] = [];
+            const updatedAudits: AnyAuditOf<MXDBRecord>[] = [];
+            const attemptedIds: string[] = [];
+
+            for (const state of col.records) {
+              if (unpersisted.has(isActiveRecordState(state) ? state.record.id : state.recordId)) continue;
+              if (isActiveRecordState(state)) {
+                toUpdate.push(state.record);
+                updatedAudits.push({ id: state.record.id, entries: state.audit } as AuditOf<MXDBRecord>);
+                attemptedIds.push(state.record.id);
+              } else {
+                toRemoveIds.push(state.recordId);
+                updatedAudits.push({ id: state.recordId, entries: state.audit } as AuditOf<MXDBRecord>);
+                attemptedIds.push(state.recordId);
+              }
+            }
+
+            return {
+              hooked: hookResult,
+              rejectedRecords: [...outsideGate.rejectedRecords, ...hookResult.rejectedRecords],
+              unpersistedIds: allUnpersistedIds,
+              updated: toUpdate,
+              removedIds: toRemoveIds,
+              attempted: attemptedIds,
+              writeResults: await collection.sync({ updated: toUpdate, updatedAudits, removedIds: toRemoveIds }),
+            };
+          });
           const failedIds = new Set<string>();
           for (const wr of writeResults) {
             if (wr.error != null) {
