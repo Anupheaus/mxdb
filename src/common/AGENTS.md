@@ -21,6 +21,9 @@ Neither the client nor the server may import from each other; all cross-layer co
 - `internalModels.ts` — library-private types
 - `internalSyncModels.ts` — sync-protocol types shared across layers
 
+### Filters (`filters/`)
+- `matchMissingForEmptyValues.ts` — the one rule for a condition written with no value (`{ leadId: undefined }`): it means "match records where that field is missing", written as `null`. Used by the client before a request leaves the hook (`withMissingForEmptyValues`), by both device query engines (`filtersToSql`, `dataFiltersToSift`) and by the server (`ServerDbCollection.#parseFilters`), so they all agree. An unset range or text bound (`$gte: undefined`) still narrows nothing; no filters, or `{}`, still read everything. Library-internal: not exported from the package.
+
 ### Internal socket wiring
 - `internalActions.ts` — C2S socket action descriptors
 - `internalEvents.ts` — S2C socket event descriptors

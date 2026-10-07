@@ -621,6 +621,37 @@ describe('ServerDbCollection', () => {
       expect(result?.name).toBe('Charlie');
     });
 
+    // sc-2518: a condition with no value means "the field is missing" — the same on the server as on the device —
+    // whether it arrives as `undefined` (server code) or as `null` (a client request, after JSON).
+    describe('a condition with no value', () => {
+      const seedWithUncategorised = async () => {
+        const col = await seed();
+        await col.upsert([makeItem({ id: 'd', name: 'Delta' })]);
+        return col;
+      };
+
+      it.each([
+        ['undefined', { category: undefined }, ['d']],
+        ['null (as a client sends it)', { category: null }, ['d']],
+        ['undefined on a field every record has', { name: undefined }, []],
+        ['undefined inside $or', { $or: [{ category: undefined }, { id: 'a' }] }, ['a', 'd']],
+        ['$eq with no value', { category: { $eq: undefined } }, ['d']],
+        ['$in holding a missing value', { category: { $in: ['y', undefined] } }, ['c', 'd']],
+      ])('matches only records missing the field for %s', async (_label, filters, expectedIds) => {
+        const col = await seedWithUncategorised();
+        const { data } = await col.query({ filters: filters as any });
+        expect(data.ids().sort()).toEqual(expectedIds);
+      });
+
+      it('applies to find, distinct and an accurate total too', async () => {
+        const col = await seedWithUncategorised();
+        expect((await col.find({ name: undefined } as any))).toBeUndefined();
+        expect((await col.distinct({ field: 'name', filters: { category: undefined } as any })).map(({ name }) => name)).toEqual(['Delta']);
+        const { total } = await col.query({ filters: { category: undefined } as any, getAccurateTotal: true });
+        expect(total).toBe(1);
+      });
+    });
+
     describe('Luxon DateTimes inside array operators', () => {
       const base = DateTime.fromISO('2024-01-10T00:00:00.000Z');
       const seedDated = async () => {

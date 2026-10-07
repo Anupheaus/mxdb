@@ -1,5 +1,6 @@
 import { DateTime } from 'luxon';
 import type { AnyObject, DataFilters } from '@anupheaus/common';
+import { matchMissingForEmptyValues } from '../../common/filters';
 
 type SiftQuery = Record<string, unknown>;
 
@@ -16,6 +17,11 @@ function normaliseValue(value: unknown): unknown {
   return value;
 }
 
+/** A list holding "missing" (null) is matched by the worker's own IS NULL branch; it is not reproduced in memory. */
+function hasMissingValue(values: unknown[]): boolean {
+  return values.some(value => value == null);
+}
+
 /** Translate an operator/nested object for `field`. Returns false when it contains an unsupported operator. */
 function translateOperators(field: string, source: Record<string, unknown>, out: SiftQuery): boolean {
   const operators: SiftQuery = {};
@@ -27,8 +33,12 @@ function translateOperators(field: string, source: Record<string, unknown>, out:
       continue;
     }
     if (!SUPPORTED_OPERATORS.has(key)) return false;
-    if (key === '$eq' && value === null) return false; // SQL `= NULL` never matches; sift $eq null matches null — diverges
-    if (key === '$in') operators.$in = (Array.isArray(value) ? value : [value]).map(normaliseValue);
+    if (key === '$eq' && value === null) return false; // "missing": SQL tests it with IS NULL — leave it to the worker
+    if (key === '$in') {
+      const values = Array.isArray(value) ? value : [value];
+      if (hasMissingValue(values)) return false;
+      operators.$in = values.map(normaliseValue);
+    }
     else operators[key] = normaliseValue(value);
   }
   if (Object.keys(operators).length > 0) out[field] = operators;
@@ -39,7 +49,11 @@ function translateOperators(field: string, source: Record<string, unknown>, out:
 function walk(field: string, value: unknown, out: SiftQuery): boolean {
   if (value === undefined) return true;
   if (value === null) { out[field] = null; return true; } // sift {field:null} matches null/missing, like SQL IS NULL
-  if (Array.isArray(value)) { out[field] = { $in: value.map(normaliseValue) }; return true; } // bare array ⇒ $in
+  if (Array.isArray(value)) { // bare array ⇒ $in
+    if (hasMissingValue(value)) return false;
+    out[field] = { $in: value.map(normaliseValue) };
+    return true;
+  }
   if (DateTime.isDateTime(value) || value instanceof Date) { out[field] = normaliseValue(value); return true; }
   if (typeof value !== 'object' || value instanceof RegExp) { out[field] = value; return true; } // primitive equality
   return translateOperators(field, value as Record<string, unknown>, out);
@@ -66,8 +80,10 @@ function walkFilters(filters: Record<string, unknown>, out: SiftQuery): boolean 
 
 /** Translate DataFilters into a sift-compatible query (with dot-notation paths and JS-Date-normalised values),
  *  or null when it uses an operator that can't be evaluated in-memory with parity to the worker/SQL path — in
- *  which case the caller should fall back to the worker. */
-export function dataFiltersToSift<T extends AnyObject>(filters: DataFilters<T> | undefined): SiftQuery | null {
+ *  which case the caller should fall back to the worker. A condition with no value matches records missing that field
+ *  (`matchMissingForEmptyValues`), exactly as on the worker/SQL path. */
+export function dataFiltersToSift<T extends AnyObject>(rawFilters: DataFilters<T> | undefined): SiftQuery | null {
+  const filters = matchMissingForEmptyValues(rawFilters);
   if (filters == null) return {};
   const out: SiftQuery = {};
   return walkFilters(filters as Record<string, unknown>, out) ? out : null;

@@ -235,10 +235,51 @@ describe('filtersToSql — no SQL injection', () => {
 // ─── Additional edge cases ─────────────────────────────────────────────────────
 
 describe('filtersToSql — edge cases', () => {
-  it('skips undefined values at top level', () => {
-    const { where } = filtersToSql({ name: 'alice', extra: undefined });
-    // Only name should appear; undefined key should be skipped
-    expect(where).toBe(`${field('name')} = ?`);
+  // sc-2518: a condition with no value is "the field is missing", never dropped — dropping it read every record.
+  it('reads an undefined value at top level as "missing", not as no condition', () => {
+    const { where, params } = filtersToSql({ name: 'alice', extra: undefined });
+    expect(where).toBe(`${field('name')} = ? AND ${field('extra')} IS NULL`);
+    expect(params).toEqual(['alice']);
+  });
+
+  it('a filter whose only condition has no value matches records missing that field, never every record', () => {
+    expect(filtersToSql({ leadId: undefined }).where).toBe(`${field('leadId')} IS NULL`);
+  });
+
+  it('reads an undefined nested field as "missing"', () => {
+    expect(filtersToSql({ address: { id: undefined } }).where).toBe(`${field('address.id')} IS NULL`);
+  });
+
+  it('reads an undefined value inside $or / $and branches as "missing"', () => {
+    const { where, params } = filtersToSql({ $or: [{ leadId: undefined }, { status: 'a' }], $and: [{ addressId: undefined }] });
+    expect(where).toBe(`(${field('leadId')} IS NULL OR ${field('status')} = ?) AND ${field('addressId')} IS NULL`);
+    expect(params).toEqual(['a']);
+  });
+
+  it('$eq / $ne with no value (or null) test for missing / present, never `= NULL`, which matches nothing', () => {
+    expect(filtersToSql({ leadId: { $eq: undefined } }).where).toBe(`${field('leadId')} IS NULL`);
+    expect(filtersToSql({ leadId: { $eq: null } }).where).toBe(`${field('leadId')} IS NULL`);
+    expect(filtersToSql({ leadId: { $ne: undefined } }).where).toBe(`${field('leadId')} IS NOT NULL`);
+    expect(filtersToSql({ leadId: { $ne: null } }).where).toBe(`${field('leadId')} IS NOT NULL`);
+  });
+
+  it('a missing value in an $in list (or bare array) also matches records missing the field', () => {
+    const inList = filtersToSql({ leadId: { $in: ['l1', undefined] } });
+    expect(inList.where).toBe(`(${field('leadId')} IN (?) OR ${field('leadId')} IS NULL)`);
+    expect(inList.params).toEqual(['l1']);
+    expect(filtersToSql(filters({ leadId: [undefined] })).where).toBe(`${field('leadId')} IS NULL`);
+  });
+
+  it('a missing value in a $nin list excludes records missing the field', () => {
+    const notIn = filtersToSql({ leadId: { $nin: ['l1', undefined] } });
+    expect(notIn.where).toBe(`(${field('leadId')} IS NOT NULL AND ${field('leadId')} NOT IN (?))`);
+    expect(notIn.params).toEqual(['l1']);
+    expect(filtersToSql({ leadId: { $nin: [null] } }).where).toBe(`${field('leadId')} IS NOT NULL`);
+  });
+
+  it('still reads no filter, and an empty filter, as every record', () => {
+    expect(filtersToSql(undefined).where).toBe('');
+    expect(filtersToSql({}).where).toBe('');
   });
 
   it('skips undefined values inside operator objects', () => {

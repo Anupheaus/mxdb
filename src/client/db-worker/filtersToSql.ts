@@ -1,5 +1,6 @@
 import type { DataFilters } from '@anupheaus/common';
 import { DateTime } from 'luxon';
+import { matchMissingForEmptyValues } from '../../common/filters';
 
 export interface SqlFragment {
   where: string;   // empty string means "no filter"
@@ -19,6 +20,26 @@ function jsonExtract(path: string[]): string {
   return `json_extract(data, '$.${path.join('.')}')`;
 }
 
+// ─── Lists (which may hold "missing") → SQL ──────────────────────────────────
+
+/**
+ * `field IN (…)` with a null in the list never matches a missing field (`NULL IN (NULL)` is NULL in SQL), and
+ * `NOT IN (…, NULL)` matches nothing at all; MongoDB reads a null in the list as "null or missing". Test that apart.
+ */
+function listToSql(field: string, values: unknown[], isNegated: boolean): SqlFragment {
+  const hasMissing = values.some(value => value == null);
+  const params = values.filter(value => value != null).map(serializeParam);
+  const placeholders = params.map(() => '?').join(', ');
+  if (!isNegated) {
+    if (!hasMissing) return params.length === 0 ? { where: '0', params } : { where: `${field} IN (${placeholders})`, params };
+    if (params.length === 0) return { where: `${field} IS NULL`, params };
+    return { where: `(${field} IN (${placeholders}) OR ${field} IS NULL)`, params };
+  }
+  if (!hasMissing) return params.length === 0 ? { where: '1', params } : { where: `${field} NOT IN (${placeholders})`, params };
+  if (params.length === 0) return { where: `${field} IS NOT NULL`, params };
+  return { where: `(${field} IS NOT NULL AND ${field} NOT IN (${placeholders}))`, params };
+}
+
 // ─── Single condition → SQL ───────────────────────────────────────────────────
 
 function operatorToSql(path: string[], operator: string, value: unknown): SqlFragment {
@@ -26,10 +47,11 @@ function operatorToSql(path: string[], operator: string, value: unknown): SqlFra
 
   const sv = serializeParam(value);
   switch (operator) {
+    // `= NULL` / `!= NULL` never match in SQL: null here means "missing" / "present" (as in MongoDB).
     case '$eq':
-      return { where: `${field} = ?`, params: [sv] };
+      return value == null ? { where: `${field} IS NULL`, params: [] } : { where: `${field} = ?`, params: [sv] };
     case '$ne':
-      return { where: `${field} != ?`, params: [sv] };
+      return value == null ? { where: `${field} IS NOT NULL`, params: [] } : { where: `${field} != ?`, params: [sv] };
     case '$gt':
       return { where: `${field} > ?`, params: [sv] };
     case '$lt':
@@ -44,17 +66,11 @@ function operatorToSql(path: string[], operator: string, value: unknown): SqlFra
       return { where: `${field} LIKE ?`, params: [`${sv}%`] };
     case '$endsWith':
       return { where: `${field} LIKE ?`, params: [`%${sv}`] };
-    case '$in': {
-      const arr = (Array.isArray(value) ? value : [value]).map(serializeParam);
-      if (arr.length === 0) return { where: '0', params: [] };
-      return { where: `${field} IN (${arr.map(() => '?').join(', ')})`, params: arr };
-    }
+    case '$in':
+      return listToSql(field, Array.isArray(value) ? value : [value], false);
     case '$ni':
-    case '$nin': {
-      const arr = (Array.isArray(value) ? value : [value]).map(serializeParam);
-      if (arr.length === 0) return { where: '1', params: [] };
-      return { where: `${field} NOT IN (${arr.map(() => '?').join(', ')})`, params: arr };
-    }
+    case '$nin':
+      return listToSql(field, Array.isArray(value) ? value : [value], true);
     case '$exists':
       return value
         ? { where: `${field} IS NOT NULL`, params: [] }
@@ -137,15 +153,19 @@ function translateValue(path: string[], value: unknown): SqlFragment {
 /**
  * Translates a `DataFilters<T>` object into a parameterised SQLite WHERE clause.
  *
+ * A condition written with no value (`{ leadId: undefined }`) matches records missing that field
+ * (`matchMissingForEmptyValues`); it is never dropped, which would read every record.
+ *
  * @param filters  The filter object (may be undefined for "no filter").
  * @param _rootPath  Internal — used by $elemMatch recursion; leave empty externally.
  * @returns `{ where, params }` — `where` is empty string when there is no filter.
  *          All user-supplied values are in `params`; nothing is interpolated into SQL.
  */
 export function filtersToSql<T extends object = object>(
-  filters: DataFilters<T> | undefined,
+  rawFilters: DataFilters<T> | undefined,
   _rootPath?: string,
 ): SqlFragment {
+  const filters = matchMissingForEmptyValues(rawFilters);
   if (filters == null) return { where: '', params: [] };
 
   const entries = Object.entries(filters as Record<string, unknown>).filter(([, v]) => v !== undefined);

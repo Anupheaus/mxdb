@@ -64,6 +64,15 @@ lists it was most of the CPU the page spent (Vision's Pipeline, 29 Sep 2026: abo
   result is not delivered again. Anything that must show a new zone reads it from somewhere else (a setting, the user's
   locale) — never from a record's DateTime having been re-zoned.
 
+### A condition with no value means "missing", never "no condition"
+`{ filters: { leadId: undefined } }` matches the records with **no** `leadId`, on the device (SQLite and the in-memory
+path), in live lists, and on the server — the same as `{ leadId: null }`. It used to be dropped, so a screen whose key
+was missing (a visit with no lead) read every record in the collection, and the server could not tell it from a
+deliberate read of everything (Vision sc-2518). A filter with no conditions at all (`undefined` or `{}`) still reads
+everything, and an unset range or text bound (`{ start: { $gte: undefined } }`) still narrows nothing. Keep disabling
+a read whose key is missing (`disable: !hasKey`) where loading nothing is the point: it saves the round trip and says
+what you mean.
+
 ### Delivered records are read-only
 Records a live request delivers are the collection's own objects, and a record passed to `upsert` becomes one. Treat
 both as immutable: to change a record, copy it (`{ ...record, name }`) and upsert the copy. Two things rely on it — the

@@ -8,6 +8,7 @@ import { useSubscriptionWrapper } from './useSubscriptionWrapper';
 import type { AddDisableTo } from '../../../common/models';
 import type { LiveRequestCallbacks } from './live-request-models';
 import { toLiveRequestCallbacks } from './toLiveRequestCallbacks';
+import { withMissingForEmptyValues } from './withMissingForEmptyValues';
 
 export function createDistinct<RecordType extends Record>(collection: DbCollection<RecordType>, useSubscription: UseSubscription, logger: Logger) {
   const distinct = useSubscriptionWrapper<RecordType, DistinctProps<RecordType>, DistinctResults<RecordType>, DistinctRequest, string>({
@@ -42,7 +43,7 @@ export function createDistinct<RecordType extends Record>(collection: DbCollecti
     const props = (is.string(fieldOrProps) ? { field: fieldOrProps as Key } : fieldOrProps) as Props<Key>;
     const disable = is.boolean(disableOrCallbacks) ? disableOrCallbacks : deprecatedDisable ?? props.disable;
     const callbacks = is.boolean(disableOrCallbacks) ? undefined : toLiveRequestCallbacks(disableOrCallbacks);
-    const request = { ...props, disable };
+    const request = withMissingForEmptyValues({ ...props, disable });
     return callbacks == null ? distinct(request) : distinct(request, callbacks as LiveRequestCallbacks<DistinctResults<RecordType>>);
   }
 

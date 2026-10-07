@@ -97,6 +97,46 @@ describe('DbCollection query parity — in-memory vs SQL/worker', () => {
     expect(mem.total).toBe(sql.total);
   });
 
+  // sc-2518: a condition with no value means "the field is missing", on both paths — never "every record".
+  const missingValueCases: Array<[string, DataRequest<Doc>, string[]]> = [
+    ['undefined value', { filters: { city: undefined } }, ['d3', 'd6']],
+    ['undefined value beside another condition', { filters: { city: undefined, value: 20 } }, []],
+    ['undefined value beside a condition some missing-field records meet', { filters: { city: undefined, value: 40 } }, ['d6']],
+    ['undefined value on a field every record has', { filters: { name: undefined } }, []],
+    ['undefined nested field', { filters: { nested: { level: undefined } } as never }, []],
+    ['undefined value inside $or', { filters: { $or: [{ value: undefined }, { name: 'Alice' }] } }, ['d1', 'd5']],
+  ];
+
+  it.each(missingValueCases)('reads the %s as "missing" on the SQL path and in memory', async (_label, request, expectedIds) => {
+    const sql = await viaWorker(request);
+    const mem = viaMemory(request);
+    expect(sql.ids.slice().sort()).toEqual(expectedIds);
+    expect(mem.ids.slice().sort()).toEqual(expectedIds);
+  });
+
+  // Lists holding a missing value, and $eq / $ne with none, are SQL-only (in memory defers them to the worker).
+  const sqlOnlyMissingValueCases: Array<[string, DataRequest<Doc>, string[]]> = [
+    ['$eq with no value', { filters: { city: { $eq: undefined } } }, ['d3', 'd6']],
+    ['$ne with no value', { filters: { city: { $ne: undefined } } }, ['d1', 'd2', 'd4', 'd5']],
+    ['$in holding a missing value', { filters: { city: { $in: ['Paris', undefined] } } as never }, ['d2', 'd3', 'd6']],
+    ['$nin holding a missing value', { filters: { city: { $nin: ['Paris', undefined] } } as never }, ['d1', 'd4', 'd5']],
+  ];
+
+  it.each(sqlOnlyMissingValueCases)('reads the %s as "missing" on the SQL path, and in memory defers it', async (_label, request, expectedIds) => {
+    const sql = await viaWorker(request);
+    expect(sql.ids.slice().sort()).toEqual(expectedIds);
+    expect(queryRecordsInMemory<Doc>(docs, request)).toBeNull();
+  });
+
+  it('DbCollection.query and distinct read a missing key as "missing", and no condition as everything', async () => {
+    const { collection } = await createCollection();
+    expect((await collection.query({ filters: { name: undefined } })).records).toEqual([]);
+    expect((await collection.query({ filters: { city: { $in: [undefined] } } as never })).records.map(({ id }) => id).sort()).toEqual(['d3', 'd6']);
+    expect((await collection.distinct({ field: 'name', filters: { city: undefined } })).slice().sort()).toEqual(['Carol', 'Frank']);
+    expect((await collection.query({})).records).toHaveLength(docs.length);
+    expect((await collection.query({ filters: {} })).records).toHaveLength(docs.length);
+  });
+
   // Sort + pagination on a unique key (name) — order IS deterministic, so compare the ordered page and total.
   const orderedCases: Array<[string, DataRequest<Doc>]> = [
     ['sort name asc', { sorts: [['name', 'asc']] }],

@@ -36,6 +36,7 @@ Primary collection API for React components: imperative CRUD operations and reac
 - `distinct({ field, disable: true })` honours `disable` (previously the props-object form silently ignored it).
 
 ### Utilities
+- `withMissingForEmptyValues.ts` — `query` and `distinct` pass their request through it first, so a condition written with no value (`{ leadId: undefined }`) reaches the device database **and the server** as `null` ("the field is missing"). It has to happen here: JSON drops an `undefined` key, so the server used to receive no condition and read every record (Vision sc-2518). See `src/common/filters/`.
 - `useSubscriptionWrapper.ts` — shared subscription lifecycle (subscribe, unsubscribe, re-subscribe on dependency change). Re-runs triggered by a collection change (debounced) or a subscription update are fire-and-forget, so the wrapper catches their failures. It passes each failure to the caller's optional `onError` callback (`LiveRequestCallbacks.onError`; the reactive hooks pass one through `query` / `getAll` / `distinct`), or logs it when the caller gives none. A failure also resets the last-result hash, so the next successful result is delivered even if it is unchanged. Failures of the initial run still reject the returned promise.
 
 ## Architecture
