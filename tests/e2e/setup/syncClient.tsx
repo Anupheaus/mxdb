@@ -96,6 +96,16 @@ export interface SyncClientDriverRef {
   subscribeDistinct(field: keyof E2eTestRecord): Promise<void>;
   /** Latest result from the active distinct subscription (empty if not yet subscribed). */
   getDistinctSnapshot(): unknown[];
+  /** See {@link SyncClient.sendRawRequest}. */
+  sendRawRequest(eventName: string, payload: unknown): Promise<unknown>;
+  /** See {@link SyncClient.getReceivedEvents}. */
+  getReceivedEvents(): ReceivedSocketEvent[];
+}
+
+/** One event the server sent a client's socket, as it arrived. */
+export interface ReceivedSocketEvent {
+  eventName: string;
+  payload: unknown;
 }
 
 /**
@@ -116,6 +126,10 @@ const SyncClientDriverInner = forwardRef<SyncClientDriverRef, { clientId: string
     const getAllSubscribeLastRef = useRef<E2eTestRecord[] | undefined>(undefined);
     const querySnapshotRef = useRef<{ records: E2eTestRecord[]; total: number }>({ records: [], total: 0 });
     const distinctSnapshotRef = useRef<unknown[]>([]);
+    const receivedEventsRef = useRef<ReceivedSocketEvent[]>([]);
+    // Sockets already recorded into receivedEventsRef. Attached when a raw request is sent, not on mount: the socket
+    // may not exist yet when the driver first renders.
+    const recordedSocketsRef = useRef(new WeakSet<object>());
 
     // Instrument socket emits and important socket events for test-owned logging.
     useEffect(() => {
@@ -223,8 +237,18 @@ const SyncClientDriverInner = forwardRef<SyncClientDriverRef, { clientId: string
           );
         },
         getDistinctSnapshot: () => distinctSnapshotRef.current,
+        sendRawRequest(eventName: string, payload: unknown) {
+          const socket = getSocket();
+          if (socket == null) throw new Error(`Client ${clientId}: no socket to send "${eventName}" on`);
+          if (!recordedSocketsRef.current.has(socket)) {
+            recordedSocketsRef.current.add(socket);
+            socket.onAny((incomingEventName: string, incomingPayload: unknown) => { receivedEventsRef.current.push({ eventName: incomingEventName, payload: incomingPayload }); });
+          }
+          return socket.emitWithAck(eventName, payload);
+        },
+        getReceivedEvents: () => [...receivedEventsRef.current],
       }),
-      [get, getAll, query, distinct, upsert, collectionRemove, disconnect, connect, getIsConnected, isSynchronising, c2sInstance, db],
+      [get, getAll, query, distinct, upsert, collectionRemove, disconnect, connect, getIsConnected, getSocket, clientId, isSynchronising, c2sInstance, db],
     );
 
     return null;
@@ -256,12 +280,25 @@ export interface SyncClient {
   getSyncAmendments(): MXDBSyncAmendment[];
   /** Every error the sync engine reported to this client (`onError`), oldest first. */
   getSyncErrors(): MXDBError[];
+  /**
+   * Sends `payload` as the raw socket event `eventName` (e.g. `nexus.actions.mxdbGetAction`) and resolves with the
+   * server's acknowledgement, `{ error }` included: what a hand-crafted client sends, past every client-side check.
+   */
+  sendRawRequest(eventName: string, payload: unknown): Promise<unknown>;
+  /** Every event the server has sent this client's socket since its first {@link sendRawRequest}, oldest first. */
+  getReceivedEvents(): ReceivedSocketEvent[];
   unmount(): void;
 }
 
 export interface CreateSyncClientOptions {
   /** Override IndexedDB / DbsProvider database name (default: `mxdb-e2e-client-${clientId}`). */
   dbName?: string;
+  /**
+   * Awaited after the dev sign-in route has issued this client's session and before its socket connects. The dev
+   * route stores the session in the server's default database, so a suite that routes connections to a tenant
+   * database (`resolveConnectionDb`) copies it there in this hook.
+   */
+  afterDevSignIn?(userId: string): Promise<void>;
   /**
    * Pre-generated 32-byte AES-256-GCM key for the test SQLite database.
    * Must be provided — DbsProvider requires an encryption key and unencrypted
@@ -312,7 +349,10 @@ export function createSyncClient(
       await waitUntilAsync(async () => getIsConnected(), `Client ${clientId} socket connected`, 30_000);
       return;
     }
-    sessionToken ??= await fetchDevSessionToken(serverUrl, clientId);
+    if (sessionToken == null) {
+      sessionToken = await fetchDevSessionToken(serverUrl, clientId);
+      await options.afterDevSignIn?.(clientId);
+    }
 
     container = document.createElement('div');
     document.body.appendChild(container);
@@ -445,6 +485,15 @@ export function createSyncClient(
     return [...syncErrors];
   }
 
+  function sendRawRequest(eventName: string, payload: unknown): Promise<unknown> {
+    if (!driver) throw new Error(`Client ${clientId}: driver not ready (call connect first)`);
+    return driver.sendRawRequest(eventName, payload);
+  }
+
+  function getReceivedEvents(): ReceivedSocketEvent[] {
+    return driver ? driver.getReceivedEvents() : [];
+  }
+
   function unmount() {
     if (root != null && container != null) {
       root.unmount();
@@ -477,6 +526,8 @@ export function createSyncClient(
     getSyncRejections,
     getSyncAmendments,
     getSyncErrors,
+    sendRawRequest,
+    getReceivedEvents,
     unmount,
   };
 }

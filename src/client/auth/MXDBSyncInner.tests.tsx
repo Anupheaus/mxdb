@@ -55,6 +55,7 @@ const { MXDBSyncInner } = await import('./MXDBSyncInner');
 const { MxdbReadyContext } = await import('./MxdbReadyContext');
 const { deriveKey } = await import('./deriveKey');
 const { saveEncryptionToSession, loadEncryptionFromSession } = await import('./encryptionSessionCache');
+const { storeGuestEncryptionKey, loadGuestEncryption } = await import('./guestEncryption');
 
 (globalThis as Record<string, unknown>).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -421,6 +422,49 @@ describe('MXDBSyncInner — sign-out', () => {
 
     expect(readyContext.getIsDbReady()).toBe(true);
     expect(bytes(currentDb()?.encryptionKey)).toEqual(bytes(await deriveKey(prfOutputFor(9))));
+  });
+});
+
+describe('MXDBSyncInner — guest session (signed in without a passkey)', () => {
+  it('opens the guest\'s own database with the key it stored, without waiting for a passkey ceremony', async () => {
+    storeGuestEncryptionKey(APP, { userId: 'alice', dbName: 'guest-alice' });
+    const stored = loadGuestEncryption(APP, 'alice');
+    await render();
+
+    await setUser(ALICE);
+
+    expect(currentDb()?.name).toBe('guest-alice');
+    expect(bytes(currentDb()?.encryptionKey)).toEqual(bytes(stored?.key));
+  });
+
+  it('prefers a passkey key cached in this tab over a guest key', async () => {
+    storeGuestEncryptionKey(APP, { userId: 'alice', dbName: 'guest-alice' });
+    saveEncryptionToSession(APP, 'alice', new Uint8Array(32).fill(42), 'acme');
+    await render();
+
+    await setUser(ALICE);
+
+    expect(currentDb()?.name).toBe('acme');
+  });
+
+  it('forgets the guest key on sign-out, so the device keeps nothing it can open', async () => {
+    storeGuestEncryptionKey(APP, { userId: 'alice', dbName: 'guest-alice' });
+    await render();
+    await setUser(ALICE);
+
+    await setUser(undefined);
+
+    expect(loadGuestEncryption(APP, 'alice')).toBeUndefined();
+  });
+
+  it('forgets the guest key when another tab signs the guest out', async () => {
+    storeGuestEncryptionKey(APP, { userId: 'alice', dbName: 'guest-alice' });
+    await render();
+    await setUser(ALICE);
+
+    await act(async () => { otherTab().postMessage({ type: 'signed-out', userId: 'alice' }); });
+
+    expect(loadGuestEncryption(APP, 'alice')).toBeUndefined();
   });
 });
 

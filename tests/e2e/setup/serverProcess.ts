@@ -10,7 +10,7 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath, pathToFileURL } from 'url';
 import { Logger } from '@anupheaus/common';
-import { startServer } from '../../../src/server/index.js';
+import { startServer, type ServerConfig } from '../../../src/server/index.js';
 import { e2eTestCollection } from './types.js';
 import {
   E2E_MONGO_DB_NAME,
@@ -78,10 +78,14 @@ async function main() {
   });
   bootLog('tls.readFiles.done');
 
+  // A suite's extensions module may also export `serverConfig`: settings layered over the defaults below (e.g.
+  // `resolveConnectionDb`, to route connections to a tenant database).
+  let suiteServerConfig: Partial<ServerConfig> = {};
   const extensionsModule = process.env[E2E_SERVER_PROCESS_ENV.EXTENSIONS_MODULE];
   if (extensionsModule != null && extensionsModule.length > 0) {
     bootLog('extensions.import', { extensionsModule });
-    await import(pathToFileURL(extensionsModule).href);
+    const { serverConfig } = await import(pathToFileURL(extensionsModule).href) as { serverConfig?: Partial<ServerConfig> };
+    suiteServerConfig = serverConfig ?? {};
   }
 
   bootLog('startServer.call');
@@ -96,6 +100,7 @@ async function main() {
     auth: { mode: 'webauthn', rpIds: ['localhost'], isAllowedOrigin: origin => /^https:\/\/localhost(:\d+)?$/.test(origin) },
     // The e2e clients sign in through the dev sign-in route (syncClient.tsx), which is opt-in.
     devSignIn: true,
+    ...suiteServerConfig,
   });
   bootLog('startServer.returned');
 

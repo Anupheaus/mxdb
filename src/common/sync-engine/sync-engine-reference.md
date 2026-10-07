@@ -257,6 +257,8 @@ Regression test: [ServerDispatcher.tests.ts](ServerDispatcher.tests.ts) — "suc
 
 Additionally, if a client reports an active record (hash present) but `#deletedRecordIds` has a premature tombstone for that id (e.g. a change-stream delete arrived before the CD's initial dispatch), the tombstone is cleared — preventing the subsequent authoritative delete from being swallowed.
 
+**`reachableRecordIds(collectionName, ids)`** answers, from the filter, which changed ids a change-stream push could still reach this client for: ids in the filter, plus ids in a queued or in-flight authoritative batch (the queue is trimmed only after the client answers, and those ids join the filter on ack). The server's change-stream path asks it before running the client's read gate, so a change to a record the client does not hold costs no gate call (sc-997). It must stay in step with step 2 of `#dispatch`, which drops every other change-stream cursor.
+
 ### 5.7 Pause / resume
 
 `pause()` sets `#isPaused = true`. `resume()` clears it and calls `#dispatch` if nothing is in-flight and no retry timer is running. `push()` always adds to the queue; it only calls `#dispatch` when not paused, not in-flight, and no retry timer is running.
@@ -378,6 +380,10 @@ The mirror filter (step 2) runs before any `await`. If it were deferred until af
 
 The SR pushes disparity cursors only to the **originator's SD** (via `serverDispatcher.push`). Other connected clients are notified of the same state change via the MongoDB change stream, which triggers separate `push(cursors, addToFilter=false)` calls on their respective SDs. This keeps the broadcast path simple and avoids the SR needing references to all SDs.
 
+### 7.5 A live record with no audit is anchored on the stored record
+
+A record written to the database without going through mxdb (a migration, a seed script, a test harness) is live but has an empty audit. A client edit to it arrives as `Updated` entries with no `Created`, and replay needs an anchor: without one it skips them and ends with no live record, which was then persisted as a deletion. Before merging, `#entriesWithAnchor` therefore gives such a record a `Created` entry holding the stored record, with the epoch ULID (`generateAnchorUlid`) so it sorts before every real entry. The persisted audit keeps it, so every later replay has the same anchor. Only an active record with an empty audit is anchored; a record with some audit is left as it is.
+
 ---
 
 ## 8. Flow summary
@@ -439,6 +445,7 @@ If a regression causes a stress-test flake, check if one of these unit tests wou
 | Server-missing ghost → delete push (Updated orphan) | `ServerReceiver.tests.ts` | "pushes delete for Updated ghost when server has no record" |
 | Client Created on empty server must not push delete | `ServerReceiver.tests.ts` | "does not push delete for client Created record when server has no state" |
 | Orphan Updated without hash is skipped (no push) | `ServerReceiver.tests.ts` | "skips orphan Updated record without hash when server has no state" |
+| Edit to a live record with no audit is kept, not persisted as a deletion | `ServerReceiver.tests.ts` | "keeps an edit to a record that has no audit, anchoring it on the stored record" |
 
 ---
 

@@ -93,6 +93,8 @@ export interface ServerInstance {
   enableDevice(requestId: string): Promise<void>;
   disableDevice(requestId: string): Promise<void>;
   deleteDevice(requestId: string): Promise<void>;
+  /** Deletes the device only while it is still a pending invite (one conditional write); resolves whether it did. */
+  deletePendingInvite(requestId: string): Promise<boolean>;
   /**
    * Hot-swap the server's TLS certificate without a restart (via nexus `setSecureContext`) — for cert
    * renewal. No-op when the server is not HTTPS.

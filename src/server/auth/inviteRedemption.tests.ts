@@ -82,14 +82,16 @@ const passkeyFor = (key: string) => {
   if (!passkeys.has(key)) passkeys.set(key, createSoftwarePasskey({ rpId: RP_ID, origin: ORIGIN }));
   return passkeys.get(key)!;
 };
+/** The app installation the passkey named `key` lives on (sc-645): every real client sends its own with each request. */
+const installationFor = (key: string) => `installation-${key}`;
 const openInvite = (requestId: string) => call('GET', `webauthn/invite?requestId=${encodeURIComponent(requestId)}`);
 /** Registers the passkey named `key` with the invite's registration token (sc-627: the server verifies it). */
 const register = (registrationToken: string, key: string) =>
-  call('POST', 'webauthn/register', { registrationToken, credential: passkeyFor(key).register(new TextEncoder().encode(registrationToken)), deviceDetails });
-/** Signs in with the passkey named `key`, by signing a fresh challenge from the server. */
+  call('POST', 'webauthn/register', { registrationToken, credential: passkeyFor(key).register(new TextEncoder().encode(registrationToken)), deviceDetails, installationId: installationFor(key) });
+/** Signs in with the passkey named `key`, from the installation it registered on, by signing a fresh challenge from the server. */
 const reauth = async (key: string) => {
   const { challenge } = (await call('GET', 'webauthn/challenge')).body as { challenge: string; };
-  return call('POST', 'webauthn/reauth', { credential: passkeyFor(key).signIn(challenge), deviceDetails });
+  return call('POST', 'webauthn/reauth', { credential: passkeyFor(key).signIn(challenge), deviceDetails, installationId: installationFor(key) });
 };
 const signOut = (sessionToken: string) => call('POST', 'signout', {}, sessionToken);
 /** 'accepted', or the refusal's message. (nexus answers a refused redemption with a plain error, so the status says little.) */
@@ -211,8 +213,9 @@ describe('invite redemption through nexus, with an invite lifetime', () => {
     await openInvite(pendingId);
 
     const replies = [
-      await call('POST', 'webauthn/reauth', { credential: { id: operator, rawId: 'x', type: 'public-key', response: {} }, deviceDetails }),
-      await call('POST', 'webauthn/register', { registrationToken: operator, credential: passkeyFor('attacker').register(new TextEncoder().encode('x')), deviceDetails }),
+      // With a valid installation id, so each refusal is the operator's, not a missing installation id's (sc-645).
+      await call('POST', 'webauthn/reauth', { credential: { id: operator, rawId: 'x', type: 'public-key', response: {} }, deviceDetails, installationId: installationFor('attacker') }),
+      await call('POST', 'webauthn/register', { registrationToken: operator, credential: passkeyFor('attacker').register(new TextEncoder().encode('x')), deviceDetails, installationId: installationFor('attacker') }),
       await call('GET', 'webauthn/invite?requestId[$ne]=x'),
     ];
     const pending = await stored(pendingId);

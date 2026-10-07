@@ -16,6 +16,12 @@ export type MXDBRecordStates<T extends MXDBRecord = MXDBRecord> = MXDBRecordStat
 export interface MXDBRecordMeta { id: string; hash: string; lastAuditEntryId?: string; }
 export type MXDBRecordMetas = { collectionName: string; records: MXDBRecordMeta[] }[];
 
+// Live records read through a client's read gate (the collection's `onQuery`), per collection: the gate decision and
+// the content come from one query, so no record is judged on one version and sent as another (sc-682). `isGated` is
+// false when the collection has no gate: then every id is readable, and one not returned is simply not stored.
+export interface MXDBReadableRecordsByCollection<T extends MXDBRecord = MXDBRecord> { collectionName: string; records: T[]; isGated: boolean; }
+export type MXDBReadableRecords<T extends MXDBRecord = MXDBRecord> = MXDBReadableRecordsByCollection<T>[];
+
 // Cursors (lightweight, no full audit)
 export interface MXDBActiveRecordCursor<T extends MXDBRecord = MXDBRecord> { record: T; lastAuditEntryId: string; }
 export interface MXDBDeletedRecordCursor {
