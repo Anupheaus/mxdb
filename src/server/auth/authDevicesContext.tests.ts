@@ -17,6 +17,7 @@ describe('authDevicesContext', () => {
       createInvite: async () => 'https://invite',
       setEnabled: async () => undefined,
       deleteDevice: async () => undefined,
+      deletePendingInvite: async () => false,
       expireStalePendingInvites: async () => 0,
       findById: async () => undefined,
       create: async () => undefined,

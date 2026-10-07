@@ -28,7 +28,7 @@ Conventions:
 - **Seed data** is inserted on first run through `onSeed` (categories, types, system settings, fixed lookups).
 - **`version`** is bumped when the on-disk shape changes so migrations run.
 - Collections are registered into **sync sets** by client capability — a full replica for full-featured clients, a leaner subset for constrained (e.g. mobile/Capacitor) clients. **Don't sync data that is large, expensive to aggregate, or doesn't need live reactivity** — keep those out of the sync sets and fetch on demand.
-- **Server-only wiring lives separately** from the shared schema (a server-side extension per entity) and adds server indexes, server-only hooks (`onAfterUpsert`), and server-only collections (e.g. token stores). The shared `defineCollection` stays free of server-only concerns.
+- **Server-only wiring lives separately** from the shared schema (a server-side extension per entity) and adds server indexes, server-only hooks (`onAfterUpsert`), and server-only collections (e.g. token stores). The shared `defineCollection` stays free of server-only concerns. A `syncMode: 'ServerOnly'` collection needs no read or write guard of its own: mxdb refuses every client request that names one, so only server code (actions, hooks, jobs) can touch it.
 
 ---
 
@@ -138,8 +138,16 @@ extendCollection(addressesCollection, {
 - **Prefer amending to throwing** for client-writable data: an amendment keeps the user's change; a rejection discards it.
 - **Throwing on a server write** rejects the whole call (all-or-nothing, like any failed write).
 - **Throwing on a synced client write rejects only that record** (hooks are called per record on the sync path) and reverts it on the device: an update goes back to the server's version, a create is dropped, a delete stays deleted locally while the server keeps the record. The app hears about it through `MXDBSync`'s `onSyncRejected(rejections)` (`{ collectionName, recordId, reason, kind }`, `reason` = the thrown message). **Throw a `ValidationError` (from `@anupheaus/common`) with a message you'd show the user**: it arrives with `kind: 'validation'`, and only then is `reason` meant for the screen — show the user why. Anything else a hook throws arrives as `kind: 'error'` (technical detail: log it, show a generic message), a read-gate refusal as `kind: 'access'`; `kind` is absent from servers older than 0.2.5. On a server write the call fails with the hook's own error, so an action can make the same distinction.
+- **When a hook amends instead of refusing, say so.** Refusing would throw away the user's other edits, so a guard may put its protected fields back and let the rest save, but the user then sees a field snap back with no explanation. Return `[{ id, note }]` from `onBeforeUpsert` (a plain-English `note`, only for a record you really changed); on a synced write the app hears it through `MXDBSync`'s `onSyncAmended(amendments)` (`{ collectionName, recordId, note }`, one call per sync response) while the amended record is pushed back as usual. Show it as a warning, not an error: the save succeeded. Absent from servers older than 0.2.8.
 - Hooks run in the writer's context, so `useCollection` inside them hits the same database; never upsert the same collection from its own `onBeforeUpsert`.
 - **Other sync failures are not rejections.** A change the server keeps failing to write for any other reason stays on the device and is retried with backoff; after a few attempts `MXDBSync`'s `onError` receives a `SYNC_STALLED` error (worth a non-blocking "changes not saved yet" indicator). It syncs as soon as the server accepts it.
+
+### 3b. The read gate — `onQuery`, for reads and for writes
+
+`onQuery` is the collection's read gate: every client read (`query`, `get`, `getAll`, `distinct`, change pushes, reconnect sync) is narrowed by the filters it returns. It is also the write gate: a synced client change to a stored record outside its filters is refused (`kind: 'access'`). The payload's `purpose` says which is being asked — `'read'` (also when absent) or `'write'`.
+
+- **Authority applies to both.** Ownership and role rules ("a fitter sees only their own tasks") ignore `purpose`.
+- **Delivery scope applies to reads only.** A rule that limits what a client *holds* rather than what the user may change (a device's date window) returns no filter for `'write'`. Otherwise an edit made offline to a record that has since left the scope is refused and lost. With the scope left out, the edit is saved, and the record, no longer readable, is then evicted from the device.
 
 ---
 

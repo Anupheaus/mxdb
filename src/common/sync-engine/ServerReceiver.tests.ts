@@ -312,6 +312,31 @@ describe('ServerReceiver', () => {
     expect('record' in updatedState!).toBe(true);
   });
 
+  // A record written to the database without going through mxdb (a migration, a seed script, a test harness) has no audit
+  // at all. An edit to it used to replay with nothing to start from, so the Updated entry was skipped, the replay ended with no
+  // live record and the edit was persisted as a deletion. The stored record is the anchor.
+  it('keeps an edit to a record that has no audit, anchoring it on the stored record', async () => {
+    const { sd } = makeSD();
+    const record = { id: 'r1', name: 'Alice', company: 'Acme' };
+    const onRetrieve = vi.fn().mockResolvedValue([{ collectionName: 'items', records: [{ record, audit: [] }] }] satisfies MXDBRecordStates);
+    const onUpdate = vi.fn().mockResolvedValue([{ collectionName: 'items', successfulRecordIds: ['r1'] }]);
+    const sr = new ServerReceiver(mockLogger, { onRetrieve, onUpdate, serverDispatcher: sd });
+
+    // The client held the record and edited one field: it sends one Updated entry and no Created.
+    const clientAudit = auditor.updateAuditWith({ ...record, name: 'Bob' }, auditor.createAuditFrom(record));
+    const updatedOnly = clientAudit.entries.filter(entry => entry.type === AuditEntryType.Updated);
+    expect(updatedOnly).toHaveLength(1);
+
+    const result = await sr.process([{ collectionName: 'items', records: [{ id: 'r1', hash: 'mock-hash-r1', entries: updatedOnly }] }]);
+
+    expect(result.find(({ collectionName }) => collectionName === 'items')?.successfulRecordIds).toContain('r1');
+    const [persisted] = (onUpdate.mock.calls[0]![0] as MXDBRecordStates)[0]!.records;
+    expect(persisted && 'record' in persisted ? persisted.record : undefined, 'the edit is kept, not turned into a deletion').toEqual({ id: 'r1', name: 'Bob', company: 'Acme' });
+    // The stored record is written into the audit as its first entry, so every later replay has the same anchor.
+    expect(persisted!.audit.map(({ type }) => type)).toEqual([AuditEntryType.Created, AuditEntryType.Updated]);
+    expect(mockLogger.error).not.toHaveBeenCalled();
+  });
+
   it('handles branched-only active record — seeds filter, no onUpdate', async () => {
     const { sd } = makeSD();
     const updateFilterSpy = vi.spyOn(sd, 'updateFilter');

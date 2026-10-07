@@ -8,12 +8,13 @@
  * createIndexes() to add extra indices (call super.createIndexes() first).
  */
 
-import type { Collection } from 'mongodb';
+import type { Collection, Db } from 'mongodb';
 import type { NexusAuthRecord, NexusAuthStore } from '@anupheaus/nexus/common';
 import type { ServerDb } from '../providers';
 import { useDb } from '../providers';
 import { isAuthKey } from '@anupheaus/nexus/common';
 import { DEV_SIGN_IN_REQUEST_ID_PREFIX } from './registerDevAuthRoute';
+import { PENDING_INVITE_FILTER } from './pendingInviteFilter';
 
 const COLLECTION_NAME = 'mxdb_authentication';
 
@@ -41,6 +42,11 @@ export function toAuthRecordUpdate(patch: object): { $set?: Record<string, unkno
     ...(Object.keys(setFields).length > 0 ? { $set: setFields } : {}),
     ...(Object.keys(unsetFields).length > 0 ? { $unset: unsetFields } : {}),
   };
+}
+
+/** A real cut-off time: anything else (NaN, a string, an operator object) would make the filter match nothing or everything. */
+function isFiniteNumber(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value);
 }
 
 function assertAuthKeyForWrite(requestId: unknown, operation: string): asserts requestId is string {
@@ -78,6 +84,12 @@ export abstract class AuthCollection<TRecord extends NexusAuthRecord> implements
     } catch {
       return this.#fallbackDb;
     }
+  }
+
+  /** The MongoDB database of the CURRENT `ServerDb` (see `#getServerDb`), for a subclass's companion collections, which
+   *  must live in the same database as the auth records they describe. */
+  protected async getMongoDb(): Promise<Db> {
+    return this.#getServerDb().getMongoDb();
   }
 
   /** Returns the underlying MongoDB collection for the CURRENT `ServerDb` (see `#getServerDb`).
@@ -160,17 +172,34 @@ export abstract class AuthCollection<TRecord extends NexusAuthRecord> implements
     return docs.map(doc => fromDoc(doc as AuthDoc<TRecord>));
   }
 
-  /** Pending invites that were created before `createdBeforeMs` (unix ms). */
+  /** Pending invites (nexus's `isPendingWebAuthnInvite`) that were created before `createdBeforeMs` (unix ms). */
   async findStalePendingInvites(createdBeforeMs: number): Promise<TRecord[]> {
-    if (typeof createdBeforeMs !== 'number' || !Number.isFinite(createdBeforeMs)) return [];
+    if (!isFiniteNumber(createdBeforeMs)) return [];
     const coll = await this.getColl();
-    const docs = await coll.find({
-      isEnabled: false,
-      deviceDetails: { $exists: false },
-      lastConnectedAt: { $exists: false },
-      createdAt: { $lt: createdBeforeMs },
-    } as any).toArray();
+    const docs = await coll.find({ ...PENDING_INVITE_FILTER, createdAt: { $lt: createdBeforeMs } } as any).toArray();
     return docs.map(doc => fromDoc(doc as AuthDoc<TRecord>));
+  }
+
+  /**
+   * Deletes every pending invite created before `createdBeforeMs` (unix ms) in ONE write, and returns how many. The filter
+   * is re-checked by the delete itself, so an invite that registers while the sweep runs is never deleted.
+   */
+  async deleteStalePendingInvites(createdBeforeMs: number): Promise<number> {
+    if (!isFiniteNumber(createdBeforeMs)) return 0;
+    const coll = await this.getColl();
+    const { deletedCount } = await coll.deleteMany({ ...PENDING_INVITE_FILTER, createdAt: { $lt: createdBeforeMs } } as any);
+    return deletedCount;
+  }
+
+  /**
+   * Deletes the record only while it is still a pending invite, in ONE conditional write, and resolves whether it did. A
+   * device that registered since it was listed is left alone. A key that is not a non-empty string deletes nothing.
+   */
+  async deletePendingInvite(requestId: string): Promise<boolean> {
+    if (!isAuthKey(requestId)) return false;
+    const coll = await this.getColl();
+    const { deletedCount } = await coll.deleteOne({ _id: requestId, ...PENDING_INVITE_FILTER } as any);
+    return deletedCount === 1;
   }
 
   /**

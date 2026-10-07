@@ -4,6 +4,7 @@ import { createAsyncContext } from '@anupheaus/nexus/server';
 import { setDb } from '../providers';
 import type { ServerDb } from '../providers';
 import type { AuthCollection as AuthCollectionType } from './AuthCollection';
+import { PENDING_INVITE_FILTER } from './pendingInviteFilter';
 
 const mockInsertOne = vi.fn();
 const mockFindOne = vi.fn();
@@ -126,7 +127,7 @@ describe('AuthCollection (base class)', () => {
     expect(mockDeleteOne).toHaveBeenCalledWith({ _id: 'req-1' });
   });
 
-  it('findStalePendingInvites: queries disabled invites without device or last connection', async () => {
+  it('findStalePendingInvites: queries pending invites (the shared filter) created before the cut-off', async () => {
     mockFind.mockReturnValue({
       toArray: vi.fn().mockResolvedValue([
         { _id: 'invite-1', sessionToken: 't1', userId: 'u1', deviceId: 'd1', isEnabled: false, createdAt: 1 },
@@ -134,12 +135,7 @@ describe('AuthCollection (base class)', () => {
     });
     const coll = new ConcreteCollection(makeFakeDb());
     const results = await coll.findStalePendingInvites(1_000);
-    expect(mockFind).toHaveBeenCalledWith({
-      isEnabled: false,
-      deviceDetails: { $exists: false },
-      lastConnectedAt: { $exists: false },
-      createdAt: { $lt: 1_000 },
-    });
+    expect(mockFind).toHaveBeenCalledWith({ ...PENDING_INVITE_FILTER, createdAt: { $lt: 1_000 } });
     expect(results).toHaveLength(1);
     expect(results[0]).toEqual(expect.objectContaining({ requestId: 'invite-1' }));
   });

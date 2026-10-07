@@ -11,7 +11,7 @@ import {
   useClientToServerSyncInstance,
   useDb,
 } from '../../../src/client/providers';
-import type { AuditOf, MXDBError, MXDBSyncRejection, QueryProps } from '../../../src/common';
+import type { AuditOf, MXDBError, MXDBSyncAmendment, MXDBSyncRejection, QueryProps } from '../../../src/common';
 import { E2E_DEFAULT_CLIENT_DB_PREFIX, E2E_SOCKET_API_NAME } from './mongoConstants';
 import type { E2eTestRecord } from './types';
 import { e2eTestCollection, type RunLogDetail, type RunLogEvent } from './types';
@@ -96,6 +96,16 @@ export interface SyncClientDriverRef {
   subscribeDistinct(field: keyof E2eTestRecord): Promise<void>;
   /** Latest result from the active distinct subscription (empty if not yet subscribed). */
   getDistinctSnapshot(): unknown[];
+  /** See {@link SyncClient.sendRawRequest}. */
+  sendRawRequest(eventName: string, payload: unknown): Promise<unknown>;
+  /** See {@link SyncClient.getReceivedEvents}. */
+  getReceivedEvents(): ReceivedSocketEvent[];
+}
+
+/** One event the server sent a client's socket, as it arrived. */
+export interface ReceivedSocketEvent {
+  eventName: string;
+  payload: unknown;
 }
 
 /**
@@ -116,6 +126,10 @@ const SyncClientDriverInner = forwardRef<SyncClientDriverRef, { clientId: string
     const getAllSubscribeLastRef = useRef<E2eTestRecord[] | undefined>(undefined);
     const querySnapshotRef = useRef<{ records: E2eTestRecord[]; total: number }>({ records: [], total: 0 });
     const distinctSnapshotRef = useRef<unknown[]>([]);
+    const receivedEventsRef = useRef<ReceivedSocketEvent[]>([]);
+    // Sockets already recorded into receivedEventsRef. Attached when a raw request is sent, not on mount: the socket
+    // may not exist yet when the driver first renders.
+    const recordedSocketsRef = useRef(new WeakSet<object>());
 
     // Instrument socket emits and important socket events for test-owned logging.
     useEffect(() => {
@@ -223,8 +237,18 @@ const SyncClientDriverInner = forwardRef<SyncClientDriverRef, { clientId: string
           );
         },
         getDistinctSnapshot: () => distinctSnapshotRef.current,
+        sendRawRequest(eventName: string, payload: unknown) {
+          const socket = getSocket();
+          if (socket == null) throw new Error(`Client ${clientId}: no socket to send "${eventName}" on`);
+          if (!recordedSocketsRef.current.has(socket)) {
+            recordedSocketsRef.current.add(socket);
+            socket.onAny((incomingEventName: string, incomingPayload: unknown) => { receivedEventsRef.current.push({ eventName: incomingEventName, payload: incomingPayload }); });
+          }
+          return socket.emitWithAck(eventName, payload);
+        },
+        getReceivedEvents: () => [...receivedEventsRef.current],
       }),
-      [get, getAll, query, distinct, upsert, collectionRemove, disconnect, connect, getIsConnected, isSynchronising, c2sInstance, db],
+      [get, getAll, query, distinct, upsert, collectionRemove, disconnect, connect, getIsConnected, getSocket, clientId, isSynchronising, c2sInstance, db],
     );
 
     return null;
@@ -252,14 +276,29 @@ export interface SyncClient {
   getDistinctSnapshot(): unknown[];
   /** Every rejection the server reported to this client (`onSyncRejected`), oldest first. */
   getSyncRejections(): MXDBSyncRejection[];
+  /** Every amendment note the server reported to this client (`onSyncAmended`), oldest first. */
+  getSyncAmendments(): MXDBSyncAmendment[];
   /** Every error the sync engine reported to this client (`onError`), oldest first. */
   getSyncErrors(): MXDBError[];
+  /**
+   * Sends `payload` as the raw socket event `eventName` (e.g. `nexus.actions.mxdbGetAction`) and resolves with the
+   * server's acknowledgement, `{ error }` included: what a hand-crafted client sends, past every client-side check.
+   */
+  sendRawRequest(eventName: string, payload: unknown): Promise<unknown>;
+  /** Every event the server has sent this client's socket since its first {@link sendRawRequest}, oldest first. */
+  getReceivedEvents(): ReceivedSocketEvent[];
   unmount(): void;
 }
 
 export interface CreateSyncClientOptions {
   /** Override IndexedDB / DbsProvider database name (default: `mxdb-e2e-client-${clientId}`). */
   dbName?: string;
+  /**
+   * Awaited after the dev sign-in route has issued this client's session and before its socket connects. The dev
+   * route stores the session in the server's default database, so a suite that routes connections to a tenant
+   * database (`resolveConnectionDb`) copies it there in this hook.
+   */
+  afterDevSignIn?(userId: string): Promise<void>;
   /**
    * Pre-generated 32-byte AES-256-GCM key for the test SQLite database.
    * Must be provided — DbsProvider requires an encryption key and unencrypted
@@ -293,6 +332,8 @@ export function createSyncClient(
   let sessionToken: string | undefined;
   const syncRejections: MXDBSyncRejection[] = [];
   const recordSyncRejections = (rejections: MXDBSyncRejection[]) => { syncRejections.push(...rejections); };
+  const syncAmendments: MXDBSyncAmendment[] = [];
+  const recordSyncAmendments = (amendments: MXDBSyncAmendment[]) => { syncAmendments.push(...amendments); };
   const syncErrors: MXDBError[] = [];
   const recordSyncError = (error: MXDBError) => { syncErrors.push(error); };
 
@@ -308,7 +349,10 @@ export function createSyncClient(
       await waitUntilAsync(async () => getIsConnected(), `Client ${clientId} socket connected`, 30_000);
       return;
     }
-    sessionToken ??= await fetchDevSessionToken(serverUrl, clientId);
+    if (sessionToken == null) {
+      sessionToken = await fetchDevSessionToken(serverUrl, clientId);
+      await options.afterDevSignIn?.(clientId);
+    }
 
     container = document.createElement('div');
     document.body.appendChild(container);
@@ -323,7 +367,7 @@ export function createSyncClient(
       <LoggerProvider logger={reactTreeLogger} loggerName="MXDB">
         <Nexus host={serverUrl} name={socketName} auth={sessionToken != null ? { sessionToken } : undefined}>
           <DbsProvider name={dbName} collections={[e2eTestCollection]} encryptionKey={encryptionKey} logger={reactTreeLogger.createSubLogger('db')}>
-            <ClientToServerSyncProvider collections={[e2eTestCollection]} onSyncRejected={recordSyncRejections} onError={recordSyncError}>
+            <ClientToServerSyncProvider collections={[e2eTestCollection]} onSyncRejected={recordSyncRejections} onSyncAmended={recordSyncAmendments} onError={recordSyncError}>
               <ClientToServerProvider />
               <ServerToClientProvider />
               <SyncClientDriverInner ref={saveDriver} clientId={clientId} log={runLogger.log} />
@@ -433,8 +477,21 @@ export function createSyncClient(
     return [...syncRejections];
   }
 
+  function getSyncAmendments(): MXDBSyncAmendment[] {
+    return [...syncAmendments];
+  }
+
   function getSyncErrors(): MXDBError[] {
     return [...syncErrors];
+  }
+
+  function sendRawRequest(eventName: string, payload: unknown): Promise<unknown> {
+    if (!driver) throw new Error(`Client ${clientId}: driver not ready (call connect first)`);
+    return driver.sendRawRequest(eventName, payload);
+  }
+
+  function getReceivedEvents(): ReceivedSocketEvent[] {
+    return driver ? driver.getReceivedEvents() : [];
   }
 
   function unmount() {
@@ -467,7 +524,10 @@ export function createSyncClient(
     subscribeDistinct,
     getDistinctSnapshot,
     getSyncRejections,
+    getSyncAmendments,
     getSyncErrors,
+    sendRawRequest,
+    getReceivedEvents,
     unmount,
   };
 }

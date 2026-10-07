@@ -337,7 +337,8 @@ export class ServerDbCollection<RecordType extends Record = Record> {
       if (records.length === 0) return;
     }
     // Only records that are actually changing reach the hook; it may amend them before they are written.
-    records = await runBeforeUpsertHook({ collection: this.#collection, records, existingRecords });
+    // A server-side write has no client to tell, so the hook's amendment notes are not used here.
+    ({ records } = await runBeforeUpsertHook({ collection: this.#collection, records, existingRecords }));
     const docs = await Promise.all(records.map(record => dbUtils.serializeWithMeta(record)));
     const result = await collection.bulkWrite(records.map((record, index) => ({ replaceOne: { replacement: docs[index]!, filter: { _id: record.id as any }, upsert: true } })));
     if (!result.isOk()) throw new InternalError('Bulk write failed - result is not as expected');

@@ -7,7 +7,7 @@ import type { AuditEntry, AuditOf } from '../../common/auditor';
 import { hashRecord } from '../../common/auditor/hash';
 import type { ClientDispatcherRequest, MXDBRecordCursors, MXDBSyncEngineResponse } from '../../common/sync-engine';
 import { ServerToClientSynchronisation } from '../ServerToClientSynchronisation';
-import { extendCollection, type OnDeletePayload, type OnUpsertPayload } from '../collections/extendCollection';
+import { extendCollection, type OnBeforeUpsertResult, type OnDeletePayload, type OnUpsertPayload } from '../collections/extendCollection';
 
 /**
  * End-to-end contract of the C2S sync handler with the REAL ServerReceiver, ServerDispatcher and
@@ -267,7 +267,7 @@ const HOOKED = hookedItemsCollection.name;
 
 // The extension registry cannot be cleared, so the collection's hooks delegate to per-test implementations.
 const hooks = {
-  onBeforeUpsert: vi.fn<(payload: OnUpsertPayload<Item>) => Promise<void>>(),
+  onBeforeUpsert: vi.fn<(payload: OnUpsertPayload<Item>) => Promise<OnBeforeUpsertResult>>(),
   onBeforeDelete: vi.fn<(payload: OnDeletePayload) => Promise<void>>(),
 };
 extendCollection(hookedItemsCollection, {
@@ -355,6 +355,67 @@ describe('handleClientToServerSync — collection before-write hooks', () => {
       collectionName: HOOKED,
       records: [{ record: amendedByHook, lastAuditEntryId, hash: await hashRecord(amendedByHook) }],
     }]]);
+  });
+
+  describe('an amendment the hook gives a note for', () => {
+    const COLOUR_NOTE = 'Only a manager can change the colour, so it was put back.';
+    const resetColourWithNote = (): void => {
+      hooks.onBeforeUpsert.mockImplementation(async ({ records }) => {
+        for (const record of records) record.colour = 'unset';
+        return records.map(({ id }) => ({ id, note: COLOUR_NOTE }));
+      });
+    };
+
+    it('is reported in the response, beside the acknowledgement, so the client can tell the user', async () => {
+      resetColourWithNote();
+
+      const response = await syncClientRename();
+
+      expect(response).toEqual([{ collectionName: HOOKED, successfulRecordIds: ['i1'], amendedRecords: [{ id: 'i1', note: COLOUR_NOTE }] }]);
+    });
+
+    it('still saves the rest of the change and pushes the amended record back', async () => {
+      resetColourWithNote();
+
+      await syncClientRename();
+
+      expect([harness.collection.records.get('i1'), harness.emitted.length]).toEqual([amendedByHook, 1]);
+    });
+
+    it('is not reported when the hook amends silently, without a note', async () => {
+      resetColourOnRename();
+
+      const response = await syncClientRename();
+
+      expect(response).toEqual([{ collectionName: HOOKED, successfulRecordIds: ['i1'] }]);
+    });
+
+    it('is not reported when the hook gives a note but leaves the record as it was', async () => {
+      hooks.onBeforeUpsert.mockResolvedValue([{ id: 'i1', note: COLOUR_NOTE }]);
+
+      const response = await syncClientRename();
+
+      expect(response).toEqual([{ collectionName: HOOKED, successfulRecordIds: ['i1'] }]);
+    });
+
+    it('is not reported for a record other than the one the hook was run for', async () => {
+      hooks.onBeforeUpsert.mockImplementation(async ({ records }) => {
+        for (const record of records) record.colour = 'unset';
+        return [{ id: 'someone-else', note: COLOUR_NOTE }];
+      });
+
+      const response = await syncClientRename();
+
+      expect(response).toEqual([{ collectionName: HOOKED, successfulRecordIds: ['i1'] }]);
+    });
+
+    it('is not reported when the hook then throws, because the change is rejected instead', async () => {
+      hooks.onBeforeUpsert.mockRejectedValue(new Error('refused'));
+
+      const response = await syncClientRename();
+
+      expect(response[0]!.amendedRecords).toBeUndefined();
+    });
   });
 
   it('orders the amendment after the client\'s change even when the client\'s clock runs ahead', async () => {
