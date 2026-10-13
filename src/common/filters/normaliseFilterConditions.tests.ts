@@ -7,7 +7,7 @@ import { generateGarbageCases } from './filterFuzzCases.fixture';
 
 // Vision sc-2518: a condition whose value is missing (`{ leadId: undefined }`) used to be dropped, so a screen with a
 // missing key read every record in the collection. It now means "the field is missing", written as `null` — the value
-// both engines (the device's matchesFilter and MongoDB) read as "null or missing", and which survives the JSON trip to the server.
+// both engines (the device's createFilterMatcher and MongoDB) read as "null or missing", and which survives the JSON trip to the server.
 // Any node it cannot read makes the WHOLE query match nothing (`{ id: { $in: [] } }`), wherever it sits. What each
 // engine then returns is pinned by filterOperandCases.fixture.ts and filterFuzzCases.fixture.ts on device and server.
 
@@ -132,13 +132,28 @@ describe('normaliseFilterConditions', () => {
     expect(readableCount).toBeLessThan(360);
   });
 
-  it('leaves dates and DateTimes as values', () => {
+  it('writes every instant as a DateTime: a Date, a DateTime and ISO date-time text (as the transport revives them)', () => {
     const date = new Date('2026-01-01T00:00:00Z');
     const dateTime = DateTime.fromISO('2026-01-01T00:00:00Z');
-    const result = normalise({ a: date, b: dateTime, d: { $gt: dateTime } }) as { [key: string]: unknown };
-    expect(result.a).toBe(date);
+    const iso = '2026-01-01T00:00:00.000Z';
+    const result = normalise({ a: date, b: dateTime, c: iso, d: { $gt: iso }, e: { $in: [iso, 'x'] }, f: [date] }) as { [key: string]: unknown };
+    const millis = date.getTime();
+    expect(DateTime.isDateTime(result.a) && result.a.toMillis()).toBe(millis);
     expect(result.b).toBe(dateTime);
-    expect((result.d as { $gt: DateTime }).$gt).toBe(dateTime);
+    expect(DateTime.isDateTime(result.c) && result.c.toMillis()).toBe(millis);
+    expect(((result.d as { $gt: DateTime }).$gt).toMillis()).toBe(millis);
+    const [inIso, inText] = (result.e as { $in: unknown[] }).$in;
+    expect([(inIso as DateTime).toMillis(), inText]).toEqual([millis, 'x']);
+    expect(((result.f as { $in: DateTime[] }).$in[0]!).toMillis()).toBe(millis);
+  });
+
+  it('keeps date-only text as text, as the transport does', () => {
+    expect(normalise({ day: '2026-01-01' })).toEqual({ day: '2026-01-01' });
+  });
+
+  it('reads date-time text that is not a valid instant, and a $regex the transport would read as a date-time, as nothing', () => {
+    expect(normalise({ when: '2026-13-45T99:00:00Z' })).toEqual(MATCH_NOTHING);
+    expect(normalise({ when: { $regex: '2026-01-01T00:00:00Z' } })).toEqual(MATCH_NOTHING);
   });
 
   it('never changes the filters it was given', () => {

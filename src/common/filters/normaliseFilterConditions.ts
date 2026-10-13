@@ -53,10 +53,25 @@ function isScalar(value: unknown): boolean {
   return is.string(value) || is.boolean(value);
 }
 
+/**
+ * A single value in its canonical form. ONE rule for dates: a Date, a DateTime and ISO date-time text are all an
+ * instant, written as a DateTime. That is exactly what the transport to the server does (`to.deserialise` revives any
+ * text `Date.isIsoString` accepts, and a Date, as a DateTime), so the device and the server compare the same instant
+ * whether a filter is run where it was written or sent over the socket. Date-only text (`'2026-01-01'`) stays text,
+ * as the transport leaves it.
+ */
+function normaliseScalar(value: unknown, operator: string): unknown {
+  if (!isScalar(value)) return unreadable(`${operator} needs a single value`);
+  if (value instanceof Date) return DateTime.fromJSDate(value);
+  if (!is.string(value) || !Date.isIsoString(value)) return value;
+  const instant = DateTime.fromISO(value);
+  return instant.isValid ? instant : unreadable(`${operator} has date-time text that is not a valid instant: ${value}`);
+}
+
 /** A list element: a scalar, or a missing value (`undefined` / `null`, read as "the field is missing"). */
 function normaliseListElement(value: unknown): unknown {
   if (value == null) return null;
-  return isScalar(value) ? value : unreadable('a list may only hold single values');
+  return normaliseScalar(value, 'a list');
 }
 
 function normaliseList(operand: unknown, { allowEmpty }: { allowEmpty: boolean }): unknown[] {
@@ -69,7 +84,7 @@ function normaliseList(operand: unknown, { allowEmpty }: { allowEmpty: boolean }
 
 function normaliseOperand(operator: string, operand: unknown): unknown {
   if (operand == null) return unreadable(`${operator} has no operand`);
-  if (COMPARISON_OPERATORS.has(operator)) return isScalar(operand) ? operand : unreadable(`${operator} needs a single value`);
+  if (COMPARISON_OPERATORS.has(operator)) return normaliseScalar(operand, operator);
   if (LIST_OPERATORS.has(operator)) return normaliseList(operand, { allowEmpty: operator !== '$all' });
   if (TEXT_OPERATORS.has(operator)) return is.string(operand) ? operand : unreadable(`${operator} needs text`);
   switch (operator) {
@@ -85,7 +100,10 @@ function normaliseOperand(operator: string, operand: unknown): unknown {
 /** A `$regex` operand rewritten to its one canonical text (literalPattern.ts), which both engines then read. */
 function normalisePattern(operand: unknown): string {
   const pattern = is.string(operand) ? parseLiteralPattern(operand) : undefined;
-  return pattern == null ? unreadable('$regex needs a literal pattern') : toCanonicalPattern(pattern);
+  if (pattern == null) return unreadable('$regex needs a literal pattern');
+  const canonical = toCanonicalPattern(pattern);
+  // The transport would revive date-time text into a DateTime, which is no pattern at all on the server.
+  return Date.isIsoString(canonical) ? unreadable('$regex text that the transport reads as a date-time') : canonical;
 }
 
 /** `$not` negates an operator object; anything else could negate "nothing" into "everything". */
@@ -117,7 +135,7 @@ function normaliseFieldValue(value: unknown): unknown {
   if (value === undefined || value === null) return null; // "the field is missing"
   // Shorthand for $in. Written out as $in for BOTH engines: MongoDB alone would read a bare list as "equals this list".
   if (Array.isArray(value)) return { $in: normaliseList(value, { allowEmpty: true }) };
-  if (isScalar(value)) return value;
+  if (isScalar(value)) return normaliseScalar(value, 'a field');
   if (!is.plainObject<FilterObject>(value)) return unreadable('a field can only be compared with a single value, a list or conditions');
   if (Object.keys(value).length === 0) return unreadable('a field condition with nothing in it');
   return isOperatorObject(value) ? normaliseOperators(value) : normaliseFilter(value, { allowEmpty: false });
@@ -145,12 +163,13 @@ function normaliseFilter(filter: FilterObject, { allowEmpty }: { allowEmpty: boo
 
 /**
  * The one place MXDB reads a filter, used by the client before a request leaves the hook, by the device's evaluator
- * (`matchesFilter`) and by the server. It returns the filter's ONE canonical form, and both engines evaluate only
+ * (`createFilterMatcher`) and by the server. It returns the filter's ONE canonical form, and both engines evaluate only
  * that form, so no shape can mean one thing on the device and another on the server:
  *
  * - a bare list (`{ category: ['a', 'b'] }`) is written as `{ $in: [...] }` (MongoDB alone would read the bare list as
  *   "equals this list");
- * - a `$regex` is written as its canonical literal pattern (literalPattern.ts).
+ * - a `$regex` is written as its canonical literal pattern (literalPattern.ts);
+ * - a Date, a DateTime and ISO date-time text are all written as a DateTime, as the transport to the server does.
  *
  * First the WHITELIST (`isReadableFilter`) runs on the raw filter: a filter not built only from MXDB's small grammar
  * — an unknown operator, a wrong operand type, a non-object filter, a bad field name, a regex that is not a literal

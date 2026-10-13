@@ -2,7 +2,7 @@ import { DateTime } from 'luxon';
 import { DataSorts } from '@anupheaus/common';
 import type { DataFilters, DataRequest, Record as EntityRecord } from '@anupheaus/common';
 import type { DistinctProps, DistinctResults, QueryResults } from '../../common';
-import { matchesFilter, normaliseFilterConditions } from '../../common/filters';
+import { createFilterMatcher, normaliseFilterConditions } from '../../common/filters';
 
 /** Reduce a value to something orderable, matching how the SQL path orders json_extract results. */
 function toComparable(value: unknown): number | string | boolean | null {
@@ -36,12 +36,12 @@ function applySorts<T extends EntityRecord>(records: T[], sorts: DataRequest<T>[
 
 /**
  * The records meeting `filters` (original objects, not copies). This is the device's only filter evaluation: the
- * filters are made canonical once (`normaliseFilterConditions`: whitelist, bare lists as $in) and read by
- * `matchesFilter`, which reads them exactly as MongoDB does on the server.
+ * filters are made canonical once (`normaliseFilterConditions`) and compiled once (`createFilterMatcher`, which
+ * reads them exactly as MongoDB does on the server), then run per record.
  */
 export function filterRecordsInMemory<T extends EntityRecord>(records: T[], filters: DataFilters<T> | undefined): T[] {
-  const canonical = normaliseFilterConditions(filters);
-  return records.filter(record => matchesFilter(record, canonical));
+  const matches = createFilterMatcher(normaliseFilterConditions(filters));
+  return records.filter(matches);
 }
 
 /** Filter/sort/paginate records entirely in memory, with no worker round-trip. */

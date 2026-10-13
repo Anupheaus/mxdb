@@ -10,7 +10,7 @@ import { to, type DataFilters, type Logger } from '@anupheaus/common';
 import { defineCollection } from '../../../common/defineCollection';
 import { normaliseFilterConditions } from '../../../common/filters';
 import {
-  DIFFERENTIAL_NAMED_CASES, DIFFERENTIAL_RECORDS, generateDifferentialCases, type DifferentialRecord,
+  DIFFERENTIAL_CASES_PER_SEED, DIFFERENTIAL_NAMED_CASES, DIFFERENTIAL_RECORDS, DIFFERENTIAL_SEEDS, generateDifferentialCases, type DifferentialRecord,
 } from '../../../common/filters/filterDifferentialCases.fixture';
 import { SqliteWorkerClient } from '../../../client/db-worker/SqliteWorkerClient';
 import { buildTableDDL } from '../../../client/db-worker/buildTableDDL';
@@ -55,6 +55,13 @@ afterAll(async () => {
 
 const sorted = (ids: string[]) => [...ids].sort();
 
+/** How many filters run against MongoDB at once. */
+const DIFFERENTIAL_BATCH_SIZE = 200;
+/** How many differing filters a failure prints in full. */
+const REPORTED_DIFFERENCES = 15;
+/** One seed's filters against an in-memory mongod, with room for a loaded CI runner. */
+const DIFFERENTIAL_SEED_TIMEOUT = 240_000;
+
 async function readOnBothEngines(filters: DataFilters<DifferentialRecord>) {
   const deviceIds = sorted((await device.query({ filters })).records.map(({ id }) => id));
   const serverIds = sorted((await server.query({ filters })).data.ids());
@@ -70,10 +77,21 @@ describe('device and server read a whitelisted filter the same way', () => {
     expect({ deviceIds, sentIds }).toEqual({ deviceIds: serverIds, sentIds: serverIds });
   });
 
-  it.each(generateDifferentialCases())('%s', async (_label, filters) => {
-    const { deviceIds, serverIds, sentIds } = await readOnBothEngines(filters);
-    expect({ deviceIds, sentIds }).toEqual({ deviceIds: serverIds, sentIds: serverIds });
-  });
+  // 20,000 random filters over several seeds. One test per seed, run a batch at a time, reporting every filter that
+  // reads differently (the first few in full) rather than stopping at the first.
+  it.each(DIFFERENTIAL_SEEDS)(`seed %i: ${DIFFERENTIAL_CASES_PER_SEED} random filters read the same on device and server`, async seed => {
+    const differences: string[] = [];
+    const cases = generateDifferentialCases(seed);
+    for (let start = 0; start < cases.length; start += DIFFERENTIAL_BATCH_SIZE) {
+      const batch = cases.slice(start, start + DIFFERENTIAL_BATCH_SIZE);
+      const results = await Promise.all(batch.map(readOnBothEngines));
+      results.forEach(({ deviceIds, serverIds, sentIds }, offset) => {
+        if (deviceIds.join() === serverIds.join() && sentIds.join() === serverIds.join()) return;
+        differences.push(`${to.serialise(batch[offset])} → device ${deviceIds.join()} | server ${serverIds.join()} | sent ${sentIds.join()}`);
+      });
+    }
+    expect({ count: differences.length, first: differences.slice(0, REPORTED_DIFFERENCES) }).toEqual({ count: 0, first: [] });
+  }, DIFFERENTIAL_SEED_TIMEOUT);
 
   it('answers a catastrophic-looking pattern at once on the device (it is not a pattern MXDB accepts)', async () => {
     await device.upsert({ id: 'slow', name: `${'a'.repeat(40)}!` });
