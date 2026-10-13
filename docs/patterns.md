@@ -64,6 +64,56 @@ lists it was most of the CPU the page spent (Vision's Pipeline, 29 Sep 2026: abo
   result is not delivered again. Anything that must show a new zone reads it from somewhere else (a setting, the user's
   locale) — never from a record's DateTime having been re-zoned.
 
+### Filters are whitelisted; anything else matches nothing
+Every filter is checked against a small grammar before any engine sees it (`src/common/filters/isReadableFilter.ts`):
+dotted field paths (`address.city`, no array indexes), `$and` / `$or` / `$nor`, `$eq` / `$ne` / `$gt` / `$gte` / `$lt` /
+`$lte` with a single value, `$in` / `$nin` / `$all` with a list, `$exists`, `$regex` with a **literal pattern**
+(`src/common/filters/literalPattern.ts`: plain text with optional `^` / `$` anchors and backslash-escaped
+metacharacters, at most 128 characters, no flags), `$not`. A filter using anything else — `$elemMatch`, `$size`,
+`$type`, `$where`, a regex with classes, groups, quantifiers, alternation, `.`, `\d` / `\p{…}` / `\A` / `\Z` or flags, a
+RegExp, a nested object as a field value (`{ address: { city } }`: write `'address.city'`), a non-object filter —
+returns **nothing**, on the device and the server alike. Write filters only from the grammar; to support a new
+operator, add it to the whitelist, to `createFilterMatcher`, and to the differential test.
+
+### One canonical filter, one device evaluator
+`normaliseFilterConditions` returns each readable filter in ONE canonical form, and both engines evaluate only that form:
+- a bare list (`{ category: ['a', 'b'] }`) becomes `{ $in: [...] }`;
+- a `$regex` becomes its canonical literal text;
+- **dates:** a Date, a DateTime and ISO date-time text (`'2026-01-01T00:00:00Z'`, anything `Date.isIsoString` accepts)
+  all become a DateTime, an instant compared by its milliseconds. This is exactly what the transport does on the way
+  to the server, so a filter means the same whether it runs where it was written or is sent. Date-only text
+  (`'2026-01-01'`) stays text. A record field holding text is text: store dates as DateTimes.
+
+On the device every query and distinct chooses its records in memory with `createFilterMatcher` (`src/common/filters`),
+compiled once per query (`$in` / `$nin` lists become sets), which reads a filter as MongoDB does. The rules live in that
+one module: comparison within one type; a list at the end of a path matched by itself and by its elements; a list in the
+middle of a path walked into its objects only, its plain values and inner lists skipped (neither matching nor "missing":
+`{ 'list.id': null }` does not match `list: [1, 2]`); a plain value mid-path is "missing"; `$ne` / `$nin` / `$not` /
+`$nor` as exact negations, so a missing field counts as "not". SQLite never evaluates a filter.
+
+`ServerDbCollection.differential.tests.ts` runs 20,000 random filters from the grammar (four seeds; paths through lists
+of values, lists of lists and mixed lists; dates and ISO text; large `$in` lists) through both engines on the same
+records and requires identical results. `queryRecordsInMemory.performance.tests.ts` holds the evaluator within 1.5x of
+master's old fast path, and a large `$in` close to a bare Set lookup (Vision sc-2518).
+
+### An empty or broken condition fails closed, never "no condition"
+`{ filters: { leadId: undefined } }` matches the records with **no** `leadId`, on the device, in live lists, and on the server — the same as `{ leadId: null }`. Any node MXDB cannot read makes the **whole
+query** match nothing, wherever it sits (under `$and`, `$or`, `$nor`, `$not` or `$elemMatch`): an operator whose operand
+is missing, `null`, of the wrong type or empty (`{ id: { $in: contact?.addressIds } }` with no contact,
+`$gte: undefined`, `$eq: null`, `$exists: 'yes'`, `$all: []`, `$elemMatch: {}`), an empty condition (`{ value: {} }`),
+an operator MXDB does not know (`$where`, `$type`), a `$or` / `$and` / `$nor` without a list of filters, operators
+and fields mixed in one condition. These used to be dropped, so a screen whose key was missing read every record in
+the collection, and the server could not tell it from a deliberate read of everything (Vision sc-2518). One function
+reads every filter for client and server (`src/common/filters/normaliseFilterConditions.ts`);
+`filterOperandCases.fixture.ts` pins every operator on both, and `filterFuzzCases.fixture.ts` fuzzes broken nodes at
+every depth.
+
+- A filter with no conditions at all (`undefined` or `{}`) still reads everything.
+- Want "any value"? Leave the key out of the filter. Want "unbounded"? Leave the bound out. Want "missing"? Write
+  `{ field: null }` (or leave it undefined); `{ $eq: null }` matches nothing.
+- Keep disabling a read whose key is missing (`disable: !hasKey`) where loading nothing is the point: it saves the
+  round trip and says what you mean.
+
 ### Delivered records are read-only
 Records a live request delivers are the collection's own objects, and a record passed to `upsert` becomes one. Treat
 both as immutable: to change a record, copy it (`{ ...record, name }`) and upsert the copy. Two things rely on it — the

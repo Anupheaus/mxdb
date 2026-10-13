@@ -636,7 +636,8 @@ describe('DbCollection.query and distinct', () => {
   it('returns every record when the SQLite query has no filter or sort', async () => {
     const collection = await createSeededCollection();
 
-    const { records, total } = await collection.query({ filters: { name: { $like: '%' } } });
+    // $regex is answered by SQLite, not the in-memory path; an empty pattern matches every name.
+    const { records, total } = await collection.query({ filters: { name: { $regex: '' } } });
 
     expect([records.map(({ id }) => id).sort(), total]).toEqual([['a', 'b', 'c', 'd'], 4]);
   });
@@ -660,7 +661,7 @@ describe('DbCollection.query and distinct', () => {
   it('returns distinct values from SQLite with no filter or sort when the filter needs SQLite', async () => {
     const collection = await createSeededCollection();
 
-    const values = await collection.distinct({ field: 'name', filters: { name: { $like: '%o%' } } });
+    const values = await collection.distinct({ field: 'name', filters: { name: { $regex: 'o' } } });
 
     expect([...values].sort()).toEqual(['Bob', 'Carol']);
   });
