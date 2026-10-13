@@ -10,7 +10,7 @@ import { AuditEntryType } from '../../../common/auditor/auditor-models';
 import { DateTime } from 'luxon';
 import { isReadableFilter, normaliseFilterConditions } from '../../../common/filters';
 import { OPERAND_CASE_RECORDS, operandCasesFor, type OperandCaseRecord } from '../../../common/filters/filterOperandCases.fixture';
-import { generateFuzzCases, generateGarbageCases, withMissingAsNull } from '../../../common/filters/filterFuzzCases.fixture';
+import { expectedCanonicalFilter, generateFuzzCases, generateGarbageCases } from '../../../common/filters/filterFuzzCases.fixture';
 
 // The acting user comes from the nexus socket/auth context (external); stub it so audit
 // attribution can be exercised both with and without an authenticated user.
@@ -696,7 +696,7 @@ describe('ServerDbCollection', () => {
           expect(await operandCol.queryIds(garbage as never)).toEqual([]);
           return;
         }
-        if (garbage != null) expect(normaliseFilterConditions(garbage as never)).toEqual(withMissingAsNull(garbage));
+        if (garbage != null) expect(normaliseFilterConditions(garbage as never)).toEqual(expectedCanonicalFilter(garbage as never));
       });
 
       // Random nested queries with one broken node at every depth: never more than the same query with the node

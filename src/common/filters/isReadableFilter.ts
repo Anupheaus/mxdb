@@ -1,5 +1,6 @@
 import { is } from '@anupheaus/common';
 import { DateTime } from 'luxon';
+import { parseLiteralPattern } from './literalPattern';
 
 // ─── The whitelist ────────────────────────────────────────────────────────────
 //
@@ -9,13 +10,15 @@ import { DateTime } from 'luxon';
 //   filter      := {} | { (logical | fieldPath): … }          (a plain object; {} means "no condition")
 //   logical     := $and | $or | $nor  →  a non-empty list of filters
 //   fieldPath   := identifier ( "." identifier )*             (never __proto__ / constructor / prototype)
-//   field value := missing (undefined / null) | single value | list of list values (shorthand for $in)
+//   field value := missing (undefined / null) | single value | list of list values (shorthand for $in — rewritten
+//                  to { $in: … } before either engine sees it, since MongoDB alone would read it as "equals this list")
 //                | { operator: operand, … }                    (non-empty; every key an operator below)
 //   operators   := $eq $ne $gt $gte $lt $lte  → a single value
 //                  $in $nin                   → a list of list values (may be empty)
 //                  $all                       → a non-empty list of list values
 //                  $exists                    → true or false
-//                  $regex                     → a pattern string that compiles (no flags)
+//                  $regex                     → a literal pattern string (literalPattern.ts: text with optional
+//                                               ^ / $ anchors, no flags, at most 128 characters)
 //                  $not                       → a non-empty operator object (any of the operators above)
 //   single value := text | a finite number | true / false | a valid Date | a valid luxon DateTime
 //   list value   := a single value | missing (undefined / null, read as "the field is missing")
@@ -59,14 +62,9 @@ function isList(value: unknown, { allowEmpty }: { allowEmpty: boolean }): boolea
   return Array.isArray(value) && (allowEmpty || value.length > 0) && value.every(isListValue);
 }
 
-function isCompilingPattern(value: unknown): boolean {
-  if (!is.string(value)) return false;
-  try {
-    new RegExp(value);
-    return true;
-  } catch {
-    return false; // a pattern that does not compile is not readable — MongoDB would refuse it too
-  }
+/** A literal pattern (literalPattern.ts): the one `$regex` shape both engines read alike, in linear time. */
+function isLiteralPattern(value: unknown): boolean {
+  return is.string(value) && parseLiteralPattern(value) != null;
 }
 
 function isPlainObject(value: unknown): value is { [key: string]: unknown } {
@@ -85,7 +83,7 @@ function isReadableOperand(operator: string, operand: unknown, depth: number): b
   switch (operator) {
     case '$all': return isList(operand, { allowEmpty: false });
     case '$exists': return is.boolean(operand);
-    case '$regex': return isCompilingPattern(operand);
+    case '$regex': return isLiteralPattern(operand);
     case '$not': return isOperatorObject(operand, depth + 1);
     default: return false;
   }

@@ -67,15 +67,25 @@ lists it was most of the CPU the page spent (Vision's Pipeline, 29 Sep 2026: abo
 ### Filters are whitelisted; anything else matches nothing
 Every filter is checked against a small grammar before any engine sees it (`src/common/filters/isReadableFilter.ts`):
 dotted field paths (`address.city`, no array indexes), `$and` / `$or` / `$nor`, `$eq` / `$ne` / `$gt` / `$gte` / `$lt` /
-`$lte` with a single value, `$in` / `$nin` / `$all` with a list, `$exists`, `$regex` with a pattern string (no flags),
-`$not`. A filter using anything else — `$elemMatch`, `$size`, `$type`, `$where`, regex flags, a RegExp, a nested object
-as a field value (`{ address: { city } }`: write `'address.city'`), a non-object filter — returns **nothing**, on the
-device and the server alike. Write filters only from the grammar; to support a new operator, add it to the whitelist
-with a test on both engines.
+`$lte` with a single value, `$in` / `$nin` / `$all` with a list, `$exists`, `$regex` with a **literal pattern**
+(`src/common/filters/literalPattern.ts`: plain text with optional `^` / `$` anchors and backslash-escaped
+metacharacters, at most 128 characters, no flags), `$not`. A filter using anything else — `$elemMatch`, `$size`,
+`$type`, `$where`, a regex with classes, groups, quantifiers, alternation, `.`, `\d` / `\p{…}` / `\A` / `\Z` or flags, a
+RegExp, a nested object as a field value (`{ address: { city } }`: write `'address.city'`), a non-object filter —
+returns **nothing**, on the device and the server alike. Write filters only from the grammar; to support a new
+operator, add it to the whitelist, to `matchesFilter`, and to the differential test.
+
+### One canonical filter, one device evaluator
+`normaliseFilterConditions` returns each readable filter in ONE canonical form — a bare list (`{ category: ['a', 'b'] }`)
+becomes `{ $in: [...] }`, a `$regex` becomes its canonical literal text — and both engines evaluate only that form. On the
+device every query and distinct chooses its records in memory with `matchesFilter` (`src/common/filters`), which reads
+a filter as MongoDB does (type-bracketed comparison, a list field matched by its elements, paths through lists of
+objects, `$ne` / `$nin` / `$not` / `$nor` as exact negations so a missing field counts as "not"); SQLite never evaluates
+a filter. `ServerDbCollection.differential.tests.ts` runs 1,000 random filters from the grammar through both engines on
+the same records and requires identical results (Vision sc-2518).
 
 ### An empty or broken condition fails closed, never "no condition"
-`{ filters: { leadId: undefined } }` matches the records with **no** `leadId`, on the device (SQLite and the in-memory
-path), in live lists, and on the server — the same as `{ leadId: null }`. Any node MXDB cannot read makes the **whole
+`{ filters: { leadId: undefined } }` matches the records with **no** `leadId`, on the device, in live lists, and on the server — the same as `{ leadId: null }`. Any node MXDB cannot read makes the **whole
 query** match nothing, wherever it sits (under `$and`, `$or`, `$nor`, `$not` or `$elemMatch`): an operator whose operand
 is missing, `null`, of the wrong type or empty (`{ id: { $in: contact?.addressIds } }` with no contact,
 `$gte: undefined`, `$eq: null`, `$exists: 'yes'`, `$all: []`, `$elemMatch: {}`), an empty condition (`{ value: {} }`),

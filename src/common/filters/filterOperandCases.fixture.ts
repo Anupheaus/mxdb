@@ -1,7 +1,7 @@
 import type { DataFilters, Record } from '@anupheaus/common';
 
-// Test-only: one table of filter conditions with an empty or broken operand, run against the device (SQLite and the
-// in-memory path) and the server (MongoDB). Every operand that is missing, null or of the wrong type must match
+// Test-only: one table of filter conditions with an empty or broken operand, run against the device (DbCollection and
+// its in-memory evaluator) and the server (MongoDB). Every operand that is missing, null or of the wrong type must match
 // NOTHING on both — never be dropped, which reads every record (Vision sc-2518).
 
 export interface OperandCaseRecord extends Record {
@@ -31,11 +31,6 @@ export interface OperandCase {
   filters: DataFilters<OperandCaseRecord>;
   expectedIds: string[];
   engines: OperandCaseEngines;
-  /**
-   * What the device's SQL path alone returns, where it differs: it does not translate `$elemMatch` yet (sc-2758) and
-   * matches nothing for it — never everything — leaving `$elemMatch` to the in-memory path.
-   */
-  deviceSqlIds?: string[];
 }
 
 type Loose = DataFilters<OperandCaseRecord>;
@@ -145,6 +140,18 @@ export const OPERAND_CASES: OperandCase[] = [
   { label: 'a nested-object field value (sc-2783)', filters: { category: { sub: 'a' } } as Loose, expectedIds: NOTHING, engines: 'both' },
   { label: 'an array index in a field path (SQLite and MongoDB read it differently)', filters: { 'tags.0': 'x' } as Loose, expectedIds: NOTHING, engines: 'both' },
   { label: 'deeper than the limit', filters: Array.from({ length: 10 }).reduce<Loose>(inner => ({ $and: [inner] }) as Loose, { name: 'One' } as Loose), expectedIds: NOTHING, engines: 'both' },
+  // QA round 5: shapes JavaScript and MongoDB's PCRE read differently, and a catastrophic pattern. Only literal
+  // patterns are readable, so each of these matches nothing on both engines, plain and negated.
+  { label: 'QA r5 #1: a POSIX class under $not', filters: { name: { $not: { $regex: '[[:alpha:]]' } } } as Loose, expectedIds: NOTHING, engines: 'both' },
+  { label: 'QA r5 #1: \\p{L} under $not', filters: { name: { $not: { $regex: '\\p{L}' } } } as Loose, expectedIds: NOTHING, engines: 'both' },
+  { label: 'QA r5 #1: \\A under $not', filters: { name: { $not: { $regex: '\\AO' } } } as Loose, expectedIds: NOTHING, engines: 'both' },
+  { label: 'QA r5 #1: \\Z', filters: { name: { $regex: 'e\\Z' } } as Loose, expectedIds: NOTHING, engines: 'both' },
+  { label: 'QA r5 #1: a catastrophic pattern', filters: { name: { $regex: '^(a+)+$' } } as Loose, expectedIds: NOTHING, engines: 'both' },
+  { label: 'QA r5 #1: a pattern longer than the cap', filters: { name: { $not: { $regex: 'a'.repeat(129) } } } as Loose, expectedIds: NOTHING, engines: 'both' },
+  { label: 'a literal pattern with an escaped metacharacter', filters: { name: { $not: { $regex: 'T\\.' } } } as Loose, expectedIds: ALL_IDS, engines: 'both' },
+  // QA round 5 #2: the bare-list shorthand is $in on both engines (MongoDB alone would read "equals this list").
+  { label: 'QA r5 #2: a bare list', filters: { category: ['a', 'b'] } as Loose, expectedIds: ['r1', 'r2'], engines: 'both' },
+  { label: 'QA r5 #2: a bare list under $nor', filters: { $nor: [{ category: ['a', 'b'] }] } as Loose, expectedIds: ['r3', 'r4', 'r5'], engines: 'both' },
   { label: 'a field with no value matches records missing it', filters: { category: undefined } as Loose, expectedIds: ['r4', 'r5'], engines: 'both' },
   { label: 'a list holding a missing value matches records missing the field', filters: { category: { $in: ['a', undefined] } } as Loose, expectedIds: ['r1', 'r4', 'r5'], engines: 'both' },
   { label: 'an empty filter reads everything', filters: {}, expectedIds: ALL_IDS, engines: 'both' },

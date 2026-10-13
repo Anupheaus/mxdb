@@ -11,7 +11,7 @@ The `dbs` provider (`src/client/providers/dbs/`) builds `Db` and `DbCollection` 
 ## Contents
 
 ### Entry point (`index.ts`)
-Re-exports `SqliteWorkerClient`, `buildTableDDL`, `filtersToSql`, `sortsToSql`, and table-suffix constants.
+Re-exports `SqliteWorkerClient`, `buildTableDDL`, `sortsToSql`, and table-suffix constants.
 
 ### Worker client (`SqliteWorkerClient.ts`)
 - `SqliteWorkerClient` — facade picking between `SharedWorker` and `InlineRunner`. Sends typed `WorkerRequest` messages and resolves `WorkerResponse` promises via ULID correlation ids.
@@ -32,8 +32,8 @@ Re-exports `SqliteWorkerClient`, `buildTableDDL`, `filtersToSql`, `sortsToSql`, 
 - Constants: `LIVE_TABLE_SUFFIX`, `AUDIT_TABLE_SUFFIX`, `SYNC_TABLE_SUFFIX`
 
 ### SQL helpers
-- `filtersToSql.ts` — translates `DataFilters` into parameterised SQL `WHERE` clauses. Filters go through `normaliseFilterConditions` first (sc-2518): a field with no value is "the field is missing" (`IS NULL`), and any node it cannot read makes the whole query match nothing (`0`). Every translator returns a non-empty condition (an empty filter is `1`, an unknown operator `0`), so nothing can vanish inside a `$or` / `$nor` / `$not`. `$nor` and `$not` are translated with `NOT COALESCE(…, 0)`, so a missing field counts as "not matched", as in MongoDB. Anything SQL cannot translate (an operator outside the whitelist, a field name that is not a plain field path — the path is written into the SQL text) makes the WHOLE query `0`, never a `0` / `1` placeholder a `NOT` could flip. `dataFiltersToSift` declines rather than drop or overwrite any condition. Null handling follows MongoDB, not SQL's three-valued logic: a null in an `$in` / `$nin` list is tested apart, a record missing the field counts as `$ne` / `$nin` a value, and `$all: []` matches nothing. The `regexp` function matches text only (a missing field is not the text "null")
-- `dataFiltersToSift.ts` / `queryRecordsInMemory.ts` — the in-memory fast path, with the same reading of a condition with no value; a list holding null, or `$eq` null, is left to the SQL path
+- **No SQL filter translation** (sc-2518 QA round 5). SQLite never evaluates a filter: `DbCollection` chooses records in memory with `queryRecordsInMemory.ts` → `matchesFilter` (`src/common/filters`), which reads the canonical filter exactly as MongoDB does, so the device and the server cannot disagree. The former `filtersToSql.ts` / `dataFiltersToSift.ts` read some whitelisted shapes differently from MongoDB (the bare-list shorthand, JavaScript-vs-PCRE regex) and were removed.
+- `queryRecordsInMemory.ts` — filter (via `matchesFilter`), sort and paginate the live-record cache; `distinctRecordsInMemory` collects scalar distinct values from already-matched records (non-scalar values are read by SQL, but only for the matched ids).
 - `sortsToSql.ts` — translates `DataSorts` into SQL `ORDER BY` clauses
 
 ### Messages (`worker-messages.ts`)
@@ -51,7 +51,7 @@ All three tables for a collection are created in a single DDL transaction on `op
 - **`InlineRunner` is in-memory** — data does not persist across process restarts in tests. Reset state by creating a new `SqliteWorkerClient`.
 - **SharedWorker URL resolution** — in browser builds the worker is loaded via `new SharedWorker(new URL('./sqlite-shared-worker.ts', import.meta.url))`. Build tooling must handle this URL transform; it is not a normal import.
 - **`setOnExternalChange`** — only fires in browser environments with a real `SharedWorker`. In Node/InlineRunner mode the callback is never called.
-- **REGEXP support** — both the inline runner and the SharedWorker register a custom SQLite `regexp(pattern, value)` function at open time. Without it, `$regex` filters would throw at runtime.
+- **REGEXP support** — both the inline runner and the SharedWorker register a custom SQLite `regexp(pattern, value)` function at open time. Filters no longer reach SQL (sc-2518), so `$regex` is matched by `matchesFilter`, not by this function; it stays registered for any raw SQL that uses `REGEXP`.
 - **`#send` self-heals the shared port** — in `shared` mode `#send` awaits `#ensureSharedPort()` before posting, so a call that races ahead of `open()` can't dereference a null `#port` (mirrors the `dedicated` branch's lazy `#ensureWorker()`). Callers should still gate real writes on DB readiness (see `DbCollection.#runAfterReady`); this is the last-line guard, not the primary one.
 - **`open()` is idempotent per database name** — both workers track `openDbName`. A repeat `open` of the **same** database (another tab through the SharedWorker, or the same tab re-opening) does **not** close+reopen the instance; it just re-runs the (idempotent) DDL and replies. This is critical: closing+reopening briefly sets `db` to `null`, so any query in flight from another tab would throw `Database not open`. A genuine switch to a **different** database name still closes the old instance first. The name is account/user-scoped (`accountId ?? userId`), so same-name ⇒ same encryption key.
 

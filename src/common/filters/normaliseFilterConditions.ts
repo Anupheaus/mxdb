@@ -1,6 +1,7 @@
 import { is, ValidationError, type DataFilters } from '@anupheaus/common';
 import { DateTime } from 'luxon';
 import { isReadableFilter } from './isReadableFilter';
+import { parseLiteralPattern, toCanonicalPattern } from './literalPattern';
 
 // ─── The grammar ──────────────────────────────────────────────────────────────
 //
@@ -35,7 +36,7 @@ function unreadable(reason: string): never {
 }
 
 /**
- * The query no record meets: `{ id: { $in: [] } }`. SQLite (`0`), sift and MongoDB all read it as nothing, and it
+ * The query no record meets: `{ id: { $in: [] } }`. The device evaluator and MongoDB both read it as nothing, and it
  * survives JSON. A new object each time, so no caller can change another's.
  */
 function matchNothingFilter(): FilterObject {
@@ -72,7 +73,7 @@ function normaliseOperand(operator: string, operand: unknown): unknown {
   if (LIST_OPERATORS.has(operator)) return normaliseList(operand, { allowEmpty: operator !== '$all' });
   if (TEXT_OPERATORS.has(operator)) return is.string(operand) ? operand : unreadable(`${operator} needs text`);
   switch (operator) {
-    case '$regex': return is.string(operand) || operand instanceof RegExp ? operand : unreadable('$regex needs a pattern');
+    case '$regex': return normalisePattern(operand);
     case '$exists': return is.boolean(operand) ? operand : unreadable('$exists needs true or false');
     case '$size': return Number.isInteger(operand) && (operand as number) >= 0 ? operand : unreadable('$size needs a whole number');
     case '$not': return normaliseNot(operand);
@@ -81,9 +82,14 @@ function normaliseOperand(operator: string, operand: unknown): unknown {
   }
 }
 
-/** `$not` negates an operator object (or a pattern); anything else could negate "nothing" into "everything". */
+/** A `$regex` operand rewritten to its one canonical text (literalPattern.ts), which both engines then read. */
+function normalisePattern(operand: unknown): string {
+  const pattern = is.string(operand) ? parseLiteralPattern(operand) : undefined;
+  return pattern == null ? unreadable('$regex needs a literal pattern') : toCanonicalPattern(pattern);
+}
+
+/** `$not` negates an operator object; anything else could negate "nothing" into "everything". */
 function normaliseNot(operand: unknown): unknown {
-  if (operand instanceof RegExp) return operand;
   if (!is.plainObject(operand) || !isOperatorObject(operand)) return unreadable('$not needs operators to negate');
   return normaliseOperators(operand);
 }
@@ -109,9 +115,8 @@ function normaliseOperators(operators: FilterObject): FilterObject {
 
 function normaliseFieldValue(value: unknown): unknown {
   if (value === undefined || value === null) return null; // "the field is missing"
-  if (Array.isArray(value)) return normaliseList(value, { allowEmpty: true }); // shorthand for $in
-  // A bare pattern is MongoDB shorthand for $regex; SQLite would compare it as a value, so say so explicitly.
-  if (value instanceof RegExp) return { $regex: value };
+  // Shorthand for $in. Written out as $in for BOTH engines: MongoDB alone would read a bare list as "equals this list".
+  if (Array.isArray(value)) return { $in: normaliseList(value, { allowEmpty: true }) };
   if (isScalar(value)) return value;
   if (!is.plainObject<FilterObject>(value)) return unreadable('a field can only be compared with a single value, a list or conditions');
   if (Object.keys(value).length === 0) return unreadable('a field condition with nothing in it');
@@ -139,17 +144,22 @@ function normaliseFilter(filter: FilterObject, { allowEmpty }: { allowEmpty: boo
 }
 
 /**
- * The one place MXDB reads a filter, used by the client before a request leaves the hook, by both device query
- * engines (SQLite and the in-memory path) and by the server.
+ * The one place MXDB reads a filter, used by the client before a request leaves the hook, by the device's evaluator
+ * (`matchesFilter`) and by the server. It returns the filter's ONE canonical form, and both engines evaluate only
+ * that form, so no shape can mean one thing on the device and another on the server:
+ *
+ * - a bare list (`{ category: ['a', 'b'] }`) is written as `{ $in: [...] }` (MongoDB alone would read the bare list as
+ *   "equals this list");
+ * - a `$regex` is written as its canonical literal pattern (literalPattern.ts).
  *
  * First the WHITELIST (`isReadableFilter`) runs on the raw filter: a filter not built only from MXDB's small grammar
- * — an unknown operator, a wrong operand type, a non-object filter, a bad field name, a regex that does not compile or
- * has flags, a depth beyond the limit — matches NOTHING, whatever surrounds it (a negation of an unreadable node is
+ * — an unknown operator, a wrong operand type, a non-object filter, a bad field name, a regex that is not a literal
+ * pattern, a depth beyond the limit — matches NOTHING, whatever surrounds it (a negation of an unreadable node is
  * unreadable too). Only then does the walk below read it, failing closed again on anything it cannot read:
  *
  * - A field written with no value (`{ leadId: undefined }` or `null`) means "the field is missing", written as `null`
- *   — which SQLite (`IS NULL`), sift and MongoDB all read as null or missing, and which survives the JSON trip to the
- *   server. A missing value inside a list (`$in: [undefined]`, a bare array) means the same.
+ *   — which both engines read as null or missing, and which survives the JSON trip to the server. A missing value
+ *   inside a list (`$in: [undefined]`, a bare array) means the same.
  * - Any node it cannot read — an operator with a missing, `null`, wrong-type or empty operand; an operator it does not
  *   know; an empty condition object (`{ field: {} }`, `$elemMatch: {}`); a `$or` / `$and` / `$nor` without a list of
  *   filters; operators and fields mixed in one condition — makes the WHOLE query match nothing, wherever it sits

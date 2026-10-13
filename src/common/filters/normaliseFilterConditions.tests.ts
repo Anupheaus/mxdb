@@ -7,7 +7,7 @@ import { generateGarbageCases } from './filterFuzzCases.fixture';
 
 // Vision sc-2518: a condition whose value is missing (`{ leadId: undefined }`) used to be dropped, so a screen with a
 // missing key read every record in the collection. It now means "the field is missing", written as `null` — the value
-// every query engine (SQLite, sift, MongoDB) reads as "null or missing", and which survives the JSON trip to the server.
+// both engines (the device's matchesFilter and MongoDB) read as "null or missing", and which survives the JSON trip to the server.
 // Any node it cannot read makes the WHOLE query match nothing (`{ id: { $in: [] } }`), wherever it sits. What each
 // engine then returns is pinned by filterOperandCases.fixture.ts and filterFuzzCases.fixture.ts on device and server.
 
@@ -100,7 +100,30 @@ describe('normaliseFilterConditions', () => {
 
   it('turns a missing value in a list into "missing" (bare array, $in, $nin, $all)', () => {
     expect(normalise({ id: ['a', undefined], leadId: { $in: [undefined] }, tag: { $nin: [undefined, 'x'] }, tags: { $all: [undefined] } }))
-      .toEqual({ id: ['a', null], leadId: { $in: [null] }, tag: { $nin: [null, 'x'] }, tags: { $all: [null] } });
+      .toEqual({ id: { $in: ['a', null] }, leadId: { $in: [null] }, tag: { $nin: [null, 'x'] }, tags: { $all: [null] } });
+  });
+
+  // QA round 5: the canonical form is the only form either engine ever evaluates.
+  it('writes the bare-list shorthand as $in, once, for both engines (MongoDB alone would read it as "equals this list")', () => {
+    expect(normalise({ category: ['a', 'b'], $nor: [{ tag: [] }] })).toEqual({ category: { $in: ['a', 'b'] }, $nor: [{ tag: { $in: [] } }] });
+    expect(normalise(normalise({ category: ['a', 'b'] }))).toEqual({ category: { $in: ['a', 'b'] } });
+  });
+
+  it.each([
+    ['a plain literal', 'abc', 'abc'], ['anchors', '^abc$', '^abc$'], ['an escaped slash and dash', '^a\\/b\\-c', '^a/b-c'],
+    ['an escaped metacharacter', 'a\\.b\\$', 'a\\.b\\$'], ['an empty pattern', '', ''],
+  ])('writes a $regex as its one canonical literal pattern: %s', (_label, pattern, canonical) => {
+    expect(normalise({ name: { $regex: pattern }, other: { $not: { $regex: pattern } } }))
+      .toEqual({ name: { $regex: canonical }, other: { $not: { $regex: canonical } } });
+  });
+
+  it.each([
+    ['a POSIX class', '[[:alpha:]]'], ['\\p{L}', '\\p{L}'], ['\\A', '\\AO'], ['\\Z', 'e\\Z'], ['a catastrophic pattern', '^(a+)+$'],
+    ['alternation', 'a|b'], ['an inline flag', '(?i)a'], ['a wildcard', 'a.c'], ['a quantifier', 'ab*'], ['a class escape', '\\d'],
+    ['a line break', 'a\nb'], ['a pattern longer than the cap', 'a'.repeat(129)],
+  ])('reads a $regex that is not a literal pattern (%s) as matching nothing, plain and negated', (_label, pattern) => {
+    expect(normalise({ name: { $regex: pattern } })).toEqual(MATCH_NOTHING);
+    expect(normalise({ name: { $not: { $regex: pattern } } })).toEqual(MATCH_NOTHING);
   });
 
   it('the garbage fuzz offers readable filters as well as unreadable ones, so both halves of its contract are tested', () => {

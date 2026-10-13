@@ -139,18 +139,29 @@ function generateGarbage(generator: Generator, depth: number): unknown {
   return Object.fromEntries(entries);
 }
 
+const toMissingAsNull = (value: unknown): unknown => (value === undefined ? null : value);
+
+function canonicalOperators(operators: Node): Node {
+  return Object.fromEntries(Object.entries(operators).map(([operator, operand]) => {
+    if (Array.isArray(operand)) return [operator, operand.map(toMissingAsNull)];
+    if (operator === '$not') return [operator, canonicalOperators(operand as Node)];
+    return [operator, operand];
+  }));
+}
+
 /**
- * `filters` with every missing value written as `null` — exactly what a readable filter reaches the engines as. The
- * garbage tests compare against it: a readable filter must pass the whitelist unchanged, so the engines evaluate it
- * exactly as they did before the whitelist existed.
+ * The canonical form a readable filter reaches BOTH engines in, written out independently of the code under test:
+ * every missing value as `null`, and a bare list as `{ $in: … }`. The garbage tests compare against it, so a readable
+ * filter is known to reach the device and the server as one and the same filter.
  */
-export function withMissingAsNull(filters: unknown): unknown {
-  if (filters === undefined) return null;
-  if (Array.isArray(filters)) return filters.map(withMissingAsNull);
-  if (filters != null && typeof filters === 'object' && Object.getPrototypeOf(filters) === Object.prototype) {
-    return Object.fromEntries(Object.entries(filters).map(([key, value]) => [key, withMissingAsNull(value)]));
-  }
-  return filters;
+export function expectedCanonicalFilter(filter: Node): Node {
+  return Object.fromEntries(Object.entries(filter).map(([key, value]) => {
+    if (key === '$and' || key === '$or' || key === '$nor') return [key, (value as Node[]).map(expectedCanonicalFilter)];
+    if (value === undefined) return [key, null];
+    if (Array.isArray(value)) return [key, { $in: value.map(toMissingAsNull) }];
+    if (value != null && typeof value === 'object' && Object.getPrototypeOf(value) === Object.prototype) return [key, canonicalOperators(value as Node)];
+    return [key, value];
+  }));
 }
 
 /** How many garbage values are generated. */
