@@ -11,7 +11,7 @@ The `dbs` provider (`src/client/providers/dbs/`) builds `Db` and `DbCollection` 
 ## Contents
 
 ### Entry point (`index.ts`)
-Re-exports `SqliteWorkerClient`, `buildTableDDL`, `filtersToSql`, `sortsToSql`, and table-suffix constants.
+Re-exports `SqliteWorkerClient`, `buildTableDDL`, `sortsToSql`, and table-suffix constants.
 
 ### Worker client (`SqliteWorkerClient.ts`)
 - `SqliteWorkerClient` — facade picking between `SharedWorker` and `InlineRunner`. Sends typed `WorkerRequest` messages and resolves `WorkerResponse` promises via ULID correlation ids.
@@ -32,7 +32,8 @@ Re-exports `SqliteWorkerClient`, `buildTableDDL`, `filtersToSql`, `sortsToSql`, 
 - Constants: `LIVE_TABLE_SUFFIX`, `AUDIT_TABLE_SUFFIX`, `SYNC_TABLE_SUFFIX`
 
 ### SQL helpers
-- `filtersToSql.ts` — translates `DataFilters` into parameterised SQL `WHERE` clauses
+- **No SQL filter translation** (sc-2518 QA round 5). SQLite never evaluates a filter: `DbCollection` chooses records in memory with `queryRecordsInMemory.ts` → `createFilterMatcher` (`src/common/filters`), which reads the canonical filter exactly as MongoDB does, so the device and the server cannot disagree. `queryRecordsInMemory.performance.tests.ts` keeps it within 1.5x of master's old sift fast path. The former `filtersToSql.ts` / `dataFiltersToSift.ts` read some whitelisted shapes differently from MongoDB (the bare-list shorthand, JavaScript-vs-PCRE regex) and were removed.
+- `queryRecordsInMemory.ts` — filter (via `createFilterMatcher`, compiled once per query), sort and paginate the live-record cache; `distinctRecordsInMemory` collects scalar distinct values from already-matched records (non-scalar values are read by SQL, but only for the matched ids).
 - `sortsToSql.ts` — translates `DataSorts` into SQL `ORDER BY` clauses
 
 ### Messages (`worker-messages.ts`)
@@ -50,7 +51,7 @@ All three tables for a collection are created in a single DDL transaction on `op
 - **`InlineRunner` is in-memory** — data does not persist across process restarts in tests. Reset state by creating a new `SqliteWorkerClient`.
 - **SharedWorker URL resolution** — in browser builds the worker is loaded via `new SharedWorker(new URL('./sqlite-shared-worker.ts', import.meta.url))`. Build tooling must handle this URL transform; it is not a normal import.
 - **`setOnExternalChange`** — only fires in browser environments with a real `SharedWorker`. In Node/InlineRunner mode the callback is never called.
-- **REGEXP support** — both the inline runner and the SharedWorker register a custom SQLite `regexp(pattern, value)` function at open time. Without it, `$regex` filters would throw at runtime.
+- **REGEXP support** — both the inline runner and the SharedWorker register a custom SQLite `regexp(pattern, value)` function at open time. Filters no longer reach SQL (sc-2518), so `$regex` is matched by `createFilterMatcher`, not by this function; it stays registered for any raw SQL that uses `REGEXP`.
 - **`#send` self-heals the shared port** — in `shared` mode `#send` awaits `#ensureSharedPort()` before posting, so a call that races ahead of `open()` can't dereference a null `#port` (mirrors the `dedicated` branch's lazy `#ensureWorker()`). Callers should still gate real writes on DB readiness (see `DbCollection.#runAfterReady`); this is the last-line guard, not the primary one.
 - **`open()` is idempotent per database name** — both workers track `openDbName`. A repeat `open` of the **same** database (another tab through the SharedWorker, or the same tab re-opening) does **not** close+reopen the instance; it just re-runs the (idempotent) DDL and replies. This is critical: closing+reopening briefly sets `db` to `null`, so any query in flight from another tab would throw `Database not open`. A genuine switch to a **different** database name still closes the old instance first. The name is account/user-scoped (`accountId ?? userId`), so same-name ⇒ same encryption key.
 

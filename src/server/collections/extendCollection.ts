@@ -65,7 +65,25 @@ export interface OnQueryPayload {
   purpose?: OnQueryPurpose;
 }
 
+/**
+ * A lock an app gives a collection (see {@link CollectionExtensionHooks.writeLock}): call it with a task to run that
+ * task while holding the lock, and it resolves or rejects with the task's outcome.
+ */
+export type MXDBWriteLock = <T>(task: () => Promise<T>) => Promise<T>;
+
 export interface CollectionExtensionHooks<RecordType extends Record = Record> {
+  /**
+   * Held across a write's before-write check AND its save, so another write can never land between the two and make
+   * a rule untrue after it was judged true. Covers every write path: a server `upsert`, `remove` and `clear`, and a
+   * synced client batch (held for the collection's whole batch, from the read gate and the hooks to the last record
+   * saved). Give the same lock to the app's own actions that change what the hooks judge against, and to every
+   * collection whose rule depends on the others.
+   *
+   * mxdb never takes the lock twice in one piece of work: a hook that writes to another collection sharing the lock
+   * runs inside the hold it already has. If the app takes the lock ITSELF inside a hook (or calls an mxdb write from
+   * inside its own hold), the lock must be re-entrant, or that work deadlocks.
+   */
+  writeLock?: MXDBWriteLock;
   /**
    * Runs on the server instance performing the delete — a server-side `remove` or a client delete
    * arriving via sync — before anything is deleted, so the records can still be read. Only receives

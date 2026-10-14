@@ -7,7 +7,7 @@ import type { AuditEntry, AuditOf } from '../../common/auditor';
 import { hashRecord } from '../../common/auditor/hash';
 import type { ClientDispatcherRequest, MXDBRecordCursors, MXDBSyncEngineResponse } from '../../common/sync-engine';
 import { ServerToClientSynchronisation } from '../ServerToClientSynchronisation';
-import { extendCollection, type OnBeforeUpsertResult, type OnDeletePayload, type OnUpsertPayload } from '../collections/extendCollection';
+import { extendCollection, type MXDBWriteLock, type OnBeforeUpsertResult, type OnDeletePayload, type OnUpsertPayload } from '../collections/extendCollection';
 
 /**
  * End-to-end contract of the C2S sync handler with the REAL ServerReceiver, ServerDispatcher and
@@ -472,6 +472,117 @@ describe('handleClientToServerSync — collection before-write hooks', () => {
     }]);
 
     expect(hooks.onBeforeUpsert.mock.calls.map(([payload]) => payload.records.ids())).toEqual([['i1'], ['i2']]);
+  });
+});
+
+// ─── The collection's write lock (sc-2402) ────────────────────────────────────
+
+interface Deferred {
+  promise: Promise<void>;
+  resolve(): void;
+}
+
+function deferred(): Deferred {
+  let resolve: () => void = () => undefined;
+  const promise = new Promise<void>(settle => { resolve = settle; });
+  return { promise, resolve };
+}
+
+/** A plain FIFO mutex (not re-entrant), standing in for the lock an app gives a collection. */
+function createMutex(): MXDBWriteLock {
+  let tail: Promise<unknown> = Promise.resolve();
+  return task => {
+    const run = tail.then(task);
+    tail = run.then(() => undefined, () => undefined);
+    return run;
+  };
+}
+
+const syncWriteLock = createMutex();
+const lockedItemsCollection = defineCollection<Item>({ name: 'c2sLockedItems', indexes: [] });
+const LOCKED = lockedItemsCollection.name;
+const lockedHooks = { onBeforeUpsert: vi.fn<(payload: OnUpsertPayload<Item>) => Promise<OnBeforeUpsertResult>>() };
+extendCollection(lockedItemsCollection, {
+  writeLock: syncWriteLock,
+  onBeforeUpsert: payload => lockedHooks.onBeforeUpsert(payload),
+});
+
+describe('handleClientToServerSync — a collection with a write lock', () => {
+  let harness: Harness;
+
+  beforeEach(() => {
+    harness = installHarness({ definition: lockedItemsCollection });
+    lockedHooks.onBeforeUpsert.mockReset().mockResolvedValue(undefined);
+  });
+
+  const created = (id: string, name: string, sequence: number) => ({ id, hash: `h-${id}`, entries: [createdEntry({ id, name }, sequence)] });
+
+  it('makes a write that takes the lock wait until every record of the batch the hooks passed is saved', async () => {
+    const firstHookRunning = deferred();
+    const releaseFirstHook = deferred();
+    lockedHooks.onBeforeUpsert.mockImplementationOnce(async () => {
+      firstHookRunning.resolve();
+      await releaseFirstHook.promise;
+    });
+
+    const syncing = handleClientToServerSync([{ collectionName: LOCKED, records: [created('i1', 'a', 1), created('i2', 'b', 2)] }]);
+    await firstHookRunning.promise;
+    // The concurrent action: it asks for the lock after the first record was judged, before anything was saved.
+    const seenByAction = syncWriteLock(async () => [...harness.collection.records.keys()]);
+    releaseFirstHook.resolve();
+    await syncing;
+
+    expect(await seenByAction).toEqual(['i1', 'i2']);
+  });
+
+  it('judges a synced record again after a write that already held the lock, and refuses it when the rule now fails', async () => {
+    let isFrozen = false;
+    lockedHooks.onBeforeUpsert.mockImplementation(async () => {
+      if (isFrozen) throw new ValidationError('This list is frozen.', 'name');
+    });
+    const actionHolding = deferred();
+    const releaseAction = deferred();
+    const action = syncWriteLock(async () => {
+      actionHolding.resolve();
+      await releaseAction.promise;
+      isFrozen = true;
+    });
+    await actionHolding.promise;
+
+    const syncing = handleClientToServerSync(request(LOCKED, 'i1', [createdEntry({ id: 'i1', name: 'a' }, 1)], 'h-i1'));
+    releaseAction.resolve();
+    const [response] = await Promise.all([syncing, action]);
+
+    expect([response, harness.collection.records.has('i1')]).toEqual([
+      [{ collectionName: LOCKED, successfulRecordIds: ['i1'], rejectedRecords: [{ id: 'i1', reason: 'This list is frozen.', kind: 'validation' }] }],
+      false,
+    ]);
+  });
+
+  it('releases the lock when a hook refuses a record', async () => {
+    lockedHooks.onBeforeUpsert.mockRejectedValue(new Error('refused'));
+
+    await handleClientToServerSync(request(LOCKED, 'i1', [createdEntry({ id: 'i1', name: 'a' }, 1)], 'h-i1'));
+
+    expect(await syncWriteLock(async () => 'free')).toBe('free');
+  });
+
+  it('does not hold the lock for a collection that has none', async () => {
+    harness = installHarness({ definition: hookedItemsCollection });
+    const hookRunning = deferred();
+    const releaseHook = deferred();
+    hooks.onBeforeUpsert.mockReset().mockImplementation(async () => {
+      hookRunning.resolve();
+      await releaseHook.promise;
+    });
+
+    const syncing = handleClientToServerSync(request(HOOKED, 'i1', [createdEntry({ id: 'i1', name: 'a' }, 1)], 'h-i1'));
+    await hookRunning.promise;
+    const seenByAction = await syncWriteLock(async () => harness.collection.records.has('i1'));
+    releaseHook.resolve();
+    await syncing;
+
+    expect(seenByAction).toBe(false);
   });
 });
 

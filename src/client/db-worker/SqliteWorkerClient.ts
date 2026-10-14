@@ -27,7 +27,9 @@ class InlineRunner {
     this.#db = new sqlite3.oo1.DB(':memory:', 'ct');
 
     // Register REGEXP
-    this.#db.createFunction('regexp', (_ctx: unknown, pattern: string, value: string) => {
+    this.#db.createFunction('regexp', (_ctx: unknown, pattern: string, value: unknown) => {
+      // Only text matches, as in MongoDB: RegExp.test would read a missing field as the text "null".
+      if (typeof value !== 'string') return 0;
       try { return new RegExp(pattern).test(value) ? 1 : 0; } catch { return 0; }
     }, { arity: 2 });
 

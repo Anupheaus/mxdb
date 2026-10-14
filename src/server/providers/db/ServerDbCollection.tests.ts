@@ -8,6 +8,9 @@ import { hashRecord } from '../../../common/auditor/hash';
 import { auditor } from '../../../common/auditor';
 import { AuditEntryType } from '../../../common/auditor/auditor-models';
 import { DateTime } from 'luxon';
+import { isReadableFilter, normaliseFilterConditions } from '../../../common/filters';
+import { OPERAND_CASE_RECORDS, operandCasesFor, type OperandCaseRecord } from '../../../common/filters/filterOperandCases.fixture';
+import { expectedCanonicalFilter, generateFuzzCases, generateGarbageCases } from '../../../common/filters/filterFuzzCases.fixture';
 
 // The acting user comes from the nexus socket/auth context (external); stub it so audit
 // attribution can be exercised both with and without an authenticated user.
@@ -619,6 +622,93 @@ describe('ServerDbCollection', () => {
       const col = await seed();
       const result = await col.find({ $or: [{ id: 'zzz' }, { id: 'c' }] } as any);
       expect(result?.name).toBe('Charlie');
+    });
+
+    // sc-2518: a condition with no value means "the field is missing" — the same on the server as on the device —
+    // whether it arrives as `undefined` (server code) or as `null` (a client request, after JSON).
+    describe('a condition with no value', () => {
+      const seedWithUncategorised = async () => {
+        const col = await seed();
+        await col.upsert([makeItem({ id: 'd', name: 'Delta' })]);
+        return col;
+      };
+
+      it.each([
+        ['undefined', { category: undefined }, ['d']],
+        ['null (as a client sends it)', { category: null }, ['d']],
+        ['undefined on a field every record has', { name: undefined }, []],
+        ['undefined inside $or', { $or: [{ category: undefined }, { id: 'a' }] }, ['a', 'd']],
+        ['$in holding a missing value', { category: { $in: ['y', undefined] } }, ['c', 'd']],
+      ])('matches only records missing the field for %s', async (_label, filters, expectedIds) => {
+        const col = await seedWithUncategorised();
+        const { data } = await col.query({ filters: filters as any });
+        expect(data.ids().sort()).toEqual(expectedIds);
+      });
+
+      it('applies to find, distinct and an accurate total too', async () => {
+        const col = await seedWithUncategorised();
+        expect((await col.find({ name: undefined } as any))).toBeUndefined();
+        expect((await col.distinct({ field: 'name', filters: { category: undefined } as any })).map(({ name }) => name)).toEqual(['Delta']);
+        const { total } = await col.query({ filters: { category: undefined } as any, getAccurateTotal: true });
+        expect(total).toBe(1);
+      });
+    });
+
+    // sc-2518: every operator with a missing, null or wrong-type operand matches NOTHING on the server, whether server
+    // code passes it directly or a client sent it (normalised by the hook, then through JSON on the socket).
+    describe('a filter operand that is missing, null, empty or the wrong type', () => {
+      const operandCollection = defineCollection<OperandCaseRecord>({ name: 'test_operand_cases', indexes: [], disableAudit: true });
+      let operandCol: ServerDbCollection<OperandCaseRecord>;
+
+      beforeAll(async () => {
+        const db = client.db('testdb');
+        try { await db.createCollection(operandCollection.name); } catch { /* already there from an earlier run */ }
+        knownCollectionNames.add(operandCollection.name);
+        await db.collection(operandCollection.name).deleteMany({});
+        operandCol = new ServerDbCollection<OperandCaseRecord>({
+          getDb: () => Promise.resolve(db),
+          collection: operandCollection,
+          collectionNames: Promise.resolve(new Set(knownCollectionNames)),
+          logger: mockLogger,
+        });
+        await operandCol.upsert(OPERAND_CASE_RECORDS);
+      });
+
+      it.each(operandCasesFor('server'))('%s — server code', async (_label, { filters, expectedIds }) => {
+        const { data } = await operandCol.query({ filters });
+        expect(data.ids().sort()).toEqual(expectedIds);
+      });
+
+      it.each(operandCasesFor('server'))('%s — as a client sends it', async (_label, { filters, expectedIds }) => {
+        const sent = JSON.parse(JSON.stringify(normaliseFilterConditions(filters)));
+        const { data } = await operandCol.query({ filters: sent });
+        expect(data.ids().sort()).toEqual(expectedIds);
+      });
+
+      // Arbitrary values of any shape: an unreadable one returns nothing, as server code and as a client sends it; a
+      // readable one passes the whitelist unchanged, so MongoDB evaluates it exactly as before.
+      it.each(generateGarbageCases())('%s', async (_label, garbage) => {
+        const query = async (filters: unknown) => (await operandCol.query({ filters: filters as never, getAccurateTotal: true }));
+        const direct = await query(garbage);
+        if (!isReadableFilter(garbage)) {
+          const sent = await query(JSON.parse(JSON.stringify(normaliseFilterConditions(garbage as never)) ?? 'null'));
+          expect({ ids: direct.data.ids(), total: direct.total, sentIds: sent.data.ids() }).toEqual({ ids: [], total: 0, sentIds: [] });
+          expect(await operandCol.queryIds(garbage as never)).toEqual([]);
+          return;
+        }
+        if (garbage != null) expect(normaliseFilterConditions(garbage as never)).toEqual(expectedCanonicalFilter(garbage as never));
+      });
+
+      // Random nested queries with one broken node at every depth: never more than the same query with the node
+      // replaced by match-nothing, and in fact nothing at all — as server code and as a client sends it.
+      it.each(generateFuzzCases())('fuzz %s', async (_label, { broken, matchNothing }) => {
+        const idsFor = async (filters: unknown) => (await operandCol.query({ filters: filters as never })).data.ids().sort();
+        const matchNothingIds = await idsFor(matchNothing);
+        for (const brokenIds of [await idsFor(broken), await idsFor(JSON.parse(JSON.stringify(normaliseFilterConditions(broken))))]) {
+          expect(brokenIds.filter(id => !matchNothingIds.includes(id))).toEqual([]);
+          expect(brokenIds).toEqual([]);
+        }
+      });
     });
 
     describe('Luxon DateTimes inside array operators', () => {

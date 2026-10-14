@@ -59,7 +59,7 @@ describe('queryRecordsInMemory', () => {
   });
 
   it('matches nested field paths', () => {
-    const result = queryRecordsInMemory(makeWidgets(), { filters: { nested: { level: 2 } } });
+    const result = queryRecordsInMemory(makeWidgets(), { filters: { 'nested.level': 2 } as never });
     expect(idsOf(result!.records)).toEqual(['b', 'd']);
   });
 
@@ -68,7 +68,7 @@ describe('queryRecordsInMemory', () => {
     expect(idsOf(result!.records)).toEqual(['a', 'b']);
   });
 
-  it('compares DateTime fields with $gt (normalised to Date for sift)', () => {
+  it('compares DateTime fields with $gt by instant', () => {
     const result = queryRecordsInMemory(makeWidgets(), { filters: { start: { $gt: DateTime.fromISO('2026-02-15T00:00:00Z') } } });
     expect(idsOf(result!.records)).toEqual(['c', 'd']);
   });
@@ -109,23 +109,29 @@ describe('queryRecordsInMemory', () => {
     expect(result!.total).toBe(3);
   });
 
-  // SQL's 3-valued NULL logic excludes null/missing rows from negative matches, whereas sift's 2-valued logic
-  // includes them — so these operators can't be evaluated in-memory with guaranteed parity and must fall back
-  // to the worker. String/array/regex operators are likewise deferred to the worker for v1.
-  const unsupportedFilters: Array<[string, { [key: string]: unknown }]> = [
-    ['$ne', { size: { $ne: 20 } }],
-    ['$nin', { size: { $nin: [20] } }],
-    ['$ni', { size: { $ni: [20] } }],
-    ['$exists', { start: { $exists: true } }],
-    ['$elemMatch', { tags: { $elemMatch: { $eq: 'red' } } }],
-    ['$regex', { name: { $regex: '^A' } }],
-    ['$beginsWith', { name: { $beginsWith: 'A' } }],
-    ['$all', { tags: { $all: ['red'] } }],
+  // sc-2518: the in-memory evaluator is the device's only one, so it answers every whitelisted operator itself, with
+  // MongoDB's semantics (a missing or null field counts as "not" for $ne / $nin / $not).
+  const negatingAndOtherFilters: Array<[string, { [key: string]: unknown }, string[]]> = [
+    ['$ne', { size: { $ne: 20 } }, ['a', 'c']],
+    ['$ne on a null field', { city: { $ne: 'London' } }, ['b', 'c']],
+    ['$nin', { size: { $nin: [20] } }, ['a', 'c']],
+    ['$exists', { start: { $exists: true } }, ['a', 'b', 'c', 'd']],
+    ['$not', { size: { $not: { $gt: 20 } } }, ['a', 'b', 'd']],
+    ['$regex', { name: { $regex: '^A' } }, ['a']],
+    ['$not $regex', { city: { $not: { $regex: 'on$' } } }, ['b', 'c']],
+    ['$all', { tags: { $all: ['red'] } }, ['a', 'c']],
   ];
 
-  it.each(unsupportedFilters)('returns null (falls back to worker) for unsupported operator %s', (_label, filters) => {
-    const result = queryRecordsInMemory(makeWidgets(), { filters: filters as never });
-    expect(result).toBeNull();
+  it.each(negatingAndOtherFilters)('answers %s in memory', (_label, filters, expectedIds) => {
+    expect(idsOf(queryRecordsInMemory(makeWidgets(), { filters: filters as never }).records)).toEqual(expectedIds);
+  });
+
+  // sc-2518: outside MXDB's filter whitelist — the whole query matches nothing, here as on every other path.
+  it.each([
+    ['$ni', { size: { $ni: [20] } }], ['$beginsWith', { name: { $beginsWith: 'A' } }],
+    ['$elemMatch (sc-2758)', { tags: { $elemMatch: { $eq: 'red' } } }],
+  ])('matches nothing for %s', (_label, filters) => {
+    expect(idsOf(queryRecordsInMemory(makeWidgets(), { filters: filters as never })!.records)).toEqual([]);
   });
 });
 
@@ -140,8 +146,8 @@ describe('distinctRecordsInMemory', () => {
     expect(result).toEqual([10, 20, 30]);
   });
 
-  it('applies the filter before collecting distinct values', () => {
-    const result = distinctRecordsInMemory(makeWidgets(), { field: 'city', filters: { size: 20 } });
+  it('collects the values of only the records it is given (already filtered)', () => {
+    const result = distinctRecordsInMemory(makeWidgets().filter(({ size }) => size === 20), { field: 'city' });
     expect(result).toEqual(['Paris', 'London']); // b=Paris, d=London
   });
 
@@ -162,11 +168,6 @@ describe('distinctRecordsInMemory', () => {
 
   it('returns null (falls back) when sorted by a field other than the distinct field', () => {
     const result = distinctRecordsInMemory(makeWidgets(), { field: 'city', sorts: [['size', 'asc']] });
-    expect(result).toBeNull();
-  });
-
-  it('returns null (falls back) for an unsupported filter', () => {
-    const result = distinctRecordsInMemory(makeWidgets(), { field: 'city', filters: { size: { $ne: 20 } } as never });
     expect(result).toBeNull();
   });
 });

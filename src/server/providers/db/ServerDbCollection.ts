@@ -8,10 +8,12 @@ import { useAuthentication } from '@anupheaus/nexus/server';
 import { DateTime } from 'luxon';
 import { auditor } from '../../../common';
 import type { AnyAuditOf, ServerAuditOf } from '../../../common';
+import { normaliseFilterConditions } from '../../../common/filters';
 import { toServerAuditOf } from '../../audit/toServerAuditOf';
 import { runBeforeUpsertHook } from '../../collections/runBeforeUpsertHook';
 import { runBeforeDeleteHook } from '../../collections/runBeforeDeleteHook';
 import { getCollectionExtensions } from '../../collections/extendCollection';
+import { runInWriteLock } from '../../collections/runInWriteLock';
 import { getSlowQueryThresholdMs } from './slowQueryThreshold';
 import { redactMongoErrorMessage } from './redactMongoErrorMessage';
 
@@ -247,7 +249,8 @@ export class ServerDbCollection<RecordType extends Record = Record> {
       const data = rawDocs.mapWithoutNull(dbUtils.deserialize);
       return { data, total: data.length };
     } else {
-      const filters = request.filters != null && Object.keys(request.filters).length > 0 ? (() => {
+      // Every filter that is there is read — a non-object (`true`, `''`) too, which the whitelist turns into "nothing".
+      const filters = request.filters != null ? (() => {
         const startTime = performance.now();
         const result = this.#parseFilters(request!.filters);
         const endTime = performance.now();
@@ -326,27 +329,28 @@ export class ServerDbCollection<RecordType extends Record = Record> {
   @bind
   public async upsert(records: RecordType | RecordType[], { resetAudit = false }: UpsertProps = {}): Promise<void> {
     const collection = await this.#getCollection();
-    records = Array.isArray(records) ? records : [records];
-    if (records.length === 0) return;
-    const existingRecords = await this.get(records.ids());
-    if (!resetAudit) {
-      records = records.filter(record => {
+    const incoming = Array.isArray(records) ? records : [records];
+    if (incoming.length === 0) return;
+    // The stored records, the hook's judgement and the save happen under the collection's write lock (sc-2402).
+    const written = await runInWriteLock(this.#collection, async () => {
+      const existingRecords = await this.get(incoming.ids());
+      const changing = resetAudit ? incoming : incoming.filter(record => {
         const existing = existingRecords.findById(record.id);
         return existing == null || !is.deepEqual(existing, record);
       });
-      if (records.length === 0) return;
-    }
-    // Only records that are actually changing reach the hook; it may amend them before they are written.
-    // A server-side write has no client to tell, so the hook's amendment notes are not used here.
-    ({ records } = await runBeforeUpsertHook({ collection: this.#collection, records, existingRecords }));
-    const docs = await Promise.all(records.map(record => dbUtils.serializeWithMeta(record)));
-    const result = await collection.bulkWrite(records.map((record, index) => ({ replaceOne: { replacement: docs[index]!, filter: { _id: record.id as any }, upsert: true } })));
-    if (!result.isOk()) throw new InternalError('Bulk write failed - result is not as expected');
-    const upsertedCount = result.matchedCount + result.upsertedCount;
-    if (upsertedCount !== records.length) throw new InternalError(`Upsert failed - expected ${records.length}, got ${upsertedCount}`);
-    if (this.#config.disableAudit !== true) {
-      void this.#upsertAudit(existingRecords, records, { resetAudit }).catch(this.#onAuditWriteFailed('Audit upsert failed'));
-    }
+      if (changing.length === 0) return;
+      // Only records that are actually changing reach the hook; it may amend them before they are written.
+      // A server-side write has no client to tell, so the hook's amendment notes are not used here.
+      const { records: toWrite } = await runBeforeUpsertHook({ collection: this.#collection, records: changing, existingRecords });
+      const docs = await Promise.all(toWrite.map(record => dbUtils.serializeWithMeta(record)));
+      const result = await collection.bulkWrite(toWrite.map((record, index) => ({ replaceOne: { replacement: docs[index]!, filter: { _id: record.id as any }, upsert: true } })));
+      if (!result.isOk()) throw new InternalError('Bulk write failed - result is not as expected');
+      const upsertedCount = result.matchedCount + result.upsertedCount;
+      if (upsertedCount !== toWrite.length) throw new InternalError(`Upsert failed - expected ${toWrite.length}, got ${upsertedCount}`);
+      return { existingRecords, toWrite };
+    });
+    if (written == null || this.#config.disableAudit === true) return;
+    void this.#upsertAudit(written.existingRecords, written.toWrite, { resetAudit }).catch(this.#onAuditWriteFailed('Audit upsert failed'));
   }
 
   public async remove(id: string, props?: DeleteProps<RecordType>): Promise<void>;
@@ -354,20 +358,22 @@ export class ServerDbCollection<RecordType extends Record = Record> {
   @bind
   public async remove(ids: string | string[], { clearAudit = false, deleteSnapshots: passedSnapshots }: DeleteProps<RecordType> = {}): Promise<void> {
     const collection = await this.#getCollection();
-    ids = Array.isArray(ids) ? ids : [ids];
-    // Runs while the records are still stored, so the hook can read what is about to be deleted.
-    await runBeforeDeleteHook({ collection: this.#collection, recordIds: ids, getStoredIds: async idsToCheck => (await this.get(idsToCheck)).ids() });
-
-    let deleteSnapshots: { [recordId: string]: RecordType } | undefined = passedSnapshots;
-    if (this.#config.disableAudit !== true && !clearAudit && deleteSnapshots == null) {
-      const fetched = await this.get(ids);
-      deleteSnapshots = Object.fromEntries(fetched.map(r => [r.id, r] as const));
-    }
-
-    const result = await collection.deleteMany({ _id: { $in: ids as any[] } });
-    if (!result.acknowledged) throw new InternalError('Delete failed');
+    const recordIds = Array.isArray(ids) ? ids : [ids];
+    // The hook's judgement and the delete happen under the collection's write lock (sc-2402).
+    const deleteSnapshots = await runInWriteLock(this.#collection, async () => {
+      // Runs while the records are still stored, so the hook can read what is about to be deleted.
+      await runBeforeDeleteHook({ collection: this.#collection, recordIds, getStoredIds: async idsToCheck => (await this.get(idsToCheck)).ids() });
+      let snapshots: { [recordId: string]: RecordType } | undefined = passedSnapshots;
+      if (this.#config.disableAudit !== true && !clearAudit && snapshots == null) {
+        const fetched = await this.get(recordIds);
+        snapshots = Object.fromEntries(fetched.map(r => [r.id, r] as const));
+      }
+      const result = await collection.deleteMany({ _id: { $in: recordIds as any[] } });
+      if (!result.acknowledged) throw new InternalError('Delete failed');
+      return snapshots;
+    });
     if (this.#config.disableAudit !== true) {
-      void this.#deleteAudit(ids, { clearAudit, deleteSnapshots }).catch(this.#onAuditWriteFailed('Audit delete failed'));
+      void this.#deleteAudit(recordIds, { clearAudit, deleteSnapshots }).catch(this.#onAuditWriteFailed('Audit delete failed'));
     }
   }
 
@@ -395,8 +401,11 @@ export class ServerDbCollection<RecordType extends Record = Record> {
   public async clear() {
     const collection = await this.#getCollection();
     const extensions = getCollectionExtensions(this.#collection);
-    await extensions?.onBeforeClear?.({ collectionName: this.name });
-    await collection.deleteMany();
+    // The hook's judgement and the clear happen under the collection's write lock (sc-2402).
+    await runInWriteLock(this.#collection, async () => {
+      await extensions?.onBeforeClear?.({ collectionName: this.name });
+      await collection.deleteMany();
+    });
     if (this.#config.disableAudit !== true) this.#clearAudit();
     await extensions?.onAfterClear?.({ collectionName: this.name });
   }
@@ -580,7 +589,10 @@ export class ServerDbCollection<RecordType extends Record = Record> {
 
   #parseFilters(filters: DataFilters<RecordType> | undefined) {
     if (filters == null) return undefined;
-    return toMongoFilterValue(filters) as any;
+    // A field with no value means "missing" (null) and a broken operand matches nothing, as on the device. Said here
+    // rather than left to the driver's own undefined handling, which the client's requests never reach (JSON drops the
+    // key) and a driver option can change.
+    return toMongoFilterValue(normaliseFilterConditions(filters)) as any;
   }
 
   /**
@@ -899,7 +911,9 @@ export class ServerDbCollection<RecordType extends Record = Record> {
     if (request == null) return;
     if (request.pagination != null && Object.keys(request.pagination).length > 0) return request;
     if (request.sorts != null && Object.keys(request.sorts).length > 0) return request;
-    if (request.filters != null && Object.keys(request.filters).length > 0) return request;
+    // Only an empty plain object is "no filter": anything else (`true`, `''`, `[]`) must reach #parseFilters, which
+    // reads it as nothing, never fall through to the full scan below.
+    if (request.filters != null && !(is.plainObject(request.filters) && Object.keys(request.filters).length === 0)) return request;
     if (request.getAccurateTotal === true) return request;
     if (request.serverHints != null && Object.values(request.serverHints).some(v => v !== undefined)) return request;
     return;

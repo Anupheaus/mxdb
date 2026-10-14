@@ -1,6 +1,6 @@
 {
   "name": "@anupheaus/mxdb",
-  "version": "0.2.15",
+  "version": "0.2.19",
   "type": "module",
   "main": "./dist/server.js",
   "exports": {
@@ -92,7 +92,6 @@
     "koa-router": "^12.0.1",
     "luxon": "^3.2.1",
     "mongodb": "^6.8.0",
-    "sift": "^17.1.3",
     "socket.io": "^4.7.5",
     "socket.io-client": "^4.7.5",
     "ulidx": "^2.4.1"
@@ -130,6 +129,7 @@
     "progress-webpack-plugin": "^1.0.16",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
+    "sift": "^17.1.3",
     "terser-webpack-plugin": "^5.3.10",
     "ts-loader": "^9.5.1",
     "ts-node": "^10.9.2",
