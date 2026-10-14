@@ -106,12 +106,15 @@ jobs:
       contents: read
       packages: read
     steps:
+      # TruffleHog diffs its `base` (the PR base sha, or github.event.before on a push) against HEAD,
+      # so that commit has to be in the checkout — the default fetch-depth 1 has only HEAD.
       - name: Setup pnpm, node, and install
         uses: Anupheaus/agents/ci-templates/actions/pnpm-setup@v1
         with:
           pnpm-version: ${{ env.PNPM_VERSION }}
           node-version: ${{ env.NODE_VERSION }}
           node-auth-token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: '0'
           install-args: '--no-frozen-lockfile'
       - name: Secret detection (TruffleHog)
         uses: trufflesecurity/trufflehog@main

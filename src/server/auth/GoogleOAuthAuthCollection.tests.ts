@@ -31,10 +31,12 @@ function makeFakeDb(): ServerDb {
 
 let GoogleOAuthAuthCollection: new (db: ServerDb) => GoogleOAuthAuthCollectionType;
 
+// This import also pulls in the sibling @anupheaus/nexus sources, so the first one can take well over the
+// default 10s hook timeout while they are transformed; the module is cached for the following tests.
 beforeEach(async () => {
   vi.clearAllMocks();
   ({ GoogleOAuthAuthCollection } = await import('./GoogleOAuthAuthCollection'));
-});
+}, 60_000);
 
 const baseRecord: GoogleOAuthAuthRecord = {
   requestId: 'req-1', sessionToken: 'tok', userId: 'u1',

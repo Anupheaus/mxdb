@@ -32,10 +32,12 @@ function makeFakeDb(): ServerDb {
 
 let WebAuthnAuthCollection: new (db: ServerDb) => WebAuthnAuthCollectionType;
 
+// This import also pulls in the sibling @anupheaus/nexus sources, so the first one can take well over the
+// default 10s hook timeout while they are transformed; the module is cached for the following tests.
 beforeEach(async () => {
   vi.clearAllMocks();
   ({ WebAuthnAuthCollection } = await import('./WebAuthnAuthCollection'));
-});
+}, 60_000);
 
 const baseDoc = {
   _id: 'req-1', sessionToken: 'tok', userId: 'u1',
