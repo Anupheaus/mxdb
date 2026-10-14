@@ -337,6 +337,39 @@ describe('ServerReceiver', () => {
     expect(mockLogger.error).not.toHaveBeenCalled();
   });
 
+  it('drops a client\'s entries from before a reset audit, so an offline device\'s older edit never returns the old values', async () => {
+    const { sd } = makeSD();
+    const original = { id: 'r1', name: 'Casey Customer' };
+    // The device's edit was made offline, before the server rewrote the record with `resetAudit`.
+    const deviceEdit = auditor.updateAuditWith({ ...original, name: 'Casey C. Customer' }, auditor.createAuditFrom(original))
+      .entries.filter(entry => entry.type === AuditEntryType.Updated);
+    const reset = { id: 'r1', name: 'Anonymised customer #1' };
+    const resetAudit = auditor.createAuditFrom(reset);
+    const onRetrieve = vi.fn().mockResolvedValue([{ collectionName: 'items', records: [{ record: reset, audit: resetAudit.entries }] }] satisfies MXDBRecordStates);
+    const onUpdate = vi.fn().mockResolvedValue([]);
+    const sr = new ServerReceiver(mockLogger, { onRetrieve, onUpdate, serverDispatcher: sd });
+
+    const result = await sr.process([{ collectionName: 'items', records: [{ id: 'r1', hash: 'mock-hash-r1', entries: deviceEdit }] }]);
+
+    expect(onUpdate, 'nothing is merged into the reset audit').not.toHaveBeenCalled();
+    expect(result.find(({ collectionName }) => collectionName === 'items')?.successfulRecordIds, 'the device settles its edit').toContain('r1');
+  });
+
+  it('still merges a client\'s entries made after a reset audit', async () => {
+    const { sd } = makeSD();
+    const reset = { id: 'r1', name: 'Anonymised customer #1' };
+    const resetAudit = auditor.createAuditFrom(reset);
+    const laterEdit = auditor.updateAuditWith({ ...reset, name: 'Renamed' }, resetAudit).entries.filter(entry => entry.type === AuditEntryType.Updated);
+    const onRetrieve = vi.fn().mockResolvedValue([{ collectionName: 'items', records: [{ record: reset, audit: resetAudit.entries }] }] satisfies MXDBRecordStates);
+    const onUpdate = vi.fn().mockResolvedValue([{ collectionName: 'items', successfulRecordIds: ['r1'] }]);
+    const sr = new ServerReceiver(mockLogger, { onRetrieve, onUpdate, serverDispatcher: sd });
+
+    await sr.process([{ collectionName: 'items', records: [{ id: 'r1', hash: 'mock-hash-r1', entries: laterEdit }] }]);
+
+    const [persisted] = (onUpdate.mock.calls[0]![0] as MXDBRecordStates)[0]!.records;
+    expect(persisted && 'record' in persisted ? persisted.record : undefined).toEqual({ id: 'r1', name: 'Renamed' });
+  });
+
   it('handles branched-only active record — seeds filter, no onUpdate', async () => {
     const { sd } = makeSD();
     const updateFilterSpy = vi.spyOn(sd, 'updateFilter');

@@ -352,7 +352,7 @@ Runs on the server, one instance per connected client. Given a `ClientDispatcher
 1. `serverDispatcher.pause()` — holds S2C pushes while processing.
 2. **Mirror filter** (synchronous, before any `await`): build `ServerDispatcherFilter[]` from the client's claimed state (`#buildMirrorFilter`) and call `serverDispatcher.updateFilter(filters)`. This seeds the SD's filter with the client's current hashes and max audit entry ids so that change-stream events racing with this C2S call are evaluated against an accurate filter when we later resume.
 3. Retrieve current server state via `onRetrieve` for every record in the request.
-4. For each incoming record, strip `Branched` entries from the client audit:
+4. For each incoming record, strip `Branched` entries from the client audit, and the entries older than the start of the server's history for it (its first entry, when that is a `Created`). A record rewritten with `upsert(..., { resetAudit: true })` starts again there, so an offline device's edit from before the reset never puts the old values back into the audit; replay would apply the later `Created` over it anyway (`#entriesSinceHistoryStart`, e2e `auditReset.crud.e2e.tests.ts`):
     - **No entries remain** (branched-only):
         - Has `hash` (active): compare with server state for disparity detection. No merge needed. Included in `successfulRecordIds`.
         - No `hash` (deleted): client deletion for absent server record. Already consistent.
