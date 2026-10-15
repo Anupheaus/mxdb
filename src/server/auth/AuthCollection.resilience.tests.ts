@@ -215,12 +215,12 @@ describe('AuthCollection — first-use setup', () => {
     expect(indexKeys(collection)).toEqual(['deviceId', 'sessionToken', 'userId']);
   });
 
-  it('adds the webauthn registration-token, key-hash and passkey credential indexes for webauthn stores', async () => {
+  it('adds the webauthn registration-token, key-hash and passkey installation indexes for webauthn stores', async () => {
     const { serverDb, collection } = makeFakeServerDb({ hasExistingCollection: false });
 
     await new WebAuthnAuthCollection(serverDb).findById('any');
 
-    expect(indexKeys(collection)).toEqual(['credentialId', 'deviceId', 'keyHash', 'registrationToken', 'sessionToken', 'userId']);
+    expect(indexKeys(collection)).toEqual(['credentialId,installationId', 'deviceId', 'keyHash', 'registrationToken', 'sessionToken', 'userId']);
   });
 
   it('reuses an existing auth collection without recreating it', async () => {

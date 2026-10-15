@@ -7,7 +7,7 @@ import type { AuditEntry, AuditOf } from '../../common/auditor';
 import { hashRecord } from '../../common/auditor/hash';
 import type { ClientDispatcherRequest, MXDBRecordCursors, MXDBSyncEngineResponse } from '../../common/sync-engine';
 import { ServerToClientSynchronisation } from '../ServerToClientSynchronisation';
-import { extendCollection, type OnDeletePayload, type OnUpsertPayload } from '../collections/extendCollection';
+import { extendCollection, type MXDBWriteLock, type OnBeforeUpsertResult, type OnDeletePayload, type OnUpsertPayload } from '../collections/extendCollection';
 
 /**
  * End-to-end contract of the C2S sync handler with the REAL ServerReceiver, ServerDispatcher and
@@ -35,6 +35,7 @@ vi.mock('@anupheaus/nexus/server', () => ({
 }));
 
 import { handleClientToServerSync } from './clientToServerSyncAction';
+import { C2S_SYNC_SUMMARY_MESSAGE } from './buildC2SSyncSummary';
 
 // ─── Fixtures ──────────────────────────────────────────────────────────────────
 
@@ -266,7 +267,7 @@ const HOOKED = hookedItemsCollection.name;
 
 // The extension registry cannot be cleared, so the collection's hooks delegate to per-test implementations.
 const hooks = {
-  onBeforeUpsert: vi.fn<(payload: OnUpsertPayload<Item>) => Promise<void>>(),
+  onBeforeUpsert: vi.fn<(payload: OnUpsertPayload<Item>) => Promise<OnBeforeUpsertResult>>(),
   onBeforeDelete: vi.fn<(payload: OnDeletePayload) => Promise<void>>(),
 };
 extendCollection(hookedItemsCollection, {
@@ -356,6 +357,67 @@ describe('handleClientToServerSync — collection before-write hooks', () => {
     }]]);
   });
 
+  describe('an amendment the hook gives a note for', () => {
+    const COLOUR_NOTE = 'Only a manager can change the colour, so it was put back.';
+    const resetColourWithNote = (): void => {
+      hooks.onBeforeUpsert.mockImplementation(async ({ records }) => {
+        for (const record of records) record.colour = 'unset';
+        return records.map(({ id }) => ({ id, note: COLOUR_NOTE }));
+      });
+    };
+
+    it('is reported in the response, beside the acknowledgement, so the client can tell the user', async () => {
+      resetColourWithNote();
+
+      const response = await syncClientRename();
+
+      expect(response).toEqual([{ collectionName: HOOKED, successfulRecordIds: ['i1'], amendedRecords: [{ id: 'i1', note: COLOUR_NOTE }] }]);
+    });
+
+    it('still saves the rest of the change and pushes the amended record back', async () => {
+      resetColourWithNote();
+
+      await syncClientRename();
+
+      expect([harness.collection.records.get('i1'), harness.emitted.length]).toEqual([amendedByHook, 1]);
+    });
+
+    it('is not reported when the hook amends silently, without a note', async () => {
+      resetColourOnRename();
+
+      const response = await syncClientRename();
+
+      expect(response).toEqual([{ collectionName: HOOKED, successfulRecordIds: ['i1'] }]);
+    });
+
+    it('is not reported when the hook gives a note but leaves the record as it was', async () => {
+      hooks.onBeforeUpsert.mockResolvedValue([{ id: 'i1', note: COLOUR_NOTE }]);
+
+      const response = await syncClientRename();
+
+      expect(response).toEqual([{ collectionName: HOOKED, successfulRecordIds: ['i1'] }]);
+    });
+
+    it('is not reported for a record other than the one the hook was run for', async () => {
+      hooks.onBeforeUpsert.mockImplementation(async ({ records }) => {
+        for (const record of records) record.colour = 'unset';
+        return [{ id: 'someone-else', note: COLOUR_NOTE }];
+      });
+
+      const response = await syncClientRename();
+
+      expect(response).toEqual([{ collectionName: HOOKED, successfulRecordIds: ['i1'] }]);
+    });
+
+    it('is not reported when the hook then throws, because the change is rejected instead', async () => {
+      hooks.onBeforeUpsert.mockRejectedValue(new Error('refused'));
+
+      const response = await syncClientRename();
+
+      expect(response[0]!.amendedRecords).toBeUndefined();
+    });
+  });
+
   it('orders the amendment after the client\'s change even when the client\'s clock runs ahead', async () => {
     resetColourOnRename();
     harness.seed({ id: 'i1', name: 'old', colour: 'red' }, [createdEntry({ id: 'i1', name: 'old', colour: 'red' }, 1)]);
@@ -410,6 +472,117 @@ describe('handleClientToServerSync — collection before-write hooks', () => {
     }]);
 
     expect(hooks.onBeforeUpsert.mock.calls.map(([payload]) => payload.records.ids())).toEqual([['i1'], ['i2']]);
+  });
+});
+
+// ─── The collection's write lock (sc-2402) ────────────────────────────────────
+
+interface Deferred {
+  promise: Promise<void>;
+  resolve(): void;
+}
+
+function deferred(): Deferred {
+  let resolve: () => void = () => undefined;
+  const promise = new Promise<void>(settle => { resolve = settle; });
+  return { promise, resolve };
+}
+
+/** A plain FIFO mutex (not re-entrant), standing in for the lock an app gives a collection. */
+function createMutex(): MXDBWriteLock {
+  let tail: Promise<unknown> = Promise.resolve();
+  return task => {
+    const run = tail.then(task);
+    tail = run.then(() => undefined, () => undefined);
+    return run;
+  };
+}
+
+const syncWriteLock = createMutex();
+const lockedItemsCollection = defineCollection<Item>({ name: 'c2sLockedItems', indexes: [] });
+const LOCKED = lockedItemsCollection.name;
+const lockedHooks = { onBeforeUpsert: vi.fn<(payload: OnUpsertPayload<Item>) => Promise<OnBeforeUpsertResult>>() };
+extendCollection(lockedItemsCollection, {
+  writeLock: syncWriteLock,
+  onBeforeUpsert: payload => lockedHooks.onBeforeUpsert(payload),
+});
+
+describe('handleClientToServerSync — a collection with a write lock', () => {
+  let harness: Harness;
+
+  beforeEach(() => {
+    harness = installHarness({ definition: lockedItemsCollection });
+    lockedHooks.onBeforeUpsert.mockReset().mockResolvedValue(undefined);
+  });
+
+  const created = (id: string, name: string, sequence: number) => ({ id, hash: `h-${id}`, entries: [createdEntry({ id, name }, sequence)] });
+
+  it('makes a write that takes the lock wait until every record of the batch the hooks passed is saved', async () => {
+    const firstHookRunning = deferred();
+    const releaseFirstHook = deferred();
+    lockedHooks.onBeforeUpsert.mockImplementationOnce(async () => {
+      firstHookRunning.resolve();
+      await releaseFirstHook.promise;
+    });
+
+    const syncing = handleClientToServerSync([{ collectionName: LOCKED, records: [created('i1', 'a', 1), created('i2', 'b', 2)] }]);
+    await firstHookRunning.promise;
+    // The concurrent action: it asks for the lock after the first record was judged, before anything was saved.
+    const seenByAction = syncWriteLock(async () => [...harness.collection.records.keys()]);
+    releaseFirstHook.resolve();
+    await syncing;
+
+    expect(await seenByAction).toEqual(['i1', 'i2']);
+  });
+
+  it('judges a synced record again after a write that already held the lock, and refuses it when the rule now fails', async () => {
+    let isFrozen = false;
+    lockedHooks.onBeforeUpsert.mockImplementation(async () => {
+      if (isFrozen) throw new ValidationError('This list is frozen.', 'name');
+    });
+    const actionHolding = deferred();
+    const releaseAction = deferred();
+    const action = syncWriteLock(async () => {
+      actionHolding.resolve();
+      await releaseAction.promise;
+      isFrozen = true;
+    });
+    await actionHolding.promise;
+
+    const syncing = handleClientToServerSync(request(LOCKED, 'i1', [createdEntry({ id: 'i1', name: 'a' }, 1)], 'h-i1'));
+    releaseAction.resolve();
+    const [response] = await Promise.all([syncing, action]);
+
+    expect([response, harness.collection.records.has('i1')]).toEqual([
+      [{ collectionName: LOCKED, successfulRecordIds: ['i1'], rejectedRecords: [{ id: 'i1', reason: 'This list is frozen.', kind: 'validation' }] }],
+      false,
+    ]);
+  });
+
+  it('releases the lock when a hook refuses a record', async () => {
+    lockedHooks.onBeforeUpsert.mockRejectedValue(new Error('refused'));
+
+    await handleClientToServerSync(request(LOCKED, 'i1', [createdEntry({ id: 'i1', name: 'a' }, 1)], 'h-i1'));
+
+    expect(await syncWriteLock(async () => 'free')).toBe('free');
+  });
+
+  it('does not hold the lock for a collection that has none', async () => {
+    harness = installHarness({ definition: hookedItemsCollection });
+    const hookRunning = deferred();
+    const releaseHook = deferred();
+    hooks.onBeforeUpsert.mockReset().mockImplementation(async () => {
+      hookRunning.resolve();
+      await releaseHook.promise;
+    });
+
+    const syncing = handleClientToServerSync(request(HOOKED, 'i1', [createdEntry({ id: 'i1', name: 'a' }, 1)], 'h-i1'));
+    await hookRunning.promise;
+    const seenByAction = await syncWriteLock(async () => harness.collection.records.has('i1'));
+    releaseHook.resolve();
+    await syncing;
+
+    expect(seenByAction).toBe(false);
   });
 });
 
@@ -848,5 +1021,98 @@ describe('handleClientToServerSync — slow read diagnostics', () => {
 
     const warnedMessages = harness.logger.warn.mock.calls.map(([message]) => message);
     expect([warnedMessages.includes('[C2S] slow retrieve'), warnedMessages.includes('[C2S] slow retrieve total')]).toEqual([perCollection, total]);
+  });
+});
+
+// ─── Write summary logging ────────────────────────────────────────────────────
+
+describe('handleClientToServerSync — write summary logging', () => {
+  let harness: Harness;
+
+  beforeEach(() => {
+    harness = installHarness();
+  });
+
+  const summaryCalls = (logger: MockLogger): unknown[][] => logger.info.mock.calls.filter(([message]) => message === C2S_SYNC_SUMMARY_MESSAGE);
+
+  it('logs exactly one info summary, with counts, for a sync that wrote', async () => {
+    harness.seed({ id: 'old', name: 'gone' }, [createdEntry({ id: 'old', name: 'gone' }, 1)]);
+
+    await handleClientToServerSync([{
+      collectionName: ITEMS,
+      records: [
+        { id: 'n1', hash: 'h1', entries: [createdEntry({ id: 'n1', name: 'a' }, 2)] },
+        { id: 'n2', hash: 'h2', entries: [createdEntry({ id: 'n2', name: 'b' }, 3)] },
+        { id: 'old', entries: [branchedEntry(1), deletedEntry(4)] },
+      ],
+    }]);
+
+    expect(summaryCalls(harness.logger)).toEqual([[C2S_SYNC_SUMMARY_MESSAGE, {
+      upserted: 2, deleted: 1, conflicts: 0, rejected: 0, failed: 0,
+      collections: [{ collectionName: ITEMS, upserted: 2, deleted: 1, conflicts: 0, rejected: 0, failed: 0 }],
+    }]]);
+  });
+
+  it('logs no info for a sync with no changes (a branched-only probe)', async () => {
+    const record: Item = { id: 'i1', name: 'same' };
+    harness.seed(record, [createdEntry(record, 1)]);
+
+    await handleClientToServerSync(request(ITEMS, 'i1', [branchedEntry(1)], await hashRecord(record)));
+
+    expect(harness.logger.info).not.toHaveBeenCalled();
+  });
+
+  it('counts a change merged with one the client had not seen as a conflict', async () => {
+    harness.seed({ id: 'i1', name: 'base', colour: 'grey' }, [createdEntry({ id: 'i1', name: 'base', colour: 'grey' }, 1), replaceEntry(2, 'name', 'from-a')]);
+
+    await handleClientToServerSync(request(ITEMS, 'i1', [branchedEntry(1), replaceEntry(3, 'colour', 'blue')], 'hash-b'));
+
+    expect(summaryCalls(harness.logger)[0]![1]).toEqual(expect.objectContaining({ upserted: 1, conflicts: 1 }));
+  });
+
+  it('counts a failed write and leaves it out of the written counts', async () => {
+    harness.collection.sync.mockImplementationOnce(async ({ updated }) => updated.map(({ id }) => ({ id, ...(id === 'bad' ? { error: new Error('document too large') } : {}) })));
+
+    await handleClientToServerSync([{
+      collectionName: ITEMS,
+      records: [
+        { id: 'ok', hash: 'h1', entries: [createdEntry({ id: 'ok' }, 1)] },
+        { id: 'bad', hash: 'h2', entries: [createdEntry({ id: 'bad' }, 2)] },
+      ],
+    }]);
+
+    expect(summaryCalls(harness.logger)[0]![1]).toEqual(expect.objectContaining({ upserted: 1, failed: 1 }));
+  });
+
+  it('never puts record values or ids in the summary', async () => {
+    await handleClientToServerSync(request(ITEMS, 'secret-id', [createdEntry({ id: 'secret-id', name: 'Mrs Customer, 1 High St' }, 1)], 'h1'));
+
+    const serialised = JSON.stringify(summaryCalls(harness.logger));
+    expect([serialised.includes('Mrs Customer'), serialised.includes('secret-id')]).toEqual([false, false]);
+  });
+
+  it('logs each write at debug with the collection, operation, count and ids, but no values', async () => {
+    await handleClientToServerSync(request(ITEMS, 'n1', [createdEntry({ id: 'n1', name: 'Mrs Customer' }, 1)], 'h1'));
+
+    const writeCall = harness.logger.debug.mock.calls.find(([message]) => message === 'C2S write');
+    expect([writeCall?.[1], JSON.stringify(writeCall).includes('Mrs Customer')]).toEqual([{ collectionName: ITEMS, op: 'upsert', count: 1, recordIds: ['n1'] }, false]);
+  });
+
+  it('counts a record a before-write hook rejected', async () => {
+    harness = installHarness({ definition: hookedItemsCollection });
+    hooks.onBeforeDelete.mockReset().mockResolvedValue(undefined);
+    hooks.onBeforeUpsert.mockReset().mockImplementation(async ({ records }) => {
+      if (records.some(({ name }) => name === 'forbidden')) throw new Error('not allowed');
+    });
+
+    await handleClientToServerSync([{
+      collectionName: HOOKED,
+      records: [
+        { id: 'n1', hash: 'h1', entries: [createdEntry({ id: 'n1', name: 'forbidden' }, 1)] },
+        { id: 'ok', hash: 'h2', entries: [createdEntry({ id: 'ok', name: 'fine' }, 2)] },
+      ],
+    }]);
+
+    expect(summaryCalls(harness.logger)[0]![1]).toEqual(expect.objectContaining({ upserted: 1, rejected: 1 }));
   });
 });

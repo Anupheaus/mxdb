@@ -12,7 +12,7 @@ import {
 } from './models';
 import { SYNC_ATTEMPTS_BEFORE_STALLED, syncRetryDelayMs } from './syncRetryPolicy';
 import type { ClientReceiver } from './ClientReceiver';
-import type { MXDBSyncRejection } from '../models';
+import type { MXDBSyncAmendment, MXDBSyncRejection } from '../models';
 import { isActiveRecordState, getStateId } from './utils';
 import {
   MAX_DISPATCH_BYTES, MAX_RECORD_DISPATCH_BYTES, batchDispatchRecords, estimateDispatchBytes, type DispatchBatch, type DispatchRecord, type MXDBSyncTooLarge,
@@ -32,6 +32,9 @@ interface ClientDispatcherProps {
   /** Called with the dispatched records the server refused (a collection before-write hook threw). They
    *  are settled like acknowledged records — the server has already pushed their reverted state. */
   onRejected?(rejections: MXDBSyncRejection[]): void;
+  /** Called with the dispatched records the server saved but partly amended, with the hook's note for the user.
+   *  One call per server response, so a burst of edits is one report. The amended records are pushed as usual. */
+  onAmended?(amendments: MXDBSyncAmendment[]): void;
   /** Called once when a change has failed {@link SYNC_ATTEMPTS_BEFORE_STALLED} times in a row. It keeps
    *  retrying with backoff (see `syncRetryPolicy.ts`); this only lets the app tell the user. */
   onStalled?(stall: MXDBSyncStall): void;
@@ -556,6 +559,21 @@ export class ClientDispatcher {
     this.#props.onRejected?.(rejections);
   }
 
+  /** Hands the app the server's amendment notes for records in this dispatch (a response never names others). */
+  #reportAmendments(response: MXDBSyncEngineResponse, states: MXDBRecordStates): void {
+    const amendments: MXDBSyncAmendment[] = [];
+    for (const { collectionName, amendedRecords } of response) {
+      if (amendedRecords == null || amendedRecords.length === 0) continue;
+      const dispatchedIds = new Set(states.find(col => col.collectionName === collectionName)?.records.map(getStateId) ?? []);
+      for (const { id, note } of amendedRecords) {
+        if (dispatchedIds.has(id)) amendments.push({ collectionName, recordId: id, note });
+      }
+    }
+    if (amendments.length === 0) return;
+    this.#logger.info('[CD] the server amended local changes; the amended records are being pushed back', { amendments });
+    this.#props.onAmended?.(amendments);
+  }
+
   #processSuccessResponse(response: MXDBSyncEngineResponse, states: MXDBRecordStates): void {
     const updateRequest: MXDBUpdateRequest = [];
 
@@ -597,6 +615,7 @@ export class ClientDispatcher {
     }
 
     this.#reportRejections(response, states);
+    this.#reportAmendments(response, states);
     this.#settleRetries(response, states);
 
     if (updateRequest.length > 0) {

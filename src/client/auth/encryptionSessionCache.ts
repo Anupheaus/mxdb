@@ -1,3 +1,5 @@
+import { loadGuestEncryption } from './guestEncryption';
+
 const SESSION_KEY_PREFIX = 'mxdb:enc';
 
 interface CachedEncryption {
@@ -61,8 +63,12 @@ export function clearEncryptionFromSession(appName: string, userId: string): voi
   try { sessionStorage.removeItem(buildSessionKey(appName, userId)); } catch { /* ignore */ }
 }
 
-/** Returns true if a PRF-derived encryption key is cached in sessionStorage for this user. */
+/**
+ * Returns true if this user's local database can be opened without a passkey ceremony: a PRF-derived key is cached in
+ * sessionStorage, or the user signed in with a guest session that stored its own key (`storeGuestEncryptionKey`).
+ */
 export function hasCachedEncryptionKey(appName: string, userId: string): boolean {
+  if (loadGuestEncryption(appName, userId) != null) return true;
   try {
     return typeof sessionStorage !== 'undefined' && sessionStorage.getItem(buildSessionKey(appName, userId)) != null;
   } catch { return false; }

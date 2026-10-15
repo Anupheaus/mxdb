@@ -50,7 +50,15 @@ describe('useQueryGate', () => {
   it('gives the gate\'s own filters, from an empty request, for reads that are not a query', async () => {
     onQuery.mockImplementation(({ userId }) => ({ filters: { ownerId: userId ?? 'nobody' } }));
     expect(await useQueryGate(gated).getGateFilters()).toEqual({ ownerId: 'u1' });
-    expect(onQuery).toHaveBeenCalledWith({ request: {}, userId: 'u1' });
+    expect(onQuery).toHaveBeenCalledWith({ request: {}, userId: 'u1', purpose: 'read' });
+  });
+
+  it('asks the gate as a write when a write is being checked, and as a read otherwise', async () => {
+    onQuery.mockImplementation(({ purpose }) => ({ filters: purpose === 'write' ? { ownerId: 'owner' } : { ownerId: 'in-window' } }));
+    const { gateRequest, getGateFilters } = useQueryGate(gated);
+    expect(await getGateFilters('write')).toEqual({ ownerId: 'owner' });
+    expect(await getGateFilters()).toEqual({ ownerId: 'in-window' });
+    expect((await gateRequest({})).filters).toEqual({ ownerId: 'in-window' });
   });
 
   it('treats a gate that adds no filters as not narrowing the read', async () => {
@@ -69,6 +77,6 @@ describe('useQueryGate', () => {
     auth.throws = true;
     onQuery.mockReturnValue(undefined);
     await useQueryGate(gated).gateRequest({});
-    expect(onQuery).toHaveBeenCalledWith({ request: {}, userId: undefined });
+    expect(onQuery).toHaveBeenCalledWith({ request: {}, userId: undefined, purpose: 'read' });
   });
 });

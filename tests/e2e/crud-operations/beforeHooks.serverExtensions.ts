@@ -2,10 +2,12 @@
 // (via `setupE2E({ serverExtensionsModule })`) before it starts — never by the test worker.
 
 import { ValidationError } from '@anupheaus/common';
-import { extendCollection, useCollection } from '../../../src/server/index.js';
+import { extendCollection, useCollection, type OnBeforeUpsertAmendmentNote } from '../../../src/server/index.js';
 import { e2eTestCollection } from '../setup/types.js';
 import {
   AMEND_ON_UPSERT_VALUE,
+  AMEND_WITH_NOTE_VALUE,
+  AMENDMENT_NOTE,
   AMENDED_BY_SERVER_VALUE,
   DELETE_REJECTION_REASON,
   NOTIFY_ON_DELETE_TAG_PREFIX,
@@ -21,9 +23,15 @@ extendCollection(e2eTestCollection, {
   onBeforeUpsert({ records }) {
     if (records.some(record => record.value === REJECT_ON_UPSERT_VALUE)) throw new Error(UPSERT_REJECTION_REASON);
     if (records.some(record => record.value === REFUSE_FOR_USER_VALUE)) throw new ValidationError(VALIDATION_REJECTION_REASON, 'value');
+    const notes: OnBeforeUpsertAmendmentNote[] = [];
     for (const record of records) {
       if (record.value === AMEND_ON_UPSERT_VALUE) record.value = AMENDED_BY_SERVER_VALUE;
+      if (record.value === AMEND_WITH_NOTE_VALUE) {
+        record.value = AMENDED_BY_SERVER_VALUE;
+        notes.push({ id: record.id, note: AMENDMENT_NOTE });
+      }
     }
+    return notes;
   },
   async onBeforeDelete({ recordIds }) {
     const { get, upsert } = useCollection(e2eTestCollection);

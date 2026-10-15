@@ -7,6 +7,7 @@ import {
   SyncPausedError,
   type MXDBActiveRecordCursor,
   type MXDBDeletedRecordCursor,
+  type MXDBReadableRecords,
   type MXDBRecordCursors,
   type MXDBRecordStatesRequest,
   type MXDBSyncEngineResponse,
@@ -34,20 +35,30 @@ export interface ServerToClientSynchronisationProps {
   /** Identifies the connected client (socket id) for diagnostics. */
   clientId?: string;
   /**
-   * The connected client's read gate: of the given record ids, those it may read (each collection's `onQuery`).
-   * Called for every change-stream upsert, outside any request, so it must run in the connection's own context
-   * (see `startAuthenticatedServer`). A record outside it is never pushed; a record the client holds is evicted.
-   * Absent: every record is readable.
+   * The connected client's read gate, as a read: of the given record ids, the live records it may read, read through
+   * each collection's `onQuery` in ONE query, so the gate decision and the content pushed are the same snapshot
+   * (sc-682). Called for every change-stream upsert, outside any request, so it must run in the connection's own
+   * context (see `startAuthenticatedServer`). A record it does not return is never pushed; one the client holds is
+   * evicted. Absent: every record is readable.
    */
-  filterReadable?(request: MXDBRecordStatesRequest): Promise<MXDBRecordStatesRequest>;
+  readReadable?(request: MXDBRecordStatesRequest): Promise<MXDBReadableRecords>;
   /** When true, all outward S2C effects are skipped (server-startup no-op instance). */
   noOp?: boolean;
 }
 
-/** Changed records split by the client's read gate. */
-interface ReadGateSplit {
-  readable: MXDBRecord[];
-  unreadableIds: string[];
+/** Reads the live records for the given ids — plainly, or through the client's read gate. */
+type LiveRecordReader = (ids: string[]) => Promise<MXDBRecord[]>;
+
+/** The ids a push's read did not return although their audit shows no delete: outside the gate, when read through it. */
+interface BuildAndPushResult {
+  unreturnedIds: string[];
+}
+
+/** Marks (`delta` 1) or unmarks (`delta` -1) record ids a {@link ServerToClientSynchronisation.pushActive} is building. */
+interface TrackBuildingAuthoritativeRequest {
+  collectionName: string;
+  recordIds: string[];
+  delta: 1 | -1;
 }
 
 export class ServerToClientSynchronisation {
@@ -57,14 +68,19 @@ export class ServerToClientSynchronisation {
   readonly #disableAuditByCollection: Map<string, boolean>;
   readonly #sd: ServerDispatcher | null;
   readonly #noOp: boolean;
-  readonly #filterReadable: ServerToClientSynchronisationProps['filterReadable'];
+  readonly #readReadable: ServerToClientSynchronisationProps['readReadable'];
+  /**
+   * Per collection, how many {@link pushActive} calls are building cursors for each record id: not yet handed to the SD,
+   * so the SD cannot report them reachable, yet a change landing now must still be gate-checked (see {@link #heldRecords}).
+   */
+  readonly #buildingAuthoritativeIds = new Map<string, Map<string, number>>();
   #closed = false;
 
   constructor(props: ServerToClientSynchronisationProps) {
     this.#logger = props.logger;
     this.#getDb = props.noOp === true ? null : props.getDb;
     this.#noOp = props.noOp === true;
-    this.#filterReadable = props.filterReadable;
+    this.#readReadable = props.readReadable;
     this.#collectionNames = new Set(props.collections.map(c => c.name));
     this.#disableAuditByCollection = new Map(
       props.collections.map(c => [c.name, configRegistry.getOrError(c).disableAudit === true]),
@@ -153,11 +169,7 @@ export class ServerToClientSynchronisation {
     if (!this.#collectionNames.has(event.collectionName)) return;
 
     if (event.type === 'upsert') {
-      const { readable, unreadableIds } = await this.#splitByReadGate(event.collectionName, event.records);
-      await this.#buildAndPush(event.collectionName, readable, /* addToFilter */ false);
-      // Left the client's read gate (a reassigned task, a capability removed): evict it from the client if it holds
-      // it. Change-stream style, so the SD only sends it for a record in its filter.
-      if (unreadableIds.length > 0) this.#sd.push([{ collectionName: event.collectionName, records: unreadableIds.map(evictionOf) }], /* addToFilter */ false);
+      await this.#pushThroughReadGate(event.collectionName, event.records);
     } else {
       const cursors = await this.#buildDeleteCursors(event.collectionName, event.recordIds);
       if (cursors.length > 0) {
@@ -178,7 +190,13 @@ export class ServerToClientSynchronisation {
   async pushActive(collectionName: string, records: MXDBRecord[]): Promise<void> {
     if (this.#noOp || this.#closed || this.#sd == null) return;
     if (!this.#collectionNames.has(collectionName)) return;
-    await this.#buildAndPush(collectionName, records, /* addToFilter */ true);
+    const recordIds = records.ids();
+    this.#trackBuildingAuthoritative({ collectionName, recordIds, delta: 1 });
+    try {
+      await this.#buildAndPush(collectionName, records, /* addToFilter */ true);
+    } finally {
+      this.#trackBuildingAuthoritative({ collectionName, recordIds, delta: -1 });
+    }
   }
 
   /**
@@ -210,29 +228,97 @@ export class ServerToClientSynchronisation {
   // ─── Private: cursor construction ─────────────────────────────────────────
 
   /**
-   * Splits changed records by the client's read gate. Fails closed on a gate that throws: nothing is pushed, but
-   * nothing is evicted either — a lookup failure must not wipe the device; the next change or sync tries again.
+   * Pushes changed records the client may read, reading their content THROUGH the read gate in one query: the gate
+   * decision and the content are one snapshot, so a record reassigned away between two close changes is never sent in
+   * its reassigned state (sc-682). A record the gated read does not return, and that is not deleted, has left the
+   * client's gate (a reassigned task, a capability removed): it is evicted from the client if it holds it —
+   * change-stream style, so the SD only sends it for a record in its filter. Fails closed on a gate that throws:
+   * nothing is pushed, but nothing is evicted either — a lookup failure must not wipe the device. The same for a
+   * collection the gated read gives no answer for (one the connection's database does not register, sc-999).
+   *
+   * Only records this client holds are gate-checked (sc-997): the SD drops a change-stream cursor for any other, so the
+   * gate — which the host may make costly with its own lookups — is not asked about them, and a change nobody holds
+   * costs no gate call on any socket.
    */
-  async #splitByReadGate(collectionName: string, records: MXDBRecord[]): Promise<ReadGateSplit> {
-    if (this.#filterReadable == null || records.length === 0) return { readable: records, unreadableIds: [] };
-    try {
-      const [result] = await this.#filterReadable([{ collectionName, recordIds: records.ids() }]);
-      const readableIds = new Set(result?.recordIds ?? []);
-      return { readable: records.filter(({ id }) => readableIds.has(id)), unreadableIds: records.ids().filter(id => !readableIds.has(id)) };
-    } catch (error) {
-      this.#logger.error('[s2c] read gate failed for a change-stream push — pushing nothing for it', { collectionName, recordCount: records.length, error: error as Record<string, unknown> });
-      return { readable: [], unreadableIds: [] };
+  async #pushThroughReadGate(collectionName: string, changedRecords: MXDBRecord[]): Promise<void> {
+    const readReadable = this.#readReadable;
+    if (readReadable == null) {
+      await this.#buildAndPush(collectionName, changedRecords, /* addToFilter */ false);
+      return;
     }
+    const records = this.#heldRecords(collectionName, changedRecords);
+    if (records.length === 0) return;
+    // An answer that is not gated (no gate on the collection) means every id is readable: one not returned is deleted.
+    let isGated = true;
+    let isUnknownCollection = false;
+    let gateError: unknown;
+    const readThroughGate: LiveRecordReader = async ids => {
+      try {
+        const [result] = await readReadable([{ collectionName, recordIds: ids }]);
+        if (result == null) isUnknownCollection = true;
+        if (result?.isGated === false) isGated = false;
+        return result?.records ?? [];
+      } catch (error) {
+        gateError = error;
+        throw error;
+      }
+    };
+    let unreturnedIds: string[];
+    try {
+      ({ unreturnedIds } = await this.#buildAndPush(collectionName, records, /* addToFilter */ false, readThroughGate));
+    } catch (error) {
+      if (error !== gateError) throw error;
+      this.#logger.error('[s2c] read gate failed for a change-stream push — pushing nothing for it', { collectionName, recordCount: records.length, error: error as Record<string, unknown> });
+      return;
+    }
+    if (isUnknownCollection) {
+      this.#logger.warn('[s2c] read gate has no answer for an unknown collection — pushing and evicting nothing for it', { collectionName, recordCount: records.length });
+      return;
+    }
+    if (isGated && unreturnedIds.length > 0) this.#sd?.push([{ collectionName, records: unreturnedIds.map(evictionOf) }], /* addToFilter */ false);
   }
 
-  async #buildAndPush(collectionName: string, records: MXDBRecord[], addToFilter: boolean): Promise<void> {
-    if (records.length === 0 || this.#sd == null) return;
+  /**
+   * The changed records a change-stream push could reach this client for: ones the SD holds or is delivering, plus ones
+   * a {@link pushActive} is still building cursors for (they reach the SD once built, and its read may predate the change).
+   */
+  #heldRecords(collectionName: string, records: MXDBRecord[]): MXDBRecord[] {
+    if (this.#sd == null) return [];
+    const reachableIds = new Set(this.#sd.reachableRecordIds(collectionName, records.ids()));
+    const buildingIds = this.#buildingAuthoritativeIds.get(collectionName);
+    return records.filter(({ id }) => reachableIds.has(id) || buildingIds?.has(id) === true);
+  }
+
+  #trackBuildingAuthoritative({ collectionName, recordIds, delta }: TrackBuildingAuthoritativeRequest): void {
+    let buildingIds = this.#buildingAuthoritativeIds.get(collectionName);
+    if (buildingIds == null) {
+      buildingIds = new Map();
+      this.#buildingAuthoritativeIds.set(collectionName, buildingIds);
+    }
+    for (const recordId of recordIds) {
+      const count = (buildingIds.get(recordId) ?? 0) + delta;
+      if (count > 0) buildingIds.set(recordId, count);
+      else buildingIds.delete(recordId);
+    }
+    if (buildingIds.size === 0) this.#buildingAuthoritativeIds.delete(collectionName);
+  }
+
+  /**
+   * Builds pair-consistent cursors for `records` and pushes them. `readLive` reads the fresh content (through the read
+   * gate for a change-stream push); an id it does not return although its audit shows no delete is reported in
+   * `unreturnedIds`. A read gate failure in the batch read propagates; in a per-record retry it only drops that record.
+   */
+  async #buildAndPush(collectionName: string, records: MXDBRecord[], addToFilter: boolean, readLive?: LiveRecordReader): Promise<BuildAndPushResult> {
+    const nothing: BuildAndPushResult = { unreturnedIds: [] };
+    if (records.length === 0 || this.#sd == null) return nothing;
     const db = this.#getDb?.();
-    if (db == null) return;
+    if (db == null) return nothing;
 
     let collection: ReturnType<typeof db.use>;
     try { collection = db.use(collectionName); }
-    catch { return; }
+    catch { return nothing; }
+    const read: LiveRecordReader = readLive ?? (ids => collection.get(ids));
+    const unreturnedIds: string[] = [];
 
     const disableAudit = this.#disableAuditByCollection.get(collectionName) === true;
     const allIds = records.ids();
@@ -247,7 +333,9 @@ export class ServerToClientSynchronisation {
     let cursors: (MXDBActiveRecordCursor & { hash: string })[];
 
     if (disableAudit) {
-      const freshRecords = await collection.get(allIds);
+      const freshRecords = await read(allIds);
+      const returnedIds = new Set(freshRecords.ids());
+      unreturnedIds.push(...allIds.filter(id => !returnedIds.has(id)));
       cursors = await Promise.all(
         freshRecords.map(async freshRecord => ({ record: freshRecord, lastAuditEntryId: '', hash: await hashRecord(freshRecord) }))
       );
@@ -258,7 +346,7 @@ export class ServerToClientSynchronisation {
 
       // Step 2: batch live-records + audit-after in parallel
       const [freshRecords, auditsAfter] = await Promise.all([
-        collection.get(allIds),
+        read(allIds),
         collection.getAudit(allIds),
       ]);
       const freshRecordMap = new Map(freshRecords.map(r => [r.id, r]));
@@ -284,6 +372,7 @@ export class ServerToClientSynchronisation {
         if (idBefore === idAfter) {
           const freshRecord = freshRecordMap.get(id);
           if (freshRecord == null) {
+            unreturnedIds.push(id);
             continue;
           }
           consistent.push({ id, freshRecord, lastAuditEntryId: idAfter });
@@ -316,7 +405,7 @@ export class ServerToClientSynchronisation {
               break;
             }
             const idBefore = auditBefore != null ? (auditor.getLastEntryId(auditBefore) ?? '') : '';
-            const candidate = (await collection.get([id]))[0];
+            const candidate = (await read([id]))[0];
             const auditAfter = await collection.getAudit(id);
             if (auditAfter != null && auditor.isDeleted(auditAfter)) {
               tombstoned = true;
@@ -325,7 +414,12 @@ export class ServerToClientSynchronisation {
             const idAfter = auditAfter != null ? (auditor.getLastEntryId(auditAfter) ?? '') : '';
             lastIdBefore = idBefore;
             lastIdAfter = idAfter;
-            if (idBefore === idAfter) { freshRecord = candidate; lastAuditEntryId = idAfter; break; }
+            if (idBefore === idAfter) {
+              freshRecord = candidate;
+              lastAuditEntryId = idAfter;
+              if (candidate == null) unreturnedIds.push(id);
+              break;
+            }
           }
           if (tombstoned || freshRecord == null) return null;
           if (freshRecord === undefined && lastAuditEntryId === '') {
@@ -354,8 +448,8 @@ export class ServerToClientSynchronisation {
     this.#logger.debug('[s2c] buildAndPush built cursors', {
       collectionName, addToFilter, disableAudit, recordsIn: records.length, cursorsBuilt: cursors.length,
     });
-    if (cursors.length === 0) return;
-    this.#sd.push([{ collectionName, records: cursors }], addToFilter);
+    if (cursors.length > 0) this.#sd.push([{ collectionName, records: cursors }], addToFilter);
+    return { unreturnedIds };
   }
 
   async #buildDeleteCursors(collectionName: string, recordIds: string[]): Promise<MXDBDeletedRecordCursor[]> {

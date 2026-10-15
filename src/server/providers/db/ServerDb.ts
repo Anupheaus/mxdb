@@ -6,8 +6,11 @@ import { ServerDbCollection } from './ServerDbCollection';
 import { ServerDbCollectionEvents } from './ServerDbCollectionEvents';
 import type { ServerDbChangeEvent } from './server-db-models';
 import { runInDbScope, setDb } from './DbContext';
+import { captureAmbientLogger, runOutsideAnyConnection } from './runOutsideAnyConnection';
 import { is, type Logger, type Record, type Unsubscribe } from '@anupheaus/common';
 import { AsyncLocalStorage } from 'async_hooks';
+import { createMongoCommandLogging } from './mongoCommandLogging';
+import { classifyMongoFailure, type MongoFailureLike } from './classifyMongoError';
 
 interface Props {
   mongoDbName: string;
@@ -55,6 +58,7 @@ export class ServerDb {
     this.#watch = props.watch ?? true;
     this.#client = new MongoClient(props.mongoDbUrl);
     this.#logger = props.logger.createSubLogger('ServerDb');
+    this.#hookLogger = captureAmbientLogger();
     this.#dbEvents = new Map();
     this.#setupEvents();
     this.#db = this.#connect();
@@ -67,6 +71,8 @@ export class ServerDb {
   #client: MongoClient;
   #collections: Map<string, ServerDbCollection<any>>;
   #logger: Logger;
+  /** The logger ambient when this database was built, provided to the onAfter hooks (which run on an empty context). */
+  #hookLogger: Logger | undefined;
   #db: Promise<Db>;
   #changeStream: ChangeStream | undefined;
   #dbEvents: Map<string, ServerDbCollectionEvents>;
@@ -239,17 +245,12 @@ export class ServerDb {
       logger.error('Database direct error', { error });
     });
 
-    client.on('commandStarted', event => {
-      logger.debug('Database command started', { event });
-    });
-
-    client.on('commandFailed', event => {
-      logger.debug('Database command failed', { event });
-    });
-
-    client.on('commandSucceeded', event => {
-      logger.debug('Database command succeeded', { event });
-    });
+    // Command events carry the command document (customer data), so they are logged by name, collection and
+    // duration only — see createMongoCommandLogging.
+    const { onCommandStarted, onCommandSucceeded, onCommandFailed } = createMongoCommandLogging(logger);
+    client.on('commandStarted', onCommandStarted);
+    client.on('commandFailed', onCommandFailed);
+    client.on('commandSucceeded', onCommandSucceeded);
 
     client.on('connectionClosed', event => {
       if (this.#isClosing) return;
@@ -292,12 +293,16 @@ export class ServerDb {
     };
 
     try {
-      // Scoped to THIS database: the driver emits the change in whatever context the change stream was started in,
-      // which for a pooled tenant database is the process default (the controller). A hook calling useDb() or
-      // useCollection() must reach the database that saw the change (sc-621).
-      await runInDbScope(() => {
-        setDb(this);
-        return Promise.resolve(run());
+      // The driver emits the change in whatever context the change stream was started in: for a pooled tenant database,
+      // the first connection routed to it. So the hooks run on an empty context chain, with no connection's socket or
+      // signed-in user (sc-662), scoped to THIS database so useDb()/useCollection() reach the database that saw the
+      // change (sc-621), and with the logger that was ambient when this database was built.
+      await runOutsideAnyConnection({
+        logger: this.#hookLogger,
+        delegate: () => runInDbScope(() => {
+          setDb(this);
+          return Promise.resolve(run());
+        }),
       });
     } catch (error) {
       this.#logger.error('Extension onAfter hook failed', { collectionName: event.collectionName, type: event.type, error });
@@ -315,13 +320,19 @@ export class ServerDb {
   }
 
   #startWatching(db: Db) {
-    this.#logger.info('[ServerDb] startWatching.begin');
+    const isRestart = this.#changeStream != null;
+    if (isRestart) this.#logger.warn('[ServerDb] changeStream restarting after the connection was lost');
+    else this.#logger.info('[ServerDb] startWatching.begin');
     const changeStream = this.#changeStream = db.watch([{ $project: { something: false } }], { fullDocumentBeforeChange: 'whenAvailable' });
+    // The driver resumes resumable errors itself and only emits 'error' when it could not, so a failure that is
+    // not an expected transient one is an error: change notifications to clients have stopped.
     changeStream.on('error', err => {
-      this.#logger.error('[ServerDb] changeStream error', { error: String((err as any)?.message ?? err) });
+      const level = classifyMongoFailure(err as MongoFailureLike);
+      this.#logger[level]('[ServerDb] changeStream error', { error: String((err as any)?.message ?? err) });
     });
     changeStream.on('close', () => {
-      this.#logger.info('[ServerDb] changeStream closed');
+      if (this.#isClosing) this.#logger.info('[ServerDb] changeStream closed');
+      else this.#logger.warn('[ServerDb] changeStream closed unexpectedly');
     });
     this.#logger.info('[ServerDb] startWatching.ready (listeners attached)');
     changeStream.on('change', change => {

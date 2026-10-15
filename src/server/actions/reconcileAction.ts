@@ -1,4 +1,5 @@
-import { createServerActionHandler, useLogger } from '@anupheaus/nexus/server';
+import { useLogger } from '@anupheaus/nexus/server';
+import { createClientActionHandler } from './createClientActionHandler';
 import { mxdbReconcileAction } from '../../common';
 import { useDb, useServerToClientSynchronisation } from '../providers';
 import { useQueryGate } from '../collections/useQueryGate';
@@ -47,4 +48,4 @@ export async function handleReconcile(request: ReconcileRequest): Promise<Reconc
   return response;
 }
 
-export const reconcileAction = createServerActionHandler(mxdbReconcileAction, handleReconcile);
+export const reconcileAction = createClientActionHandler(mxdbReconcileAction, handleReconcile);

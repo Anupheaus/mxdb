@@ -1,14 +1,17 @@
 import type { DataFilters, Record as MXDBRecord } from '@anupheaus/common';
 import type { MXDBCollection } from '../../common';
 import { auditor, AuditEntryType, type AnyAuditOf, type AuditEntry, type ServerAuditOf } from '../../common/auditor';
-import { isActiveRecordState, type MXDBActiveRecordState, type MXDBDeletedRecordState, type MXDBSyncRejectedRecord } from '../../common/sync-engine';
+import { isActiveRecordState, toOutsideReadGateRejection, type MXDBActiveRecordState, type MXDBDeletedRecordState, type MXDBSyncRejectedRecord } from '../../common/sync-engine';
 import { useQueryGate } from '../collections/useQueryGate';
 
-/** Shown to the user whose change was refused; the record is someone else's to change. */
-export const OUTSIDE_READ_GATE_REASON = 'You do not have access to change this record.';
+/** Why a change was refused — for the server's logs only; the client gets one reason for every case (sc-998). */
+export type RefusedWriteCause = 'outside-read-gate' | 'deleted';
 
-/** Shown when a change targets a record that has been deleted — deletes are final. */
-export const DELETED_RECORD_REASON = 'This record has been deleted, so it cannot be changed.';
+/** A refused change and its cause, to log. */
+export interface RefusedWriteDetails {
+  id: string;
+  cause: RefusedWriteCause;
+}
 
 type SyncState = MXDBActiveRecordState | MXDBDeletedRecordState;
 
@@ -30,8 +33,10 @@ export interface RejectWritesOutsideReadGateProps {
 }
 
 export interface RejectWritesOutsideReadGateResult {
-  /** The refused changes, with the reason to report to the client. */
+  /** The refused changes, with the reason to report to the client: the same for every cause. */
   rejectedRecords: MXDBSyncRejectedRecord[];
+  /** Why each was refused, for the server's logs. Never sent to the client: it would tell it whether the record exists. */
+  refusedWrites: RefusedWriteDetails[];
   /** Their ids: left out of the write entirely, but acknowledged so the client stops resending them. */
   unpersistedIds: string[];
 }
@@ -40,6 +45,8 @@ export interface RejectWritesOutsideReadGateResult {
  * The read gate applied to client writes, for a collection with an `onQuery` gate. A client may not change a
  * record whose stored version is outside the gate for them — a record it cannot read is not its to change.
  * Without this, a fitter who knew a task's id could add themself to its assignees (and so read it) or delete it.
+ * The gate is asked with `purpose: 'write'`, so a scope that only limits delivery (a device's date window) does
+ * not refuse an offline edit to a record that has left it since: the edit is saved, then the record is evicted.
  *
  * - A **live** record outside the caller's gate: the update or delete is refused.
  * - A **deleted** record (its audit is a tombstone): any change is refused, whoever asks. Its gate cannot be
@@ -48,6 +55,9 @@ export interface RejectWritesOutsideReadGateResult {
  * - An id the server has never held is a **create**, and is allowed; the before-write hooks still judge it. (A
  *   collection with `disableAudit` keeps no tombstones, so there a deleted id looks new — it holds nothing to leak.)
  *
+ * The client is given the same refusal for both (and the `ServerReceiver` gives it for an edit to an id never held), so
+ * it cannot learn from the answer whether a record it may not read exists (sc-998). The cause goes to the server's logs.
+ *
  * A refused change is not persisted at all — not even its audit entries, which were never the client's to add.
  * Its state is replaced, in place, by what the server holds (the stored record, or the tombstone), so the
  * receiver, reading the states back, never sees the client's merged version: it pushes the stored record only
@@ -55,9 +65,10 @@ export interface RejectWritesOutsideReadGateResult {
  * outside the caller's read scope belongs in a server action, not a synced write.
  */
 export async function rejectWritesOutsideReadGate({ collection, states }: RejectWritesOutsideReadGateProps): Promise<RejectWritesOutsideReadGateResult> {
-  const result: RejectWritesOutsideReadGateResult = { rejectedRecords: [], unpersistedIds: [] };
+  const result: RejectWritesOutsideReadGateResult = { rejectedRecords: [], refusedWrites: [], unpersistedIds: [] };
   const { collection: definition, queryIds, getAuditIds, get, getAudit } = collection;
-  const gateFilters = await useQueryGate<MXDBRecord>(definition).getGateFilters();
+  // Asked as a write: a scope that only limits what is delivered (a device's window) must not refuse a change.
+  const gateFilters = await useQueryGate<MXDBRecord>(definition).getGateFilters('write');
   if (gateFilters == null || states.length === 0) return result;
 
   const ids = states.map(stateIdOf);
@@ -73,20 +84,21 @@ export async function rejectWritesOutsideReadGate({ collection, states }: Reject
 
   const storedStates = await loadStoredStates({ get, getAudit, liveIds: refusedLiveIds, auditedIds, refusedIds: heldBackIds });
   const incomingById = new Map(states.map(state => [stateIdOf(state), state] as const));
-  const refusals = [
-    ...refusedLiveIds.map(id => ({ id, reason: OUTSIDE_READ_GATE_REASON, kind: 'access' as const })),
+  const refusedWrites: RefusedWriteDetails[] = [
+    ...refusedLiveIds.map(id => ({ id, cause: 'outside-read-gate' as const })),
     // Deleting a record that is already deleted (two people deleting it, or a delete resent after a lost ack) changes
     // nothing, so it is acknowledged quietly; any other change to a deleted record is refused.
     ...deletedIds
       .filter(id => !isOnlyARepeatedDelete({ incoming: incomingById.get(id), stored: storedStates.get(id) }))
-      .map(id => ({ id, reason: DELETED_RECORD_REASON, kind: 'access' as const })),
+      .map(id => ({ id, cause: 'deleted' as const })),
   ];
 
   states.forEach((state, index) => {
     const stored = storedStates.get(stateIdOf(state));
     if (stored != null) states[index] = stored;
   });
-  result.rejectedRecords.push(...refusals);
+  result.rejectedRecords.push(...refusedWrites.map(({ id }) => toOutsideReadGateRejection(id)));
+  result.refusedWrites.push(...refusedWrites);
   result.unpersistedIds.push(...heldBackIds);
   return result;
 }

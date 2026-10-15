@@ -15,6 +15,10 @@ const h = vi.hoisted(() => ({
   logger: { error: vi.fn(), warn: vi.fn(), debug: vi.fn(), info: vi.fn(), silly: vi.fn() },
 }));
 
+const refuse = vi.hoisted(() => ({ refuseServerOnlyCollections: vi.fn() }));
+
+vi.mock('../collections/refuseServerOnlyCollections', () => refuse);
+
 vi.mock('@anupheaus/nexus/server', async importOriginal => ({
   ...(await importOriginal<object>()),
   createServerSubscription: (_subscription: unknown, handler: unknown) => handler,
@@ -103,6 +107,23 @@ function recordingHandler(...responses: Response[]): { handler: Handler; calls: 
 // ─── Tests ─────────────────────────────────────────────────────────────────────
 
 describe('createServerCollectionSubscription', () => {
+  it('checks the request for server-only collections before the handler runs, naming the subscription', async () => {
+    const { handler, calls } = recordingHandler(1);
+    await createSubscriber(handler).subscribe({ query: 'active' });
+    expect(refuse.refuseServerOnlyCollections).toHaveBeenCalledWith({ requestName: subscription.name, request: { query: 'active' } });
+    expect(calls).toHaveLength(1);
+  });
+
+  it('never runs the handler, or remembers anything, for a refused subscribe', async () => {
+    refuse.refuseServerOnlyCollections.mockImplementationOnce(() => { throw new Error('refused'); });
+    const { handler, calls } = recordingHandler(1);
+    const subscriber = createSubscriber(handler);
+    await expect(subscriber.subscribe()).rejects.toThrow('refused');
+    expect(calls).toHaveLength(0);
+    await subscriber.subscribe();
+    expect(calls[0]!.previousResponse).toBeUndefined();
+  });
+
   it('responds with whatever the handler returns', async () => {
     const subscriber = createSubscriber(() => 42);
 

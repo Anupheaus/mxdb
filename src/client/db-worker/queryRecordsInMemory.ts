@@ -1,23 +1,8 @@
-import sift from 'sift';
 import { DateTime } from 'luxon';
 import { DataSorts } from '@anupheaus/common';
 import type { DataFilters, DataRequest, Record as EntityRecord } from '@anupheaus/common';
 import type { DistinctProps, DistinctResults, QueryResults } from '../../common';
-import { dataFiltersToSift } from './dataFiltersToSift';
-
-/** Deep-convert luxon DateTimes to JS Dates so sift can compare date fields (it understands Date via getTime,
- *  not luxon DateTime). Returns a normalised copy; the original record is what the query returns. */
-function normaliseDates(value: unknown): unknown {
-  if (DateTime.isDateTime(value)) return value.toJSDate();
-  if (value == null || value instanceof Date) return value;
-  if (Array.isArray(value)) return value.map(normaliseDates);
-  if (typeof value === 'object') {
-    const out: Record<string, unknown> = {};
-    for (const [key, val] of Object.entries(value as Record<string, unknown>)) out[key] = normaliseDates(val);
-    return out;
-  }
-  return value;
-}
+import { createFilterMatcher, normaliseFilterConditions } from '../../common/filters';
 
 /** Reduce a value to something orderable, matching how the SQL path orders json_extract results. */
 function toComparable(value: unknown): number | string | boolean | null {
@@ -49,20 +34,19 @@ function applySorts<T extends EntityRecord>(records: T[], sorts: DataRequest<T>[
   });
 }
 
-/** Filter records against DataFilters entirely in memory. Returns the matching records (original objects, not
- *  copies), or null when the filter uses an operator we can't evaluate with parity to the worker/SQL path. */
-function filterRecordsInMemory<T extends EntityRecord>(records: T[], filters: DataFilters<T> | undefined): T[] | null {
-  const siftQuery = dataFiltersToSift(filters);
-  if (siftQuery == null) return null;
-  const matches = sift(siftQuery) as (item: unknown) => boolean;
-  return records.filter(record => matches(normaliseDates(record)));
+/**
+ * The records meeting `filters` (original objects, not copies). This is the device's only filter evaluation: the
+ * filters are made canonical once (`normaliseFilterConditions`) and compiled once (`createFilterMatcher`, which
+ * reads them exactly as MongoDB does on the server), then run per record.
+ */
+export function filterRecordsInMemory<T extends EntityRecord>(records: T[], filters: DataFilters<T> | undefined): T[] {
+  const matches = createFilterMatcher(normaliseFilterConditions(filters));
+  return records.filter(matches);
 }
 
-/** Filter/sort/paginate records entirely in memory, with no worker round-trip. Returns null when the filter uses
- *  an operator that can't be evaluated in-memory with parity to the worker/SQL path — the caller then falls back. */
-export function queryRecordsInMemory<T extends EntityRecord>(records: T[], { filters, sorts, pagination }: DataRequest<T>): QueryResults<T> | null {
+/** Filter/sort/paginate records entirely in memory, with no worker round-trip. */
+export function queryRecordsInMemory<T extends EntityRecord>(records: T[], { filters, sorts, pagination }: DataRequest<T>): QueryResults<T> {
   const matched = filterRecordsInMemory(records, filters);
-  if (matched == null) return null;
 
   const sorted = applySorts(matched, sorts);
   const total = sorted.length;
@@ -71,16 +55,14 @@ export function queryRecordsInMemory<T extends EntityRecord>(records: T[], { fil
   return { records: paged, total };
 }
 
-/** Distinct values of a scalar field entirely in memory. Returns null (fall back to the worker) when the filter is
- *  unsupported, when any value is non-scalar (dates/objects/arrays — whose SQL json_extract representation differs
- *  from the in-memory value), or when sorted by anything other than the distinct field itself. */
+/** Distinct values of a scalar field over records that already meet the filters, entirely in memory. Returns null
+ *  (the worker then reads the values for those same records) when any value is non-scalar (dates/objects/arrays —
+ *  whose SQL json_extract representation differs from the in-memory value), or when sorted by anything other than
+ *  the distinct field itself. */
 export function distinctRecordsInMemory<T extends EntityRecord, Key extends keyof T>(
-  records: T[],
-  { field, filters, sorts }: DistinctProps<T, Key>,
+  matched: T[],
+  { field, sorts }: Omit<DistinctProps<T, Key>, 'filters'>,
 ): DistinctResults<T, Key> | null {
-  const matched = filterRecordsInMemory(records, filters);
-  if (matched == null) return null;
-
   const values: T[Key][] = [];
   const seen = new Set<T[Key]>();
   for (const record of matched) {

@@ -6,7 +6,7 @@ import type { ServerDb } from '../providers';
 import { WebAuthnAuthCollection } from './WebAuthnAuthCollection';
 
 // sc-627: a device signs in by its passkey's signature, found by the passkey's credential id. The store finds devices by
-// credential id, keeps one device per credential, records a sign-in only if its challenge is newer than the device's last
+// credential id, keeps one device per installation of a credential (sc-645), records a sign-in only if its challenge is newer than the device's last
 // (in one atomic write), and never lets a registered device's invite be claimed again. Against a real MongoDB, because
 // the filters and indexes are the behaviour under test.
 
@@ -48,10 +48,34 @@ describe('findByCredentialId', () => {
   });
 });
 
-describe('one device per passkey', () => {
-  it('refuses a second device with the same credential id, in plain words', async () => {
-    const error = await outcome(authColl.create({ requestId: 'copy', userId: 'u2', deviceId: 'd2', sessionToken: 's2', isEnabled: true, credentialId: 'cred-1' } as WebAuthnAuthRecord));
-    expect(error).toBe('Passkey already registered');
+// sc-645: a synced passkey signs in on several installations, and each installation is its own device.
+describe('one device per installation of a passkey', () => {
+  const installation = (requestId: string, installationId?: string) => ({
+    requestId, userId: 'u1', deviceId: requestId, sessionToken: requestId, isEnabled: true, credentialId: 'cred-1', credentialPublicKey: 'pk-1', installationId,
+  } as WebAuthnAuthRecord);
+
+  it('refuses a second device with the same credential id on the same installation, in plain words', async () => {
+    await authColl.update('device', { installationId: 'phone' });
+    expect(await outcome(authColl.create(installation('copy', 'phone')))).toBe('Passkey already registered');
+  });
+
+  it('refuses a second device with the same credential id when neither has an installation id, as before installations', async () => {
+    expect(await outcome(authColl.create(installation('copy')))).toBe('Passkey already registered');
+  });
+
+  it('holds one device for each installation of the same passkey, and finds them all', async () => {
+    await authColl.update('device', { installationId: 'phone' });
+
+    const created = await outcome(authColl.create(installation('laptop', 'laptop')));
+    const devices = await authColl.findAllByCredentialId('cred-1');
+
+    expect({ created, devices: devices.map(({ requestId, installationId }) => ({ requestId, installationId })).sort((a, b) => a.requestId.localeCompare(b.requestId)) })
+      .toEqual({ created: undefined, devices: [{ requestId: 'device', installationId: 'phone' }, { requestId: 'laptop', installationId: 'laptop' }] });
+  });
+
+  it('registers one of two identical new installations created together', async () => {
+    const results = await Promise.all([outcome(authColl.create(installation('first', 'laptop'))), outcome(authColl.create(installation('second', 'laptop')))]);
+    expect(results.filter(result => result === undefined)).toHaveLength(1);
   });
 
   it('still allows any number of pending invites, which have no credential', async () => {
@@ -59,13 +83,28 @@ describe('one device per passkey', () => {
     expect([await outcome(invite('i1')), await outcome(invite('i2'))]).toEqual([undefined, undefined]);
   });
 
-  it('gives an existing collection the unique credential index when it is first opened', async () => {
+  it('gives an existing collection the unique installation index when it is first opened, and drops sc-627\'s one-device index', async () => {
     const earlier = client.db(`credential_earlier_${dbCount}`);
-    await earlier.createCollection('mxdb_authentication');
+    await earlier.collection('mxdb_authentication').createIndex({ credentialId: 1 }, { name: 'credentialId_1', unique: true, partialFilterExpression: { credentialId: { $type: 'string' } } });
+    await earlier.collection('mxdb_authentication').insertOne({ _id: 'old' as never, userId: 'u1', credentialId: 'cred-1', isEnabled: true });
     await new WebAuthnAuthCollection({ getMongoDb: async () => earlier } as unknown as ServerDb).findById('x');
 
-    const index = (await earlier.collection('mxdb_authentication').indexes()).find(({ name }) => name === 'credentialId_1');
-    expect({ unique: index?.unique, partial: index?.partialFilterExpression }).toEqual({ unique: true, partial: { credentialId: { $type: 'string' } } });
+    const indexes = await earlier.collection('mxdb_authentication').indexes();
+    const index = indexes.find(({ name }) => name === 'credentialId_1_installationId_1');
+    expect({
+      unique: index?.unique, keys: index?.key, partial: index?.partialFilterExpression,
+      hasOldIndex: indexes.some(({ name }) => name === 'credentialId_1'),
+    }).toEqual({ unique: true, keys: { credentialId: 1, installationId: 1 }, partial: { credentialId: { $type: 'string' } }, hasOldIndex: false });
+  });
+});
+
+describe('findAllByCredentialId', () => {
+  it('finds nothing for a passkey no device has', async () => {
+    expect(await authColl.findAllByCredentialId('cred-unknown')).toEqual([]);
+  });
+
+  it.each([[{ $ne: null }], [{ $gt: '' }], [['cred-1']], [1], [''], [null]])('finds nothing for %j, which is not a credential id', async id => {
+    expect(await authColl.findAllByCredentialId(id as never)).toEqual([]);
   });
 });
 

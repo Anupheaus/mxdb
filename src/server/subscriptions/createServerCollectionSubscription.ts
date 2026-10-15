@@ -1,6 +1,7 @@
 import type { NexusSubscription } from '@anupheaus/nexus/common';
 import { createServerSubscription, useLogger } from '@anupheaus/nexus/server';
 import { InternalError, type PromiseMaybe } from '@anupheaus/common';
+import { refuseServerOnlyCollections } from '../collections/refuseServerOnlyCollections';
 import { useClient } from '../hooks';
 import { clearSubscriptionDataKeys } from '../subscriptionDataStore';
 import { isSocketDisconnectError } from '../utils/isSocketDisconnectError';
@@ -37,6 +38,8 @@ export function createServerCollectionSubscription<AdditionalData = unknown>() {
     handler: MXDBSyncServerSubscriptionHandler<Request, Response, AdditionalData>) => {
     return createServerSubscription(subscription as NexusSubscription<Name, Request, Response>,
       async ({ request, subscriptionId, update, onUnsubscribe }) => {
+        // Before anything is read or watched: a client may never subscribe to a server-only collection.
+        refuseServerOnlyCollections({ requestName: subscription.name, request });
         // Captured while the socket's async context is active: updates are usually pushed later from
         // change-stream callbacks, which run outside that context.
         const logger = useLogger();

@@ -1,4 +1,4 @@
-import { createServerActionHandler } from '@anupheaus/nexus/server';
+import { createClientActionHandler } from './createClientActionHandler';
 import { mxdbDistinctAction } from '../../common';
 import type { DistinctRequest } from '../../common';
 import { useDb, useServerToClientSynchronisation } from '../providers';
@@ -21,4 +21,4 @@ export async function handleDistinct({ collectionName, field, filters, sorts }: 
 }
 
 
-export const serverDistinctAction = createServerActionHandler(mxdbDistinctAction, handleDistinct);
+export const serverDistinctAction = createClientActionHandler(mxdbDistinctAction, handleDistinct);

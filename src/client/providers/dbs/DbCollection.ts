@@ -12,9 +12,9 @@ import type {
 } from '../../../common/sync-engine';
 import { decodeTime, ulid } from 'ulidx';
 import type { SqliteWorkerClient } from '../../db-worker/SqliteWorkerClient';
-import { filtersToSql } from '../../db-worker/filtersToSql';
+import { isReadableFieldPath } from '../../../common/filters';
 import { sortsToSql } from '../../db-worker/sortsToSql';
-import { distinctRecordsInMemory, queryRecordsInMemory } from '../../db-worker/queryRecordsInMemory';
+import { distinctRecordsInMemory, filterRecordsInMemory, queryRecordsInMemory } from '../../db-worker/queryRecordsInMemory';
 
 export interface UpsertConfig {
   auditAction?: 'branched' | 'default';
@@ -454,62 +454,34 @@ export class DbCollection<RecordType extends Record = Record> {
   public async query(request: DataRequest<RecordType>): Promise<QueryResults<RecordType>> {
     await this.#loadingPromise;
 
-    // Fast path: evaluate the query against the in-memory live-record cache, avoiding a worker round-trip (and the
-    // read queuing behind writes/encrypted flushes). Falls back to SQL for filters we can't match in-memory with parity.
-    const inMemory = queryRecordsInMemory<RecordType>(Array.from(this.#records.values()), request);
-    if (inMemory != null) return inMemory;
-    return this.#queryViaWorker(request);
-  }
-
-  async #queryViaWorker({ filters, pagination, sorts }: DataRequest<RecordType>): Promise<QueryResults<RecordType>> {
-    const { where, params } = filtersToSql<RecordType>(filters);
-    const orderBy = sortsToSql<RecordType>(sorts);
-    const liveTable = q(`${this.#name}${LIVE_TABLE_SUFFIX}`);
-
-    // Fetch page
-    let dataSql = `SELECT data FROM ${liveTable}${where ? ` WHERE ${where}` : ''}`;
-    if (orderBy) dataSql += ` ORDER BY ${orderBy}`;
-    const dataParams: unknown[] = [...params];
-    if (pagination) {
-      dataSql += ' LIMIT ? OFFSET ?';
-      dataParams.push(pagination.limit, pagination.offset ?? 0);
-    }
-
-    const rows = await this.#worker.query<{ data: string; }>(dataSql, dataParams);
-    const records = rows.map(row => to.deserialise<RecordType>(row.data));
-
-    // Without pagination the fetched rows ARE the whole result, so their count is the total — no separate
-    // COUNT(*) round-trip needed. Only when paginating is the page a subset, so COUNT the matching rows then.
-    let total = records.length;
-    if (pagination) {
-      const countSql = `SELECT COUNT(*) as cnt FROM ${liveTable}${where ? ` WHERE ${where}` : ''}`;
-      const countRows = await this.#worker.query<{ cnt: number; }>(countSql, params);
-      total = countRows[0]?.cnt ?? 0;
-    }
-
-    return { records, total };
+    // The query is evaluated against the in-memory live-record cache — the device's one filter evaluator, which reads
+    // a filter exactly as MongoDB does on the server (sc-2518) — with no worker round-trip.
+    return queryRecordsInMemory<RecordType>(Array.from(this.#records.values()), request);
   }
 
   @bind
   public async distinct<Key extends keyof RecordType>(props: DistinctProps<RecordType, Key>): Promise<DistinctResults<RecordType, Key>> {
     await this.#loadingPromise;
 
-    // Fast path: derive distinct values from the in-memory cache; fall back to SQL for anything not matchable in-memory.
-    const inMemory = distinctRecordsInMemory<RecordType, Key>(Array.from(this.#records.values()), props);
+    // The records are always chosen in memory, by the same evaluator as `query`. Only their values may come from SQL.
+    const matched = filterRecordsInMemory<RecordType>(Array.from(this.#records.values()), props.filters);
+    const inMemory = distinctRecordsInMemory<RecordType, Key>(matched, props);
     if (inMemory != null) return inMemory;
-    return this.#distinctViaWorker(props);
+    return this.#distinctViaWorker({ ...props, ids: matched.map(({ id }) => id) });
   }
 
-  async #distinctViaWorker<Key extends keyof RecordType>({ field, filters, sorts }: DistinctProps<RecordType, Key>): Promise<DistinctResults<RecordType, Key>> {
-    const { where, params } = filtersToSql<RecordType>(filters);
+  /** The distinct values of `field` over the rows with these `ids`, as SQLite orders and represents them. */
+  async #distinctViaWorker<Key extends keyof RecordType>({ field, sorts, ids }: DistinctProps<RecordType, Key> & { ids: string[] }): Promise<DistinctResults<RecordType, Key>> {
     const orderBy = sortsToSql<RecordType>(sorts);
     const liveTable = q(`${this.#name}${LIVE_TABLE_SUFFIX}`);
+    if (!isReadableFieldPath(String(field))) return [] as DistinctResults<RecordType, Key>; // the field is written into the SQL text
     const fieldExpr = `json_extract(data, '$.${String(field)}')`;
 
-    let sql = `SELECT DISTINCT ${fieldExpr} as v FROM ${liveTable}${where ? ` WHERE ${where}` : ''}`;
+    // The ids go in as ONE JSON parameter, so no number of matched records can reach SQLite's variable limit.
+    let sql = `SELECT DISTINCT ${fieldExpr} as v FROM ${liveTable} WHERE id IN (SELECT value FROM json_each(?))`;
     if (orderBy) sql += ` ORDER BY ${orderBy}`;
 
-    const rows = await this.#worker.query<{ v: unknown; }>(sql, params);
+    const rows = await this.#worker.query<{ v: unknown; }>(sql, [JSON.stringify(ids)]);
     return rows.map(r => r.v) as DistinctResults<RecordType, Key>;
   }
 

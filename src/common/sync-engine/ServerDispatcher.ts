@@ -169,6 +169,33 @@ export class ServerDispatcher {
   }
 
   /**
+   * Of `recordIds`, the ones a change-stream push (`addToFilter=false`) could still reach this client for, in the order
+   * given: ids in the filter, plus ids queued or in flight in an authoritative push (the queue is only trimmed once the
+   * client answers), which join the filter when the client acknowledges them. Every other change-stream cursor is
+   * dropped at dispatch, so the change-stream path uses this to skip per-client work for them — the read gate (sc-997).
+   */
+  reachableRecordIds(collectionName: string, recordIds: string[]): string[] {
+    const filterRecords = this.#filter.get(collectionName);
+    const unfilteredIds = recordIds.filter(id => filterRecords?.has(id) !== true);
+    if (unfilteredIds.length === 0) return recordIds;
+    const authoritativeIds = this.#queuedAuthoritativeIds(collectionName);
+    return recordIds.filter(id => filterRecords?.has(id) === true || authoritativeIds.has(id));
+  }
+
+  /** The record ids of a collection in queued (or in-flight) authoritative batches. */
+  #queuedAuthoritativeIds(collectionName: string): Set<string> {
+    const ids = new Set<string>();
+    for (const { cursors, addToFilter } of this.#queue) {
+      if (!addToFilter) continue;
+      for (const { collectionName: queuedCollectionName, records } of cursors) {
+        if (queuedCollectionName !== collectionName) continue;
+        for (const cursor of records) ids.add(getCursorId(cursor));
+      }
+    }
+    return ids;
+  }
+
+  /**
    * Enqueue a cursor batch for dispatch to the CR.
    *
    * @param addToFilter

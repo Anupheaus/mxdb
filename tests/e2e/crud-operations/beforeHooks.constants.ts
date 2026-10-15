@@ -10,6 +10,12 @@ export const AMEND_ON_UPSERT_VALUE = 'amend-me';
 /** …to this `value`, before it is persisted. */
 export const AMENDED_BY_SERVER_VALUE = 'amended-by-server';
 
+/** A record written with this `value` is amended by the server's `onBeforeUpsert` hook, which also says so: it puts the value back to {@link AMENDED_BY_SERVER_VALUE}… */
+export const AMEND_WITH_NOTE_VALUE = 'amend-and-say-so';
+
+/** …and gives the user this note. */
+export const AMENDMENT_NOTE = 'That value is not allowed here, so it was put back.';
+
 /** The server's `onBeforeUpsert` hook rejects any record written with this `value`… */
 export const REJECT_ON_UPSERT_VALUE = 'reject-me';
 

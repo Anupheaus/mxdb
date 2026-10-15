@@ -79,13 +79,19 @@ class FakeLocalCollection {
     return [...this.records.values()];
   }
 
-  async query(_request: DataRequest<Widget>): Promise<QueryResults<Widget>> {
+  /** Every request the hooks asked this collection to run, in order. */
+  readonly requests: unknown[] = [];
+
+  async query(request: DataRequest<Widget>): Promise<QueryResults<Widget>> {
+    this.requests.push(request);
     if (this.queryError != null) throw this.queryError;
     const records = [...this.records.values()];
     return { records, total: records.length };
   }
 
-  async distinct<Key extends keyof Widget>({ field }: DistinctProps<Widget, Key>): Promise<DistinctResults<Widget, Key>> {
+  async distinct<Key extends keyof Widget>(request: DistinctProps<Widget, Key>): Promise<DistinctResults<Widget, Key>> {
+    const { field } = request;
+    this.requests.push(request);
     if (this.distinctError != null) throw this.distinctError;
     return [...new Set([...this.records.values()].map(record => record[field]))] as DistinctResults<Widget, Key>;
   }
@@ -318,6 +324,39 @@ describe('useCollection one-off reads', () => {
     await expect(api().distinct('city', true)).resolves.toEqual([]);
   });
 
+  // sc-2518: JSON drops a key whose value is undefined, so `{ city: undefined }` reached the server as `{}` and read
+  // every record. It goes out as `null` ("the field is missing"), locally and to the server alike.
+  it('sends a query condition with no value as "missing", to the device database and to the server', async () => {
+    nexus.actions.set('mxdbQueryAction', async () => 0);
+    render(WIDGETS);
+
+    await api().query({ filters: { city: undefined } });
+
+    const sent = nexus.actionCalls.find(({ name }) => name === 'mxdbQueryAction')?.request;
+    expect(JSON.parse(JSON.stringify(sent))).toEqual({ collectionName: 'widgets', filters: { city: null } });
+    expect(local.requests).toEqual([{ filters: { city: null } }]);
+  });
+
+  it('sends a distinct condition with no value as "missing", to the device database and to the server', async () => {
+    nexus.actions.set('mxdbDistinctAction', async () => '');
+    render(WIDGETS);
+
+    await api().distinct({ field: 'name', filters: { city: undefined } });
+
+    const sent = nexus.actionCalls.find(({ name }) => name === 'mxdbDistinctAction')?.request;
+    expect(JSON.parse(JSON.stringify(sent))).toEqual({ collectionName: 'widgets', field: 'name', filters: { city: null } });
+    expect(local.requests).toEqual([{ field: 'name', filters: { city: null } }]);
+  });
+
+  it('still sends a query with no condition as no condition', async () => {
+    nexus.actions.set('mxdbQueryAction', async () => 0);
+    render(WIDGETS);
+
+    await api().query();
+
+    expect(nexus.actionCalls.find(({ name }) => name === 'mxdbQueryAction')?.request).toEqual({ collectionName: 'widgets' });
+  });
+
   it('a disabled callback query never delivers results', async () => {
     local.seed(alpha);
     render(WIDGETS);
@@ -466,6 +505,17 @@ describe('useCollection reactive hooks — props', () => {
     await settle();
 
     expect(query.mock.calls.length).toBeGreaterThan(before);
+  });
+
+  it('a live query whose key arrives later asks for "missing" first, then for that key alone (sc-2518)', async () => {
+    render(WIDGETS, ({ useQuery }) => useQuery({ filters: { city: undefined } }));
+    await settle();
+
+    render(WIDGETS, ({ useQuery }) => useQuery({ filters: { city: 'London' } }));
+    await settle();
+
+    const cities = local.requests.map(request => (request as { filters?: { city?: string | null } }).filters?.city).distinct();
+    expect(cities).toEqual([null, 'London']);
   });
 });
 

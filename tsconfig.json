@@ -44,6 +44,12 @@
       ],
       "@anupheaus/nexus/common/auth": [
         "../nexus/src/common/auth"
+      ],
+      // The mappings above compile the sibling repos' sources. Each sibling has its own installed socket.io
+      // copy, and tsc treats two declaration files for the same class as incompatible (duplicate private
+      // members), which breaks every socket.io value passed between mxdb and nexus. Pin it to mxdb's copy.
+      "socket.io": [
+        "./node_modules/socket.io"
       ]
     }
   },

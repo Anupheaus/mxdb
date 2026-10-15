@@ -68,7 +68,7 @@ Returns CRUD + query API bound to one collection:
 **`useGetAll`** behaves like **`useQuery`** / **`useDistinct`**: it keeps a subscription while mounted so the list refreshes when the server pushes changes (and still uses the local DB when offline).
 - **`find`**, **`onChange`**
 
-**`ServerOnly`** collections **throw** if used on the client (see `config.syncMode`).
+**`ServerOnly`** collections **throw** if used on the client (see `config.syncMode`). The server enforces it too: any client request (sync, get, getAll, query, distinct, reconcile, or a subscription) naming a server-only collection is refused before anything is read or written, so a client sending raw socket requests cannot reach the data either.
 
 Local mutations go through **`DbCollection`**, which **`ClientToServerProvider`** turns into **`ClientToServerSynchronisation.enqueue`** (debounced **`mxdbClientToServerSyncAction`**). You do **not** call upsert/remove socket actions directly for normal edits.
 

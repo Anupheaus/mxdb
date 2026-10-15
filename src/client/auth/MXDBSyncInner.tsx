@@ -7,10 +7,11 @@ import { ClientToServerSyncProvider, ClientToServerProvider } from '../providers
 import { ServerToClientProvider } from '../providers/server-to-client';
 import { deriveKey } from './deriveKey';
 import { saveEncryptionToSession, loadEncryptionFromSession, clearEncryptionFromSession } from './encryptionSessionCache';
+import { clearGuestEncryption, loadGuestEncryption } from './guestEncryption';
 import { createDbReadyWaitHandle } from './dbReadyWait';
 import { keepEncryptionKey } from './keepEncryptionKey';
 import { DB_READY_TIMEOUT_MS, MxdbReadyContext } from './MxdbReadyContext';
-import type { MXDBCollection, MXDBError, MXDBSyncRejection } from '../../common';
+import type { MXDBCollection, MXDBError, MXDBSyncAmendment, MXDBSyncRejection } from '../../common';
 import type { MXDBAccount, MXDBUser } from '../../common/models';
 import type { MXDBRemoteAssistanceConfig } from '../remote-assistance/models';
 import { RemoteAssistanceContext } from '../remote-assistance/RemoteAssistanceContext';
@@ -25,6 +26,7 @@ interface Props {
   >;
   onError?(error: MXDBError): void;
   onSyncRejected?(rejections: MXDBSyncRejection[]): void;
+  onSyncAmended?(amendments: MXDBSyncAmendment[]): void;
   onSignedIn?(user: MXDBUser): void;
   onSignedOut?(): void;
   children?: ReactNode;
@@ -42,6 +44,7 @@ export const MXDBSyncInner = createComponent('MXDBSyncInner', ({
   onPrfRef,
   onError,
   onSyncRejected,
+  onSyncAmended,
   onSignedIn,
   onSignedOut,
   children,
@@ -91,7 +94,10 @@ export const MXDBSyncInner = createComponent('MXDBSyncInner', ({
     channelRef.current = channel;
     channel.onmessage = ({ data }: MessageEvent<{ type: string; userId?: string }>) => {
       if (data?.type === 'signed-out') {
-        if (data.userId) clearEncryptionFromSession(appName, data.userId);
+        if (data.userId) {
+          clearEncryptionFromSession(appName, data.userId);
+          clearGuestEncryption(appName, data.userId);
+        }
         setEncryptionKey(undefined);
         setDbName(undefined);
       }
@@ -137,6 +143,7 @@ export const MXDBSyncInner = createComponent('MXDBSyncInner', ({
 
     if (user == null && prev != null) {
       clearEncryptionFromSession(appName, prev.id);
+      clearGuestEncryption(appName, prev.id);
       setEncryptionKey(undefined);
       setDbName(undefined);
       channelRef.current?.postMessage({ type: 'signed-out', userId: prev.id });
@@ -153,7 +160,8 @@ export const MXDBSyncInner = createComponent('MXDBSyncInner', ({
       } else {
         // WebAuthn: restore the PRF-derived encryption key from session cache so a page
         // refresh doesn't require a new passkey ceremony (session cookie handles re-auth).
-        const cached = loadEncryptionFromSession(appName, user.id);
+        // A guest session (signed in without a passkey) has no PRF: it opens with the key it stored.
+        const cached = loadEncryptionFromSession(appName, user.id) ?? loadGuestEncryption(appName, user.id);
         if (cached != null) {
           // Usually the same key the PRF handler has just applied (it saved it here) — keep that
           // instance so the database isn't rebuilt mid-sync (see keepEncryptionKey).
@@ -176,7 +184,7 @@ export const MXDBSyncInner = createComponent('MXDBSyncInner', ({
   return (
     <MxdbReadyContext.Provider value={mxdbReadyContext}>
       <DbsProvider name={dbName} encryptionKey={encryptionKey} collections={collections} logger={logger}>
-        <ClientToServerSyncProvider collections={collections} onError={onError} onUnauthorized={signOut} onSyncRejected={onSyncRejected}>
+        <ClientToServerSyncProvider collections={collections} onError={onError} onUnauthorized={signOut} onSyncRejected={onSyncRejected} onSyncAmended={onSyncAmended}>
           <RemoteAssistanceContext.Provider value={remoteAssistance}>
             <ClientToServerProvider />
             <ServerToClientProvider />

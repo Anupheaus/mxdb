@@ -1,5 +1,5 @@
-import { createServerActionHandler } from '@anupheaus/nexus/server';
 import type { Record } from '@anupheaus/common';
+import { createClientActionHandler } from './createClientActionHandler';
 import { mxdbQueryAction } from '../../common';
 import type { QueryProps } from '../../common';
 import { useDb, useServerToClientSynchronisation } from '../providers';
@@ -22,4 +22,4 @@ export async function handleQuery(params: { collectionName: string;[key: string]
   return total;
 }
 
-export const serverQueryAction = createServerActionHandler(mxdbQueryAction, handleQuery);
+export const serverQueryAction = createClientActionHandler(mxdbQueryAction, handleQuery);

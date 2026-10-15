@@ -6,6 +6,7 @@ import {
   isActiveRecordState,
   type MXDBActiveRecordState,
   type MXDBDeletedRecordState,
+  type MXDBSyncAmendedRecord,
   type MXDBSyncRejectedRecord,
 } from '../../common/sync-engine';
 import { runBeforeDeleteHook } from '../collections/runBeforeDeleteHook';
@@ -32,6 +33,11 @@ export interface RunBeforeWriteHooksOnSyncStatesResult {
   /** Records a hook rejected, with the hook's reason — to be reported to the client. */
   rejectedRecords: MXDBSyncRejectedRecord[];
   /**
+   * Records a hook amended and said so for (it returned a note), with the note — to be reported to the client.
+   * Only a record the hook actually changed, and did not then reject, is reported.
+   */
+  amendedRecords: MXDBSyncAmendedRecord[];
+  /**
    * Ids of rejected deletes: they must NOT be persisted (the server keeps the record) but must still be
    * acknowledged, so the client stops resending a delete the server will never accept.
    */
@@ -50,7 +56,8 @@ export interface RunBeforeWriteHooksOnSyncStatesResult {
  *
  * Outcomes, written back into `states` (the `ServerReceiver` reads them back after `onUpdate` and pushes
  * what was persisted to the client):
- * - amended by `onBeforeUpsert` → the state's record is replaced and an `Updated` entry appended;
+ * - amended by `onBeforeUpsert` → the state's record is replaced and an `Updated` entry appended (and, when the
+ *   hook returned a note for it, reported in {@link RunBeforeWriteHooksOnSyncStatesResult.amendedRecords});
  * - rejected update → the client's entries are kept and an `Updated` entry restoring the stored record is
  *   appended, so the client reverts;
  * - rejected create → the client's entries are kept and a `Deleted` entry appended (the state becomes a
@@ -59,7 +66,7 @@ export interface RunBeforeWriteHooksOnSyncStatesResult {
  * Server-authored entries always sort after the client's (see `auditor.updateAuditWithAfterLatest`).
  */
 export async function runBeforeWriteHooksOnSyncStates({ collection, states, excludedIds }: RunBeforeWriteHooksOnSyncStatesProps): Promise<RunBeforeWriteHooksOnSyncStatesResult> {
-  const result: RunBeforeWriteHooksOnSyncStatesResult = { rejectedRecords: [], unpersistedIds: [] };
+  const result: RunBeforeWriteHooksOnSyncStatesResult = { rejectedRecords: [], amendedRecords: [], unpersistedIds: [] };
   const { collection: definition, get } = collection;
   const extensions = getCollectionExtensions(definition);
   // Without a hook there is nothing to run, so skip the read of the stored records entirely.
@@ -75,7 +82,7 @@ export async function runBeforeWriteHooksOnSyncStates({ collection, states, excl
     const stored = storedById.get(id);
     try {
       if (isActiveRecordState(state)) {
-        await amendWithBeforeUpsertHook({ definition, state, stored });
+        result.amendedRecords.push(...await amendWithBeforeUpsertHook({ definition, state, stored }));
       } else {
         await runBeforeDeleteHook({ collection: definition, recordIds: [id], getStoredIds: async ids => ids.filter(storedId => storedById.has(storedId)) });
       }
@@ -98,14 +105,21 @@ interface AmendWithBeforeUpsertHookProps {
   stored: MXDBRecord | undefined;
 }
 
-/** Runs `onBeforeUpsert` for one changing record and folds any amendment into its state. Throws if the hook does. */
-async function amendWithBeforeUpsertHook({ definition, state, stored }: AmendWithBeforeUpsertHookProps): Promise<void> {
-  if (stored != null && is.deepEqual(stored, state.record)) return;
-  const [recordToWrite] = await runBeforeUpsertHook({ collection: definition, records: [state.record], existingRecords: stored == null ? [] : [stored] });
-  if (recordToWrite == null || is.deepEqual(recordToWrite, state.record)) return;
+/**
+ * Runs `onBeforeUpsert` for one changing record and folds any amendment into its state. Throws if the hook does.
+ * Returns the hook's notes for the record, and only when it really changed it (a note for an untouched record
+ * would tell the user something was put back when nothing was) and only for this record's id.
+ */
+async function amendWithBeforeUpsertHook({ definition, state, stored }: AmendWithBeforeUpsertHookProps): Promise<MXDBSyncAmendedRecord[]> {
+  if (stored != null && is.deepEqual(stored, state.record)) return [];
+  const { records, amendmentNotes } = await runBeforeUpsertHook({ collection: definition, records: [state.record], existingRecords: stored == null ? [] : [stored] });
+  const [recordToWrite] = records;
+  if (recordToWrite == null || is.deepEqual(recordToWrite, state.record)) return [];
   const amendedAudit = auditor.updateAuditWithAfterLatest(recordToWrite, auditOf(state), state.record);
+  const recordId = state.record.id;
   state.record = recordToWrite;
   state.audit = auditor.entriesOf(amendedAudit);
+  return amendmentNotes.filter(({ id }) => id === recordId).map(({ note }) => ({ id: recordId, note }));
 }
 
 /**

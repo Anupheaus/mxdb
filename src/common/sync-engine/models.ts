@@ -16,6 +16,12 @@ export type MXDBRecordStates<T extends MXDBRecord = MXDBRecord> = MXDBRecordStat
 export interface MXDBRecordMeta { id: string; hash: string; lastAuditEntryId?: string; }
 export type MXDBRecordMetas = { collectionName: string; records: MXDBRecordMeta[] }[];
 
+// Live records read through a client's read gate (the collection's `onQuery`), per collection: the gate decision and
+// the content come from one query, so no record is judged on one version and sent as another (sc-682). `isGated` is
+// false when the collection has no gate: then every id is readable, and one not returned is simply not stored.
+export interface MXDBReadableRecordsByCollection<T extends MXDBRecord = MXDBRecord> { collectionName: string; records: T[]; isGated: boolean; }
+export type MXDBReadableRecords<T extends MXDBRecord = MXDBRecord> = MXDBReadableRecordsByCollection<T>[];
+
 // Cursors (lightweight, no full audit)
 export interface MXDBActiveRecordCursor<T extends MXDBRecord = MXDBRecord> { record: T; lastAuditEntryId: string; }
 export interface MXDBDeletedRecordCursor {
@@ -50,6 +56,18 @@ export interface MXDBSyncEngineResponseItem {
    * not applied on the server (the device keeps its delete). Absent ⇒ nothing rejected.
    */
   rejectedRecords?: MXDBSyncRejectedRecord[];
+  /**
+   * C2S only: records whose change the server saved but partly amended (a before-write hook put some protected
+   * fields back and said why). They are in `successfulRecordIds` and the amended record is pushed back to the
+   * client as usual. Absent ⇒ nothing amended with a note, and from a server older than mxdb 0.2.8.
+   */
+  amendedRecords?: MXDBSyncAmendedRecord[];
+}
+
+/** A synced record the server saved but partly amended, and the hook's note for the user. */
+export interface MXDBSyncAmendedRecord {
+  id: string;
+  note: string;
 }
 
 /** A synced record the server refused, and why (the throwing hook's message). */

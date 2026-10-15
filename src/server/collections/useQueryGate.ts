@@ -1,7 +1,7 @@
 import type { DataFilters, Record } from '@anupheaus/common';
 import { useAuthentication } from '@anupheaus/nexus/server';
 import type { MXDBCollection, QueryProps } from '../../common';
-import { getCollectionExtensions } from './extendCollection';
+import { getCollectionExtensions, type OnQueryPurpose } from './extendCollection';
 import type { QueryGate } from './query-gate-models';
 
 /** The signed-in caller's id, or `undefined` when there is none (no auth context: a server-side read, a test). */
@@ -24,15 +24,19 @@ export function useQueryGate<RecordType extends Record>(collection: MXDBCollecti
   const onQuery = collection == null ? undefined : getCollectionExtensions(collection)?.onQuery;
   const userId = getCallerUserId();
 
-  async function gateRequest(request: QueryProps<RecordType>): Promise<QueryProps<RecordType>> {
+  async function askGate(request: QueryProps<RecordType>, purpose: OnQueryPurpose): Promise<QueryProps<RecordType>> {
     if (onQuery == null) return request;
-    const gatedRequest = await onQuery({ request, userId });
+    const gatedRequest = await onQuery({ request, userId, purpose });
     return (gatedRequest ?? request) as QueryProps<RecordType>;
   }
 
-  async function getGateFilters(): Promise<DataFilters<RecordType> | undefined> {
+  async function gateRequest(request: QueryProps<RecordType>): Promise<QueryProps<RecordType>> {
+    return askGate(request, 'read');
+  }
+
+  async function getGateFilters(purpose: OnQueryPurpose = 'read'): Promise<DataFilters<RecordType> | undefined> {
     // An empty request, so the filters that come back are the gate's alone.
-    const { filters } = await gateRequest({});
+    const { filters } = await askGate({}, purpose);
     if (filters == null || Object.keys(filters).length === 0) return undefined;
     return filters;
   }

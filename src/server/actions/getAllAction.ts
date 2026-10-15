@@ -1,5 +1,5 @@
-import { createServerActionHandler } from '@anupheaus/nexus/server';
 import type { Record } from '@anupheaus/common';
+import { createClientActionHandler } from './createClientActionHandler';
 import { mxdbGetAllAction } from '../../common';
 import { useDb, useServerToClientSynchronisation } from '../providers';
 import { useQueryGate } from '../collections/useQueryGate';
@@ -21,4 +21,4 @@ export async function handleGetAll(params: { collectionName: string }) {
   return records.ids();
 }
 
-export const serverGetAllAction = createServerActionHandler(mxdbGetAllAction, handleGetAll);
+export const serverGetAllAction = createClientActionHandler(mxdbGetAllAction, handleGetAll);

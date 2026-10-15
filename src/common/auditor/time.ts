@@ -15,6 +15,14 @@ export function generateUlid(): string {
 
 
 /**
+ * A ULID that sorts before every entry any device could have written (its timestamp is the epoch), for the Created entry
+ * that anchors a record which had no audit when it was first edited: the stored record is the state every later entry builds on.
+ */
+export function generateAnchorUlid(): string {
+  return ulid(0);
+}
+
+/**
  * A new ULID that is guaranteed to sort after `latestId` (typically the latest entry of an audit the
  * caller is appending to). Normally that is just {@link generateUlid}; but when `latestId` came from a
  * device whose clock runs ahead, a wall-clock ULID would sort BEFORE it and replay would apply the new

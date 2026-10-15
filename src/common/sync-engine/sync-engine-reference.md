@@ -257,6 +257,8 @@ Regression test: [ServerDispatcher.tests.ts](ServerDispatcher.tests.ts) — "suc
 
 Additionally, if a client reports an active record (hash present) but `#deletedRecordIds` has a premature tombstone for that id (e.g. a change-stream delete arrived before the CD's initial dispatch), the tombstone is cleared — preventing the subsequent authoritative delete from being swallowed.
 
+**`reachableRecordIds(collectionName, ids)`** answers, from the filter, which changed ids a change-stream push could still reach this client for: ids in the filter, plus ids in a queued or in-flight authoritative batch (the queue is trimmed only after the client answers, and those ids join the filter on ack). The server's change-stream path asks it before running the client's read gate, so a change to a record the client does not hold costs no gate call (sc-997). It must stay in step with step 2 of `#dispatch`, which drops every other change-stream cursor.
+
 ### 5.7 Pause / resume
 
 `pause()` sets `#isPaused = true`. `resume()` clears it and calls `#dispatch` if nothing is in-flight and no retry timer is running. `push()` always adds to the queue; it only calls `#dispatch` when not paused, not in-flight, and no retry timer is running.
@@ -350,7 +352,7 @@ Runs on the server, one instance per connected client. Given a `ClientDispatcher
 1. `serverDispatcher.pause()` — holds S2C pushes while processing.
 2. **Mirror filter** (synchronous, before any `await`): build `ServerDispatcherFilter[]` from the client's claimed state (`#buildMirrorFilter`) and call `serverDispatcher.updateFilter(filters)`. This seeds the SD's filter with the client's current hashes and max audit entry ids so that change-stream events racing with this C2S call are evaluated against an accurate filter when we later resume.
 3. Retrieve current server state via `onRetrieve` for every record in the request.
-4. For each incoming record, strip `Branched` entries from the client audit:
+4. For each incoming record, strip `Branched` entries from the client audit, and the entries older than the start of the server's history for it (its first entry, when that is a `Created`). A record rewritten with `upsert(..., { resetAudit: true })` starts again there, so an offline device's edit from before the reset never puts the old values back into the audit; replay would apply the later `Created` over it anyway (`#entriesSinceHistoryStart`, e2e `auditReset.crud.e2e.tests.ts`):
     - **No entries remain** (branched-only):
         - Has `hash` (active): compare with server state for disparity detection. No merge needed. Included in `successfulRecordIds`.
         - No `hash` (deleted): client deletion for absent server record. Already consistent.
@@ -377,6 +379,10 @@ The mirror filter (step 2) runs before any `await`. If it were deferred until af
 ### 7.4 Broadcast scope
 
 The SR pushes disparity cursors only to the **originator's SD** (via `serverDispatcher.push`). Other connected clients are notified of the same state change via the MongoDB change stream, which triggers separate `push(cursors, addToFilter=false)` calls on their respective SDs. This keeps the broadcast path simple and avoids the SR needing references to all SDs.
+
+### 7.5 A live record with no audit is anchored on the stored record
+
+A record written to the database without going through mxdb (a migration, a seed script, a test harness) is live but has an empty audit. A client edit to it arrives as `Updated` entries with no `Created`, and replay needs an anchor: without one it skips them and ends with no live record, which was then persisted as a deletion. Before merging, `#entriesWithAnchor` therefore gives such a record a `Created` entry holding the stored record, with the epoch ULID (`generateAnchorUlid`) so it sorts before every real entry. The persisted audit keeps it, so every later replay has the same anchor. Only an active record with an empty audit is anchored; a record with some audit is left as it is.
 
 ---
 
@@ -439,6 +445,7 @@ If a regression causes a stress-test flake, check if one of these unit tests wou
 | Server-missing ghost → delete push (Updated orphan) | `ServerReceiver.tests.ts` | "pushes delete for Updated ghost when server has no record" |
 | Client Created on empty server must not push delete | `ServerReceiver.tests.ts` | "does not push delete for client Created record when server has no state" |
 | Orphan Updated without hash is skipped (no push) | `ServerReceiver.tests.ts` | "skips orphan Updated record without hash when server has no state" |
+| Edit to a live record with no audit is kept, not persisted as a deletion | `ServerReceiver.tests.ts` | "keeps an edit to a record that has no audit, anchoring it on the stored record" |
 
 ---
 
