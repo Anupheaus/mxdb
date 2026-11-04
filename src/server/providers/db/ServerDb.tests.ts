@@ -359,6 +359,35 @@ describe('ServerDb', () => {
 
       expect(logger.warn).toHaveBeenCalledWith('[ServerDb] changeStream restarting after the connection was lost');
     });
+
+    it('restarts a change stream that closed on its own, backing off while it keeps failing', async () => {
+      const { serverDb } = makeServerDb();
+      await serverDb.getMongoDb();
+      expect(fakeMongo.db.watch).toHaveBeenCalledTimes(1);
+
+      fakeMongo.db.changeStream.emit('close');
+      await vi.advanceTimersByTimeAsync(499);
+      expect(fakeMongo.db.watch).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(fakeMongo.db.watch).toHaveBeenCalledTimes(2);
+
+      fakeMongo.db.changeStream.emit('close');
+      await vi.advanceTimersByTimeAsync(999);
+      expect(fakeMongo.db.watch).toHaveBeenCalledTimes(2);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(fakeMongo.db.watch).toHaveBeenCalledTimes(3);
+    });
+
+    it('does not restart the change stream once the database is closing', async () => {
+      const { serverDb } = makeServerDb();
+      await serverDb.getMongoDb();
+
+      fakeMongo.db.changeStream.emit('close');
+      await serverDb.close();
+      await vi.advanceTimersByTimeAsync(120_000);
+
+      expect(fakeMongo.db.watch).toHaveBeenCalledTimes(1);
+    });
   });
 
   // ── change fan-out ─────────────────────────────────────────────────────────

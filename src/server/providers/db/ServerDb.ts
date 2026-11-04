@@ -86,6 +86,9 @@ export class ServerDb {
   #connectBackoffMsPrev = 500;
   #connectBackoffMsCurr = 500;
   #connectAttempt = 0;
+  /** Backoff for restarting a change stream that closed on its own (ms, doubling, capped at 60s). */
+  #watchRestartAttempt = 0;
+  #watchRestartTimer: ReturnType<typeof setTimeout> | undefined;
   #isClosing = false;
   #activeSessions = new Set<ClientSession>();
 
@@ -139,6 +142,7 @@ export class ServerDb {
   public async close(): Promise<void> {
     if (this.#isClosing) return;
     this.#isClosing = true;
+    if (this.#watchRestartTimer != null) { clearTimeout(this.#watchRestartTimer); this.#watchRestartTimer = undefined; }
     // Let the background configuration finish first: force-closing the client underneath it threw
     // MongoClientClosedError from work nothing was awaiting, which is why callers avoided close().
     await this.whenConfigured();
@@ -322,10 +326,28 @@ export class ServerDb {
     return undefined;
   }
 
+  #scheduleWatchRestart(db: Db, livedMs: number) {
+    if (this.#watchRestartTimer != null) return;
+    // A stream that stayed up a while was healthy, so this is a fresh failure rather than a continuing outage.
+    if (livedMs > 30_000) this.#watchRestartAttempt = 0;
+    const delayMs = Math.min(60_000, 500 * 2 ** this.#watchRestartAttempt);
+    this.#watchRestartAttempt += 1;
+    this.#logger.warn(`[ServerDb] changeStream will restart in ${delayMs}ms`, { attempt: this.#watchRestartAttempt });
+    this.#watchRestartTimer = setTimeout(() => {
+      this.#watchRestartTimer = undefined;
+      if (this.#isClosing) return;
+      this.#startWatching(db);
+    }, delayMs);
+  }
+
   #startWatching(db: Db) {
     const isRestart = this.#changeStream != null;
     if (isRestart) this.#logger.warn('[ServerDb] changeStream restarting after the connection was lost');
     else this.#logger.info('[ServerDb] startWatching.begin');
+    if (this.#watchRestartTimer != null) { clearTimeout(this.#watchRestartTimer); this.#watchRestartTimer = undefined; }
+    // A replaced stream is closed so repeated restarts never leave several watchers (and duplicate events) behind.
+    const previous = this.#changeStream;
+    const startedAt = Date.now();
     // `updateLookup`: an `update` (a `$set` written without mxdb: a fix by hand, a migration) otherwise carries no
     // document, and was dropped, so the change never reached a client (sc-3577). mxdb's own writes are replaces.
     const changeStream = this.#changeStream = db.watch([{ $project: { something: false } }], { fullDocument: 'updateLookup', fullDocumentBeforeChange: 'whenAvailable' });
@@ -336,9 +358,14 @@ export class ServerDb {
       this.#logger[level]('[ServerDb] changeStream error', { error: String((err as any)?.message ?? err) });
     });
     changeStream.on('close', () => {
-      if (this.#isClosing) this.#logger.info('[ServerDb] changeStream closed');
-      else this.#logger.warn('[ServerDb] changeStream closed unexpectedly');
+      if (this.#isClosing) { this.#logger.info('[ServerDb] changeStream closed'); return; }
+      this.#logger.warn('[ServerDb] changeStream closed unexpectedly');
+      // A stream that closed while the server was unreachable is never reopened by the driver, and `connectionClosed`
+      // does not fire again, so schedule our own restart with backoff — otherwise clients get no change notifications
+      // until the process restarts.
+      if (this.#changeStream === changeStream) this.#scheduleWatchRestart(db, Date.now() - startedAt);
     });
+    if (previous != null && previous !== changeStream) void previous.close().catch(() => { /* already closed */ });
     this.#logger.info('[ServerDb] startWatching.ready (listeners attached)');
     changeStream.on('change', change => {
       const collectionName: string | undefined = 'ns' in change && change.ns != null && 'coll' in change.ns ? change.ns.coll : undefined;
