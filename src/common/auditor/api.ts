@@ -13,6 +13,8 @@ import {
 } from './auditor-models';
 import { recordDiff } from './diff';
 import { applyOp, filterValidEntries, replayHistory, replayHistoryEndState } from './replay';
+import { foldLateEntries } from './foldLateEntries';
+import { generateUlidAfter } from './time';
 
 export type UlidGenerator = () => string;
 
@@ -293,6 +295,42 @@ function isPendingOnlyClientAudit<T extends MXDBRecord>(audit: AnyAuditOf<T>): b
   return e.every(entry => allowed.has(entry.type));
 }
 
+/** Server entries and the client entries still to sort in among them, after {@link mergeLateEntries}. */
+interface LateMergeResult<T extends MXDBRecord> {
+  serverEntries: AuditEntry<T>[];
+  clientEntries: AuditEntry<T>[];
+}
+
+/**
+ * Client entries older than a compacted server audit's snapshot cannot be sorted in before it: replay would apply the
+ * snapshot over them, losing them. Instead, updates are folded into the snapshot path by path ({@link foldLateEntries}),
+ * and a delete is appended after the latest entry (the record ends deleted, as it would had the delete sorted in at its
+ * own time: delete is final). Every other client entry, and any entry of an audit that was never compacted, is returned
+ * to be merged as usual.
+ */
+function mergeLateEntries<T extends MXDBRecord>(serverEntries: AuditEntry<T>[], clientEntries: AuditEntry<T>[], logger?: Logger): LateMergeResult<T> {
+  const [first, ...rest] = serverEntries;
+  if (first == null || first.type !== AuditEntryType.Created || first.compaction == null) return { serverEntries, clientEntries };
+  const lateEntries = clientEntries.filter(({ id }) => id < first.id);
+  if (lateEntries.length === 0) return { serverEntries, clientEntries };
+
+  const lateUpdates = lateEntries.filter((entry): entry is AuditUpdateEntry => entry.type === AuditEntryType.Updated);
+  const snapshot = foldLateEntries(first, lateUpdates, logger);
+  const otherClientEntries = clientEntries.filter(({ id }) => id > first.id);
+  const lateRestores = lateEntries.filter(({ type }) => type === AuditEntryType.Restored);
+  if (lateRestores.length > 0) {
+    // No production flow writes Restored entries; one older than the snapshot has nowhere to go.
+    logger?.warn('[auditor] merge: Restored entries older than the compacted history were not applied', { count: lateRestores.length });
+  }
+  const isLateDelete = lateEntries.some(({ type }) => type === AuditEntryType.Deleted);
+  const nextServerEntries = [snapshot, ...rest];
+  const isAlreadyDeleted = isDeleted({ id: '', entries: [...nextServerEntries, ...otherClientEntries] } as AnyAuditOf<T>);
+  if (!isLateDelete || isAlreadyDeleted) return { serverEntries: nextServerEntries, clientEntries: otherClientEntries };
+  const latestId = [...nextServerEntries, ...otherClientEntries].reduce((latest, { id }) => (id > latest ? id : latest), first.id);
+  const deleted: AuditDeletedEntry = { type: AuditEntryType.Deleted, id: generateUlidAfter(latestId) };
+  return { serverEntries: nextServerEntries, clientEntries: [...otherClientEntries, deleted] };
+}
+
 export function merge<T extends MXDBRecord>(
   serverAudit: AnyAuditOf<T>,
   clientAudit: AuditOf<T>,
@@ -381,7 +419,8 @@ export function merge<T extends MXDBRecord>(
     newEntries.push(e);
   }
 
-  const merged = [...entriesOf(serverAudit), ...newEntries].sort((a, b) =>
+  const { serverEntries, clientEntries } = mergeLateEntries(entriesOf(serverAudit), newEntries, logger);
+  const merged = [...serverEntries, ...clientEntries].sort((a, b) =>
     a.id < b.id ? -1 : a.id > b.id ? 1 : 0,
   );
 

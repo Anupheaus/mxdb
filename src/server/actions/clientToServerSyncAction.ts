@@ -291,7 +291,12 @@ export async function handleClientToServerSync(request: ClientDispatcherRequest)
             rejected: rejectedRecords.length,
             failed: failedIds.size,
           });
-          response.push({ collectionName: col.collectionName, successfulRecordIds, ...(rejectedRecords.length > 0 ? { rejectedRecords } : {}), ...(amendedRecords.length > 0 ? { amendedRecords } : {}) });
+          // For the receiver only: it points the client at the server's own history for a record it stored nothing for.
+          const unchangedRecordIds = writeResults.filter(({ isUnchanged, error }) => isUnchanged === true && error == null).map(({ id }) => id);
+          response.push({
+            collectionName: col.collectionName, successfulRecordIds,
+            ...(rejectedRecords.length > 0 ? { rejectedRecords } : {}), ...(amendedRecords.length > 0 ? { amendedRecords } : {}), ...(unchangedRecordIds.length > 0 ? { unchangedRecordIds } : {}),
+          });
         } catch (error) {
           if (isTransientMongoCloseError(error)) {
             logger.warn(`C2S onUpdate aborted by client close (shutdown race) for "${col.collectionName}"`, { error });

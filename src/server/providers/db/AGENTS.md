@@ -41,7 +41,9 @@ Change stream lifecycle:
    b. Notifies registered callbacks (which trigger `ServerDispatcher.push` for each connected client).
 4. This two-step ensures clients are notified only after cascade effects have been applied.
 
-`ServerDbCollection.sync()` is the write path for `clientToServerSyncAction`. It performs a per-record exponential-backoff retry loop (base 100ms, max 2s, up to 20 retries) for transient MongoDB errors.
+`ServerDbCollection.sync()` is the write path for `clientToServerSyncAction`. It performs a per-record exponential-backoff retry loop (base 100ms, max 2s, up to 20 retries) for transient MongoDB errors. A record already stored exactly as given (same `_meta.hash`) is not written at all — neither the record nor its audit — and comes back `isUnchanged` (sc-4409).
+
+Every `_sync` audit is written by `#writeAuditRecords`, which compacts it first (`server/audit/compactServerAudit.ts`): a record's oldest audit entries are folded into one `Created` snapshot once the audit passes 40 entries or 512 KB, so a record written any number of times keeps a bounded audit (sc-4409; see `../../../common/auditor/AGENTS.md`). An application reading a server audit sees at most ~40 entries; the first may be such a snapshot (its `compaction` field set), attributed to the last person among the entries it replaced.
 
 ## Ambiguities and gotchas
 

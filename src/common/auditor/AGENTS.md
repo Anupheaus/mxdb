@@ -49,6 +49,11 @@ Raw functions pre-bound by the facade. Also exports:
 - Type hierarchy: `AuditCreatedEntry`, `AuditUpdateEntry`, `AuditDeletedEntry`, `AuditRestoredEntry`, `AuditBranchedEntry`
 - Server-side variants: `ServerAuditOf`, `ServerAuditEntry`, etc. — add `socketId`, `timestamp`
 
+### Compaction (`compaction.ts`, `foldLateEntries.ts`, `pathClocks.ts`) — server audits only (sc-4409)
+A server audit is rewritten whole on every write, so it must stay bounded however often the record is written (MongoDB refuses a document over 16 MB, and every save reads and rewrites it).
+- `compactAuditEntries(entries, limits?)` — once an audit holds more than `AUDIT_COMPACTION_LIMITS.maxEntries` (40) entries or `maxCharacters` (512 KB of JSON), folds its oldest entries into ONE `Created` snapshot, keeping the newest (up to 20 entries / 256 KB) as they are. Replaying the result gives exactly the same record. The snapshot takes the id of the newest entry it folded and carries `compaction` (`AuditCompaction`): `historyStart` (the original `Created` id) and, per path, the newest folded entry that wrote it (`clocks`, at most `MAX_AUDIT_PATH_CLOCKS`; older ones are dropped and `clocksFloor` stands in for them). Nothing is folded from a `Deleted`/`Restored` entry on. `ServerDbCollection` calls it on every audit write (through `server/audit/compactServerAudit.ts`, which attributes the snapshot to the last person among the folded entries).
+- `foldLateEntries(snapshot, lateEntries)` — used by `merge`: a client entry older than the snapshot (a device offline, or syncing a backlog) cannot sort in before it (replay would apply the snapshot over it), so each of its ops is applied to the snapshot unless a newer folded write covers its path (`latestCoveringWrite`); a newer folded write INSIDE the path is put back after it. Last-write-wins holds path by path, a resent folded entry changes nothing, and a change is only lost to a newer one. A late `Deleted` is appended after the latest entry (delete is final). `compaction.tests.ts` checks random histories and arrival orders against the full, never-compacted history.
+
 ### Utilities
 - `hash.ts` — `hashRecord(record)` short hash; used by the sync engine to skip no-op S2C dispatches
 - `time.ts` — `generateUlid()` and `setClockDrift(ms)` (test-only time shift)
@@ -69,7 +74,7 @@ Raw functions pre-bound by the facade. Also exports:
 `replayHistoryEndState` folds entries in insertion order. After `merge`, insertion order matches ULID order. Result is `{ live, shadow }`.
 
 ### `merge` semantics
-Deduplicates by `entry.id`, then sorts by ULID ascending. Called **only on the server** in `ServerReceiver`. After merge, replay produces the new authoritative state; both the merged audit and materialised record are written.
+Deduplicates by `entry.id`, then sorts by ULID ascending. Into a compacted audit, client entries older than its snapshot are folded into the snapshot instead (`foldLateEntries`). Called **only on the server** in `ServerReceiver`. After merge, replay produces the new authoritative state; both the merged audit and materialised record are written.
 
 ### Array path encoding
 `AuditOperation.path` uses two strategies:

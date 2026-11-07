@@ -15,6 +15,7 @@ import {
   type MXDBDeletedRecordCursor,
   type MXDBSyncEngineResponse,
   type ServerDispatcherFilter,
+  type ServerDispatcherFilterRecord,
   type MXDBRecordCursors,
   type MXDBReadableRecords,
 } from './models';
@@ -134,6 +135,8 @@ export class ServerReceiver {
       // wired or the stored hash is absent/different.
       const isBranchedOnly = (rec: { entries: AuditEntry[] }) => rec.entries.every(e => e.type === AuditEntryType.Branched);
       const metaMatched = new Map<string, Set<string>>(); // collectionName -> ids confirmed consistent via meta
+      // The stored audit's last entry id of each meta-matched record (`collection::id`), when its `_meta` has one.
+      const metaLastAuditEntryIds = new Map<string, string>();
       if (this.#props.onRetrieveMeta != null) {
         const metaRequest: MXDBRecordStatesRequest = [];
         for (const item of request) {
@@ -143,6 +146,9 @@ export class ServerReceiver {
         if (metaRequest.length > 0) {
           const metas = await this.#props.onRetrieveMeta(metaRequest);
           const hashByColId = new Map(metas.map(m => [m.collectionName, new Map(m.records.map(r => [r.id, r.hash]))]));
+          for (const { collectionName, records } of metas) {
+            for (const { id, lastAuditEntryId } of records) if (lastAuditEntryId != null) metaLastAuditEntryIds.set(`${collectionName}::${id}`, lastAuditEntryId);
+          }
           for (const item of request) {
             const colHashes = hashByColId.get(item.collectionName);
             if (colHashes == null) continue;
@@ -186,6 +192,10 @@ export class ServerReceiver {
         mergedEntries: AuditEntry[];
         liveRecord: MXDBRecord | undefined;
         clientHash?: string;
+        /** What the server held before this write (none for a create). */
+        serverState?: MXDBActiveRecordState | MXDBDeletedRecordState;
+        /** Set once judged: the write changed nothing the server holds, so its entries were not stored. */
+        isUnchanged?: boolean;
       };
 
       const mergeT0 = performance.now();
@@ -293,7 +303,7 @@ export class ServerReceiver {
             continue;
           }
 
-          pendingPersist.push({ collectionName: colName, recordId, mergedEntries, liveRecord, clientHash: rec.hash });
+          pendingPersist.push({ collectionName: colName, recordId, mergedEntries, liveRecord, clientHash: rec.hash, serverState });
         }
       }
 
@@ -448,6 +458,28 @@ export class ServerReceiver {
       branchedActive.forEach((_, i) => branchedHashByIdx.set(i, branchedHashes[i]!));
       const persistedHashByKey = new Map<string, string>();
       persistedActive.forEach((item, i) => persistedHashByKey.set(`${item.collectionName}::${item.recordId}`, persistedHashes[i]!));
+      // A record `onUpdate` stored nothing for (its write changed nothing the server holds) keeps the server's history.
+      const unchangedKeys = new Set(updateResponse.flatMap(({ collectionName, unchangedRecordIds }) => (unchangedRecordIds ?? []).map(id => `${collectionName}::${id}`)));
+      for (const item of persistedActive) {
+        item.isUnchanged = item.serverState != null && isActiveRecordState(item.serverState) && unchangedKeys.has(`${item.collectionName}::${item.recordId}`);
+      }
+
+      // The client's claim, as mirrored into the dispatcher's filter, may name an entry the server never stored (one it
+      // judged to change nothing). A filter ahead of the server's history would hold back every later change that sorts
+      // before that id (another device's clock may run behind), so the filter is put back to the server's last entry.
+      const claimedLastIds = new Map(request.flatMap(({ collectionName, records }) => records.map(({ id, entries }) => [`${collectionName}::${id}`, this.#getLastAuditEntryId(entries)] as const)));
+      const claimAlignments = new Map<string, ServerDispatcherFilterRecord[]>();
+      const alignClaim = (collectionName: string, recordId: string, clientHash: string | undefined, serverLastId: string | undefined): void => {
+        if (clientHash == null || serverLastId == null || serverLastId === '') return;
+        if ((claimedLastIds.get(`${collectionName}::${recordId}`) ?? '') <= serverLastId) return;
+        claimAlignments.set(collectionName, [...(claimAlignments.get(collectionName) ?? []), { id: recordId, hash: clientHash, lastAuditEntryId: serverLastId }]);
+      };
+      for (const item of request) {
+        for (const { id, hash } of item.records) {
+          if (metaMatched.get(item.collectionName)?.has(id) !== true || !isReadable(item.collectionName, id)) continue;
+          alignClaim(item.collectionName, id, hash, metaLastAuditEntryIds.get(`${item.collectionName}::${id}`));
+        }
+      }
 
       // Branched-only disparities (and server-missing ghosts — branched or updated records with no server state).
       let branchedActiveIdx = 0;
@@ -467,9 +499,10 @@ export class ServerReceiver {
           continue;
         }
         if (isActiveRecordState(d.serverState)) {
+          const serverLastId = this.#getLastAuditEntryId(d.serverState.audit);
+          alignClaim(d.collectionName, d.recordId, d.clientHash, serverLastId);
           if (serverHash === d.clientHash) continue; // already consistent
           if (!isGatedVersion(d.collectionName, d.recordId, serverHash!)) continue;
-          const serverLastId = this.#getLastAuditEntryId(d.serverState.audit);
           const cursor: MXDBActiveRecordCursor & { hash: string } = {
             record: d.serverState.record,
             lastAuditEntryId: serverLastId,
@@ -491,6 +524,7 @@ export class ServerReceiver {
         const successIds = persistSuccessMap.get(colName) ?? new Set();
         if (!successIds.has(item.recordId)) continue;
 
+        // Still the merged entries' last id for an unchanged record: the client declines a push older than its own entry.
         const lastAuditEntryId = this.#getLastAuditEntryId(item.mergedEntries);
 
         if (!isReadable(colName, item.recordId)) {
@@ -505,6 +539,7 @@ export class ServerReceiver {
         }
 
         if (item.liveRecord != null) {
+          if (item.isUnchanged === true) alignClaim(colName, item.recordId, item.clientHash, this.#getLastAuditEntryId(item.serverState!.audit));
           const mergedHash = persistedHashByKey.get(`${colName}::${item.recordId}`)!;
           if (mergedHash === item.clientHash) continue; // client already matches the merged state
           if (!isGatedVersion(colName, item.recordId, mergedHash)) continue;
@@ -524,6 +559,10 @@ export class ServerReceiver {
 
       if (tombstonedUnreadable.size > 0) {
         serverDispatcher.updateFilter([...tombstonedUnreadable].map(([collectionName, deletedRecordIds]) => ({ collectionName, records: [], deletedRecordIds })));
+      }
+      // Before the pushes, so a push answering a claim is judged against the server's history, not the claim.
+      if (claimAlignments.size > 0) {
+        serverDispatcher.updateFilter([...claimAlignments].map(([collectionName, records]) => ({ collectionName, records })));
       }
       if (pushPayload.length > 0) {
         serverDispatcher.push(pushPayload);
@@ -640,9 +679,12 @@ export class ServerReceiver {
    * record with no server state, or an audit not starting with `Created`, keeps all of them.
    */
   #entriesSinceHistoryStart(entries: AuditEntry[], serverState: MXDBActiveRecordState | MXDBDeletedRecordState | undefined): AuditEntry[] {
-    const historyStart = (serverState?.audit as AuditEntry[] | undefined)?.[0];
-    if (historyStart == null || historyStart.type !== AuditEntryType.Created) return entries;
-    return entries.filter(entry => entry.id >= historyStart.id);
+    const first = (serverState?.audit as AuditEntry[] | undefined)?.[0];
+    if (first == null || first.type !== AuditEntryType.Created) return entries;
+    // A compacted audit's first entry is a snapshot of older entries, not the start: entries older than it are still merged
+    // (folded into it by `auditor.merge`) back to where the history really began.
+    const historyStart = first.compaction?.historyStart ?? first.id;
+    return entries.filter(entry => entry.id >= historyStart);
   }
 
   #getLastAuditEntryId(entries: AuditEntry[]): string {
