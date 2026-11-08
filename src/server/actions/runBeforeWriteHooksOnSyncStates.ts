@@ -38,8 +38,9 @@ export interface RunBeforeWriteHooksOnSyncStatesResult {
    */
   amendedRecords: MXDBSyncAmendedRecord[];
   /**
-   * Ids of rejected deletes: they must NOT be persisted (the server keeps the record) but must still be
-   * acknowledged, so the client stops resending a delete the server will never accept.
+   * Ids of rejected deletes and rejected creates: they must NOT be persisted (the server keeps the record, or keeps
+   * nothing — not even a deleted marker, which would use the id up for good) but must still be acknowledged, so the
+   * client stops resending a change the server will never accept.
    */
   unpersistedIds: string[];
 }
@@ -60,8 +61,9 @@ export interface RunBeforeWriteHooksOnSyncStatesResult {
  *   hook returned a note for it, reported in {@link RunBeforeWriteHooksOnSyncStatesResult.amendedRecords});
  * - rejected update → the client's entries are kept and an `Updated` entry restoring the stored record is
  *   appended, so the client reverts;
- * - rejected create → the client's entries are kept and a `Deleted` entry appended (the state becomes a
- *   deleted state), so the client drops the record;
+ * - rejected create → a `Deleted` entry is appended (the state becomes a deleted state), so the client drops the
+ *   record, but nothing is persisted (see {@link RunBeforeWriteHooksOnSyncStatesResult.unpersistedIds}): the id stays
+ *   free, so a later create under it that the hooks allow is saved (sc-5083);
  * - rejected delete → left out of the write (see {@link RunBeforeWriteHooksOnSyncStatesResult.unpersistedIds}).
  * Server-authored entries always sort after the client's (see `auditor.updateAuditWithAfterLatest`).
  */
@@ -89,7 +91,11 @@ export async function runBeforeWriteHooksOnSyncStates({ collection, states, excl
     } catch (error) {
       result.rejectedRecords.push({ id, reason: describeRejection(error), kind: isValidationError(error) ? 'validation' : 'error' });
       if (isActiveRecordState(state)) states[index] = revertRejectedState(state, stored);
-      else result.unpersistedIds.push(id);
+      // A rejected delete, and a rejected create (nothing stored), change nothing on the server. A create in particular
+      // must not be stored as deleted: deletes are final, so that would use its id up and drop the rightful owner's
+      // later create under it (sc-5083). The client is still told to drop it (its state is a delete, read back by the
+      // receiver), but nothing of it is written.
+      if (!isActiveRecordState(state) || stored == null) result.unpersistedIds.push(id);
     }
   }
   return result;

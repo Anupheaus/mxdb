@@ -51,9 +51,10 @@ export interface MXDBSyncEngineResponseItem {
   declinedRecordIds?: string[];
   /**
    * C2S only: records the server refused because a collection before-write hook threw. They are ALSO
-   * in `successfulRecordIds` (the client must stop resending them): a rejected create or update has been
-   * reverted on the server and the reverted state is pushed back to the client; a rejected delete was
-   * not applied on the server (the device keeps its delete). Absent ⇒ nothing rejected.
+   * in `successfulRecordIds` (the client must stop resending them): a rejected update has been reverted on
+   * the server and the reverted state is pushed back to the client; a rejected create left nothing on the
+   * server and a delete is pushed back so the client drops it; a rejected delete was not applied on the
+   * server (the device keeps its delete). Absent ⇒ nothing rejected.
    */
   rejectedRecords?: MXDBSyncRejectedRecord[];
   /**

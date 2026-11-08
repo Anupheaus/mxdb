@@ -275,7 +275,8 @@ export async function handleClientToServerSync(request: ClientDispatcherRequest)
           // A record that failed to persist is retried, so its note is held back until the write that does succeed.
           const amendedRecords = hooked.amendedRecords.filter(({ id }) => !failedIds.has(id));
           const successfulRecordIds = [...attempted.filter(id => !failedIds.has(id)), ...unpersistedIds];
-          // A rejected create or update is still written (reverted), but that is the server undoing it, not a client write.
+          // A rejected update is still written (reverted), but that is the server undoing it, not a client write. A rejected
+          // create or delete is not written at all (it is among the unpersisted ids).
           const rejectedIds = new Set(rejectedRecords.map(({ id }) => id));
           const isClientWrite = (id: string): boolean => !failedIds.has(id) && !rejectedIds.has(id);
           const upsertedIds = updated.map(({ id }) => id).filter(isClientWrite);
