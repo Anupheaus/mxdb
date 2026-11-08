@@ -194,7 +194,8 @@ function toFilterObject(pairs: [string, unknown][]): FilterObject {
   const filter: FilterObject = {};
   const repeats: FilterObject[] = [];
   for (const [key, value] of pairs) {
-    if (Object.hasOwn(filter, key)) repeats.push({ [key]: value });
+    // Not Object.hasOwn: consumers compile mxdb's source against an older library target.
+    if (Object.prototype.hasOwnProperty.call(filter, key)) repeats.push({ [key]: value });
     else filter[key] = value;
   }
   if (repeats.length === 0) return filter;

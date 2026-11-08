@@ -183,7 +183,7 @@ export function expectedCanonicalFilter(filter: Node): Node {
   });
   const canonical: Node = {};
   const repeats: Node[] = [];
-  pairs.forEach(([key, value]) => (Object.hasOwn(canonical, key) ? repeats.push({ [key]: value }) : (canonical[key] = value)));
+  pairs.forEach(([key, value]) => (Object.prototype.hasOwnProperty.call(canonical, key) ? repeats.push({ [key]: value }) : (canonical[key] = value)));
   return repeats.length === 0 ? canonical : { ...canonical, $and: [...((canonical.$and as Node[] | undefined) ?? []), ...repeats] };
 }
 
