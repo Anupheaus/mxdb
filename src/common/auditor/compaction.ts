@@ -1,6 +1,6 @@
 import type { Logger, Record as MXDBRecord } from '@anupheaus/common';
 import { AuditEntryType, type AuditCompaction, type AuditCreatedEntry, type AuditEntry, type AuditPathClock } from './auditor-models';
-import { capPathClocks, recordPathWrite } from './pathClocks';
+import { capPathClockMap, PATH_CLOCK_BUILD_LIMIT, pathClockMapOf, recordPathWrite } from './pathClocks';
 import { replayHistory } from './replay';
 
 /** When a server audit is compacted, and how much of its newest history is kept as separate entries. */
@@ -56,12 +56,19 @@ function startingCompactionOf({ id, compaction }: AuditCreatedEntry): AuditCompa
   return compaction ?? { historyStart: id, clocks: [] };
 }
 
-/** The clocks after folding `entries`: each path any of them wrote, at the newest entry that wrote it. */
-function clocksAfter(clocks: AuditPathClock[], entries: AuditEntry[]): AuditPathClock[] {
-  return entries.reduce((current, entry) => {
-    if (entry.type !== AuditEntryType.Updated) return current;
-    return (entry.ops ?? []).reduce((next, { path }) => recordPathWrite(next, { path, id: entry.id }), current);
-  }, clocks);
+/**
+ * The clocks after folding `entries` into `record`: each path any of them wrote, at the newest entry that wrote it, capped.
+ * Linear in the ops: each op is one map update, and the map is capped between entries once it outgrows
+ * {@link PATH_CLOCK_BUILD_LIMIT}, so one entry with a huge number of ops costs no more than its own size.
+ */
+function clocksAfter(clocks: AuditPathClock[], entries: AuditEntry[], record: unknown): AuditPathClock[] {
+  let map = pathClockMapOf(clocks);
+  for (const entry of entries) {
+    if (entry.type !== AuditEntryType.Updated) continue;
+    for (const { path } of entry.ops ?? []) recordPathWrite(map, { path, id: entry.id });
+    if (map.size > PATH_CLOCK_BUILD_LIMIT) map = pathClockMapOf(capPathClockMap(map, record));
+  }
+  return capPathClockMap(map, record);
 }
 
 /**
@@ -96,7 +103,7 @@ export function compactAuditEntries<RecordType extends MXDBRecord>(
   const record = replayHistory(folded, undefined, logger);
   if (record == null) return;
   const starting = startingCompactionOf(first);
-  const compaction = capPathClocks({ ...starting, clocks: clocksAfter(starting.clocks, folded.slice(1)) }, record);
+  const compaction: AuditCompaction = { ...starting, clocks: clocksAfter(starting.clocks, folded.slice(1), record) };
   const snapshot: AuditCreatedEntry<RecordType> = { type: AuditEntryType.Created, id: folded[folded.length - 1]!.id, record, compaction };
   return { entries: [snapshot, ...sorted.slice(foldEnd)], folded };
 }

@@ -1,8 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import type { AuditCompaction } from './auditor-models';
-import { capPathClocks, isPathWithin, latestCoveringWrite, newerPathsWithin, recordPathWrite } from './pathClocks';
+import {
+  capPathClockMap, capPathClocks, clockPathOf, isPathWithin, latestCoveringWrite as latestCoveringWriteIn, MAX_CLOCK_PATH_CHARACTERS,
+  MAX_CLOCK_PATH_SEGMENTS, newerPathsIndexOf, pathClockMapOf, recordPathWrite,
+} from './pathClocks';
 
 const compactionWith = (clocks: AuditCompaction['clocks']): AuditCompaction => ({ historyStart: '0', clocks });
+const latestCoveringWrite = ({ clocks }: AuditCompaction, path: string): string => latestCoveringWriteIn(pathClockMapOf(clocks), path);
 
 describe('pathClocks', () => {
   it.each([
@@ -17,14 +21,32 @@ describe('pathClocks', () => {
     expect(isPathWithin(path, ancestor)).toBe(expected);
   });
 
-  it('moves a path\'s clock on and drops the older clocks inside it', () => {
-    const clocks = recordPathWrite([{ path: 'a.x', id: '1' }, { path: 'a.y', id: '3' }, { path: 'b', id: '2' }], { path: 'a', id: '2' });
-    expect(clocks).toEqual([{ path: 'a.y', id: '3' }, { path: 'b', id: '2' }, { path: 'a', id: '2' }]);
+  it('moves a path\'s clock on, and capping drops the older clocks inside it', () => {
+    const clocks = pathClockMapOf([{ path: 'a.x', id: '1' }, { path: 'a.y', id: '3' }, { path: 'b', id: '2' }]);
+    recordPathWrite(clocks, { path: 'a', id: '2' });
+    expect(capPathClockMap(clocks, {})).toEqual([{ path: 'a.y', id: '3' }, { path: 'b', id: '2' }, { path: 'a', id: '2' }]);
   });
 
   it('never moves a clock back', () => {
-    const clocks = [{ path: 'a', id: '5' }];
-    expect(recordPathWrite(clocks, { path: 'a', id: '4' })).toBe(clocks);
+    const clocks = pathClockMapOf([{ path: 'a', id: '5' }]);
+    recordPathWrite(clocks, { path: 'a', id: '4' });
+    expect(clocks.get('a')).toBe('5');
+  });
+
+  it.each([
+    ['a shallow path, as it is', 'items.[id:x].name', 'items.[id:x].name'],
+    ['a deep path, at its ancestor the deepest kept', 'a.b.c.d.e.f.g.h.i.j', 'a.b.c.d.e.f.g.h'],
+    ['a path naming a prototype key, nowhere', 'a.__proto__.x', undefined],
+    ['an empty path, nowhere', '', undefined],
+  ])('clocks %s', (_label, path, expected) => {
+    expect(clockPathOf(path)).toBe(expected);
+  });
+
+  it('clocks a long path at its deepest ancestor that fits, and a long first key as it is', () => {
+    const segment = 'p'.repeat(100);
+    expect(clockPathOf(`${segment}.${segment}.${segment}`)).toBe(`${segment}.${segment}`);
+    expect(clockPathOf(`${'k'.repeat(1_000)}.x`)).toBe('k'.repeat(1_000));
+    expect([MAX_CLOCK_PATH_SEGMENTS, MAX_CLOCK_PATH_CHARACTERS]).toEqual([8, 256]);
   });
 
   it.each([
@@ -40,8 +62,8 @@ describe('pathClocks', () => {
   });
 
   it('lists only the newer paths inside a path', () => {
-    const compaction = compactionWith([{ path: 'a', id: '1' }, { path: 'a.x', id: '5' }, { path: 'a.y', id: '2' }, { path: 'b.x', id: '9' }]);
-    expect(newerPathsWithin(compaction, { path: 'a', id: '3' })).toEqual(['a.x']);
+    const newerWithin = newerPathsIndexOf([{ path: 'a', id: '1' }, { path: 'a.x', id: '5' }, { path: 'a.y', id: '2' }, { path: 'b.x', id: '9' }]);
+    expect([newerWithin('a', '3'), newerWithin('a.x', '3'), newerWithin('c', '0')]).toEqual([['a.x'], [], []]);
   });
 
   it('folds the oldest clocks past the cap into their parent path, at the newest id folded into it', () => {

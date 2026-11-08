@@ -3,8 +3,9 @@ import { ulid } from 'ulidx';
 import type { Record as MXDBRecord } from '@anupheaus/common';
 import { AuditEntryType, OperationType, type AuditCreatedEntry, type AuditEntry, type AuditOf, type AuditOperation, type AuditUpdateEntry } from './auditor-models';
 import { AUDIT_COMPACTION_LIMITS, compactAuditEntries, type AuditCompactionLimits } from './compaction';
+import { MAX_AUDIT_PATH_CLOCKS } from './pathClocks';
 import { merge, isDeleted } from './api';
-import { replayHistory } from './replay';
+import { replayHistory, replayHistoryEndState } from './replay';
 
 // ─── Fixtures ────────────────────────────────────────────────────────────────
 
@@ -264,6 +265,63 @@ describe('merge into a compacted audit whose record has had more paths written t
 
     expect(replayHistory(audit.entries, undefined)).toEqual(referenceRecord(writes, withList()));
   });
+});
+
+// ─── Cost of one huge write (sc-4409 QA round 2) ─────────────────────────────
+
+describe('one write with a huge number of ops', () => {
+  const OPS = 50_000;
+  /** Well under a second here; the quadratic fold took 8.5 s for 20,000 ops and 36 s for 30,000. */
+  const BUDGET_MS = 1_500;
+  // Few ordinary writes and small entry limits (the clock limits stay the defaults): the reference replays below clone the
+  // huge record once per entry, so fewer entries keep the test quick without changing what is measured.
+  const ordinary = Array.from({ length: 8 }, (_, index) => update(index + 3, replace('b', index)));
+  const timed = <T>(run: () => T): { result: T; elapsedMs: number } => {
+    const start = performance.now();
+    const result = run();
+    return { result, elapsedMs: performance.now() - start };
+  };
+
+  const addItem = (index: number): AuditOperation => ({ type: OperationType.Add, path: `list.[id:v${index}]`, value: { id: `v${index}` } });
+
+  // Distinct valid paths are items added to a list, not keys added to one object: `to.serialise`/`to.deserialise` in
+  // @anupheaus/common rebuild an object key by key (quadratic in its keys), which every replay already pays, before and
+  // after this change. That is a separate defect in common, raised on the epic.
+  it.each([
+    ['junk paths that lead nowhere', (index: number) => replace(`j${index}.q`, 1)],
+    ['distinct valid paths (items added to a list)', addItem],
+  ])('is merged and compacted in linear time: %s', (_label, opAt) => {
+    const base = created({ id: RECORD_ID, a: { x: 0, y: 0 }, b: 0, c: { d: 0 }, list: [] });
+    const huge = update(2, ...Array.from({ length: OPS }, (_, index) => opAt(index)));
+    const offlineEdit = update(1, replace('a.x', 99));
+
+    // The write arrives and the audit is compacted with it among the folded entries: the step that was quadratic.
+    const { result: { merged, compacted }, elapsedMs } = timed(() => {
+      const mergedAudit = merge(auditOf([base, ...ordinary]), auditOf([huge])) as AuditOf<TestRecord>;
+      return { merged: mergedAudit, compacted: compactAuditEntries(mergedAudit.entries, SMALL_LIMITS)! };
+    });
+    // Within the budget, or (for a write that makes the record itself huge) no slower than the replay of the same audit that
+    // ServerReceiver already does on every write: that replay clones the record once per entry, before and after this change.
+    const { elapsedMs: replayMs } = timed(() => replayHistoryEndState(merged.entries, undefined));
+    expect(elapsedMs).toBeLessThan(Math.max(BUDGET_MS, 1.5 * replayMs));
+
+    const snapshot = compacted.entries[0] as AuditCreatedEntry;
+    expect(snapshot.compaction!.clocks.length).toBeLessThanOrEqual(MAX_AUDIT_PATH_CLOCKS);
+    // The offline edit still lands, and the record is what the full history gives.
+    const withOfflineEdit = merge(auditOf(compacted.entries), auditOf([offlineEdit])) as AuditOf<TestRecord>;
+    expect(replayHistory(withOfflineEdit.entries, undefined)).toEqual(referenceRecord([offlineEdit, huge, ...ordinary], base));
+  }, 120_000);
+
+  it('is merged in linear time when it arrives late, into an already compacted audit', () => {
+    const base = created({ id: RECORD_ID, a: { x: 0, y: 0 }, b: 0, c: { d: 0 }, list: [] });
+    const huge = update(2, ...Array.from({ length: OPS }, (_, index) => replace(`j${index}.q`, 1)), ...Array.from({ length: OPS }, (_, index) => addItem(index)));
+    const { audit } = serverAfter(ordinary, SMALL_LIMITS, base);
+
+    const { result: merged, elapsedMs } = timed(() => merge(audit, auditOf([huge])) as AuditOf<TestRecord>);
+
+    expect(replayHistory(merged.entries, undefined)).toEqual(referenceRecord([huge, ...ordinary], base));
+    expect(elapsedMs).toBeLessThan(BUDGET_MS);
+  }, 120_000);
 });
 
 // ─── Crafted paths (sc-4409 QA round 1) ──────────────────────────────────────

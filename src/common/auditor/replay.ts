@@ -137,7 +137,9 @@ export function applyOp(record: unknown, op: AuditOperation, logger?: Logger): u
 
   try {
     if (Array.isArray(parent)) {
-      const idx = resolveArrayIndex(parent, lastSeg, op.hash);
+      // An Add at the start or end needs no index: do not search the array for it (one entry may add thousands of items).
+      const isAddAtEnd = op.type === 3 && (op.position === TargetPosition.First || op.position === TargetPosition.Last || op.position == null);
+      const idx = isAddAtEnd ? undefined : resolveArrayIndex(parent, lastSeg, op.hash);
       // 0 = Remove, 1 = Replace, 2 = Move, 3 = Add
       if (op.type === 0) {
         if (idx == null) return record;
