@@ -12,11 +12,21 @@ import { contentHash } from './hash';
 
 // ─── Path resolution helpers ──────────────────────────────────────────────────
 
-/** Parse an audit path string into segments. */
+/**
+ * Keys a path may never walk through: reading or writing them reaches an object's prototype (`__proto__.x` would set `x` on
+ * every object in the process). Paths come from devices, so this is a whitelist boundary, not a convenience.
+ */
+const FORBIDDEN_PATH_KEYS: ReadonlySet<string> = new Set(['__proto__', 'constructor', 'prototype']);
+
+/**
+ * Parse an audit path string into segments. A path that names a forbidden key ({@link FORBIDDEN_PATH_KEYS}) parses to no
+ * segments, so every reader and writer (replay, merge, compaction) treats it as leading nowhere and ignores it.
+ */
 export function parsePath(path: string): (string | number)[] {
   if (!path) return [];
   const segments: (string | number)[] = [];
   for (const seg of path.split('.')) {
+    if (FORBIDDEN_PATH_KEYS.has(seg)) return [];
     if (/^\[_?id:.+\]$/.test(seg)) {
       segments.push(seg); // boxed-id, kept as-is
       continue;
@@ -25,6 +35,32 @@ export function parsePath(path: string): (string | number)[] {
     segments.push(Number.isInteger(num) && seg !== '' ? num : seg);
   }
   return segments;
+}
+
+/** A value read at a path: `isPresent` is false when the path leads nowhere (a missing key or array element). */
+export interface PathValue {
+  isPresent: boolean;
+  value?: unknown;
+}
+
+/** The value at an audit path in `record`, resolved as replay resolves it (boxed ids and array indexes). */
+export function readAtPath(record: unknown, path: string): PathValue {
+  const segments = parsePath(path);
+  if (segments.length === 0) return path === '' ? { isPresent: true, value: record } : { isPresent: false };
+  let current: unknown = record;
+  for (const segment of segments) {
+    if (current == null || typeof current !== 'object') return { isPresent: false };
+    if (Array.isArray(current)) {
+      const index = resolveArrayIndex(current, segment);
+      if (index == null) return { isPresent: false };
+      current = current[index];
+      continue;
+    }
+    const key = String(segment);
+    if (!Object.prototype.hasOwnProperty.call(current, key)) return { isPresent: false };
+    current = (current as Record<string, unknown>)[key];
+  }
+  return { isPresent: true, value: current };
 }
 
 /** Resolve a segment within an array using boxed-id or hash anchoring. */

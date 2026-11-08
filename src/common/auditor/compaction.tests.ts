@@ -13,6 +13,7 @@ interface TestRecord extends MXDBRecord {
   b?: number;
   c?: { d?: number };
   text?: string;
+  list?: { id: string }[];
 }
 
 const RECORD_ID = 'r1';
@@ -56,11 +57,11 @@ function randomOp(random: () => number): AuditOperation {
 }
 
 /** The record as the full, never-compacted history gives it: the reference every compacted audit must match. */
-const referenceRecord = (entries: AuditEntry<TestRecord>[]): TestRecord | undefined => replayHistory([created(), ...entries], undefined);
+const referenceRecord = (entries: AuditEntry<TestRecord>[], base = created()): TestRecord | undefined => replayHistory([base, ...entries], undefined);
 
 /** The server's audit after each arriving entry is merged in and the audit compacted, as `ServerDbCollection` stores it. */
-function serverAfter(arrivals: AuditEntry<TestRecord>[], limits: AuditCompactionLimits): { audit: AuditOf<TestRecord>; largestEntryCount: number } {
-  let audit = auditOf([created()]);
+function serverAfter(arrivals: AuditEntry<TestRecord>[], limits: AuditCompactionLimits, base = created()): { audit: AuditOf<TestRecord>; largestEntryCount: number } {
+  let audit = auditOf([base]);
   let largestEntryCount = 1;
   for (const arrival of arrivals) {
     const merged = merge(audit, auditOf([arrival])) as AuditOf<TestRecord>;
@@ -215,5 +216,76 @@ describe('merge into a compacted audit', () => {
     const writes = Array.from({ length: 30 }, (_, index) => update(index + 1, randomOp(random), randomOp(random)));
     const { audit } = serverAfter([...writes.slice(15), ...writes.slice(0, 15).reverse()], SMALL_LIMITS);
     expect(replayHistory(audit.entries, undefined)).toEqual(referenceRecord(writes));
+  });
+});
+
+// ─── More distinct paths than the clocks can hold (sc-4409 QA round 1) ───────
+
+describe('merge into a compacted audit whose record has had more paths written than the clocks hold', () => {
+  const withList = (): AuditCreatedEntry<TestRecord> => created({ id: RECORD_ID, a: { x: 0, y: 0 }, b: 0, c: { d: 0 }, list: [] });
+  const addItem = (step: number): AuditUpdateEntry => update(step, { type: OperationType.Add, path: `list.[id:m${step}]`, value: { id: `m${step}` } });
+  /** An offline device's edit made before everything else, arriving last. */
+  const offlineEdit = update(1, replace('a.x', 99));
+
+  it('merges an offline edit to an untouched field after 700 items were added to a list (legitimate churn)', () => {
+    const churn = Array.from({ length: 700 }, (_, index) => addItem(index + 2));
+    const { audit } = serverAfter([...churn, offlineEdit], AUDIT_COMPACTION_LIMITS, withList());
+    const record = replayHistory(audit.entries, undefined);
+    expect(record?.a).toEqual({ x: 99, y: 0 });
+    expect(record).toEqual(referenceRecord([offlineEdit, ...churn], withList()));
+  });
+
+  it('merges an offline edit to an untouched field after one write crafted with 600 junk paths (hostile)', () => {
+    const junk = update(2, ...Array.from({ length: 600 }, (_, index) => replace(`junk${index}.x`, 1)));
+    const ordinary = Array.from({ length: 60 }, (_, index) => update(index + 3, replace('b', index)));
+    const { audit } = serverAfter([junk, ...ordinary, offlineEdit], AUDIT_COMPACTION_LIMITS);
+    const record = replayHistory(audit.entries, undefined);
+    expect(record?.a).toEqual({ x: 99, y: 0 });
+    expect(record).toEqual(referenceRecord([offlineEdit, junk, ...ordinary]));
+  });
+
+  // The whole space for a high fan-out record: more than 500 distinct paths written (items added to a list), with ordinary
+  // writes elsewhere held back, arriving late and resent. A late write outside the churned list must always land, and the
+  // audit must replay to exactly what the full, never-compacted history gives.
+  it.each(Array.from({ length: 8 }, (_, seed) => seed))('matches the full history with more than 500 distinct paths (seed %i)', seed => {
+    const random = randomFrom(seed + 1_000);
+    // Early on, a few edits to `text`, which nothing else writes: all of them are held back until the end.
+    const offlineSteps = new Set(Array.from({ length: 3 }, () => 1 + Math.floor(random() * 60)));
+    const writes = Array.from({ length: 700 }, (_, index) => {
+      const step = index + 1;
+      if (offlineSteps.has(step)) return update(step, replace('text', `offline ${step}`));
+      return random() < 0.08 ? update(step, randomOp(random)) : addItem(step);
+    });
+    const ordinary = writes.filter(write => !write.ops.some(({ path }) => path.startsWith('list')));
+    const held = ordinary.filter(write => offlineSteps.has(writes.indexOf(write) + 1) || random() < 0.5);
+    const arrivals = [...writes.filter(write => !held.includes(write)), ...held.reverse(), ...ordinary.filter(() => random() < 0.2)];
+
+    const { audit } = serverAfter(arrivals, AUDIT_COMPACTION_LIMITS, withList());
+
+    expect(replayHistory(audit.entries, undefined)).toEqual(referenceRecord(writes, withList()));
+  });
+});
+
+// ─── Crafted paths (sc-4409 QA round 1) ──────────────────────────────────────
+
+describe('a path that names a prototype key', () => {
+  const pollutedKeys = (): string[] => ['qaPolluted', 'constructorPolluted', 'prototypePolluted'].filter(key => key in {});
+
+  it.each([
+    ['__proto__.qaPolluted'],
+    ['constructor.prototype.constructorPolluted'],
+    ['a.__proto__.qaPolluted'],
+  ])('is ignored by replay (%s)', path => {
+    const record = replayHistory([created(), update(1, replace(path, 'yes'))], undefined);
+    expect([pollutedKeys(), record]).toEqual([[], replayHistory([created()], undefined)]);
+  });
+
+  it.each([
+    ['__proto__.qaPolluted'],
+    ['constructor.prototype.constructorPolluted'],
+  ])('is ignored when merged into a compacted audit as a late entry (%s)', path => {
+    const audit = auditOf(compactAuditEntries([created(), ...Array.from({ length: 9 }, (_, index) => update(index * 10 + 10, replace('b', index + 1)))], SMALL_LIMITS)!.entries);
+    const merged = merge(audit, auditOf([update(5, replace(path, 'yes'))])) as AuditOf<TestRecord>;
+    expect([pollutedKeys(), replayHistory(merged.entries, undefined)]).toEqual([[], replayHistory(audit.entries, undefined)]);
   });
 });

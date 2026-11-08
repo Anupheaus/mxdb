@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { AuditCompaction } from './auditor-models';
 import { capPathClocks, isPathWithin, latestCoveringWrite, newerPathsWithin, recordPathWrite } from './pathClocks';
 
-const compactionWith = (clocks: AuditCompaction['clocks'], clocksFloor?: string): AuditCompaction => ({ historyStart: '0', clocks, clocksFloor });
+const compactionWith = (clocks: AuditCompaction['clocks']): AuditCompaction => ({ historyStart: '0', clocks });
 
 describe('pathClocks', () => {
   it.each([
@@ -31,12 +31,11 @@ describe('pathClocks', () => {
     ['the path itself', 'a', '4'],
     ['a path containing it', 'a.x', '4'],
     ['the newest of several', 'a.x.y', '6'],
-    ['the floor, when no clock covers it', 'b', '2'],
   ])('the latest covering write is that of %s', (_label, path, expected) => {
-    expect(latestCoveringWrite(compactionWith([{ path: 'a', id: '4' }, { path: 'a.x.y', id: '6' }, { path: 'a.z', id: '9' }], '2'), path)).toBe(expected);
+    expect(latestCoveringWrite(compactionWith([{ path: 'a', id: '4' }, { path: 'a.x.y', id: '6' }, { path: 'a.z', id: '9' }]), path)).toBe(expected);
   });
 
-  it('is empty when nothing covers a path and there is no floor', () => {
+  it('is empty when nothing covers a path', () => {
     expect(latestCoveringWrite(compactionWith([{ path: 'a', id: '4' }]), 'b')).toBe('');
   });
 
@@ -45,18 +44,39 @@ describe('pathClocks', () => {
     expect(newerPathsWithin(compaction, { path: 'a', id: '3' })).toEqual(['a.x']);
   });
 
-  it('drops the oldest clocks past the cap and raises the floor to the newest dropped', () => {
-    const capped = capPathClocks(compactionWith([{ path: 'a', id: '3' }, { path: 'b', id: '1' }, { path: 'c', id: '2' }, { path: 'd', id: '4' }]), 2);
-    expect(capped).toEqual(compactionWith([{ path: 'a', id: '3' }, { path: 'd', id: '4' }], '2'));
+  it('folds the oldest clocks past the cap into their parent path, at the newest id folded into it', () => {
+    const record = { list: [{ id: 'm1' }, { id: 'm2' }, { id: 'm3' }], note: 'n' };
+    const capped = capPathClocks(compactionWith([
+      { path: 'list.[id:m1]', id: '1' }, { path: 'list.[id:m2]', id: '2' }, { path: 'list.[id:m3]', id: '5' }, { path: 'note', id: '4' },
+    ]), record, 3);
+    expect(capped.clocks).toEqual(expect.arrayContaining([{ path: 'list', id: '2' }, { path: 'list.[id:m3]', id: '5' }, { path: 'note', id: '4' }]));
+    expect(capped.clocks).toHaveLength(3);
   });
 
-  it('drops the oldest clocks until their paths fit the character limit', () => {
-    const longPath = 'p'.repeat(40);
-    const capped = capPathClocks(compactionWith([{ path: `${longPath}1`, id: '1' }, { path: `${longPath}2`, id: '2' }, { path: 'c', id: '3' }]), 10, 50);
-    expect(capped).toEqual(compactionWith([{ path: `${longPath}2`, id: '2' }, { path: 'c', id: '3' }], '1'));
+  it('never covers a path outside the part of the record that churned', () => {
+    const record = { list: Array.from({ length: 20 }, (_, index) => ({ id: `m${index}` })), note: 'n' };
+    const clocks = Array.from({ length: 20 }, (_, index) => ({ path: `list.[id:m${index}]`, id: String(index + 10) }));
+    const capped = capPathClocks(compactionWith(clocks), record, 5);
+    expect([latestCoveringWrite(capped, 'note'), latestCoveringWrite(capped, 'other.x'), capped.clocks.length <= 5]).toEqual(['', '', true]);
   });
 
-  it('keeps a higher floor when the dropped clocks are older than it', () => {
-    expect(capPathClocks(compactionWith([{ path: 'a', id: '3' }, { path: 'b', id: '1' }], '2'), 1).clocksFloor).toBe('2');
+  it('drops a top-level clock for a key the record does not hold (junk paths, removed fields)', () => {
+    const clocks = Array.from({ length: 30 }, (_, index) => ({ path: `junk${index}.x`, id: String(index + 10) }));
+    const capped = capPathClocks(compactionWith([...clocks, { path: 'note', id: '50' }]), { note: 'n' }, 5);
+    expect(capped.clocks.length).toBeLessThanOrEqual(5);
+    expect([latestCoveringWrite(capped, 'note'), latestCoveringWrite(capped, 'a.x')]).toEqual(['50', '']);
+  });
+
+  it('keeps a clock per top-level key the record holds, even past the cap', () => {
+    const record = Object.fromEntries(Array.from({ length: 8 }, (_, index) => [`k${index}`, index]));
+    const clocks = Array.from({ length: 8 }, (_, index) => ({ path: `k${index}`, id: String(index + 10) }));
+    expect(capPathClocks(compactionWith(clocks), record, 3).clocks).toHaveLength(8);
+  });
+
+  it('folds the oldest clocks until their paths fit the character limit', () => {
+    const longPath = `a.${'p'.repeat(40)}`;
+    const capped = capPathClocks(compactionWith([{ path: `${longPath}1`, id: '1' }, { path: `${longPath}2`, id: '2' }, { path: 'c', id: '3' }]), { a: {}, c: 1 }, 10, 50);
+    expect(capped.clocks).toEqual(expect.arrayContaining([{ path: 'a', id: '1' }, { path: `${longPath}2`, id: '2' }, { path: 'c', id: '3' }]));
+    expect(capped.clocks.reduce((total, { path }) => total + path.length, 0)).toBeLessThanOrEqual(50);
   });
 });

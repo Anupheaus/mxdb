@@ -1,31 +1,7 @@
 import { to, type Logger, type Record as MXDBRecord } from '@anupheaus/common';
 import { OperationType, type AuditCompaction, type AuditCreatedEntry, type AuditOperation, type AuditUpdateEntry } from './auditor-models';
 import { capPathClocks, latestCoveringWrite, newerPathsWithin, recordPathWrite } from './pathClocks';
-import { applyOp, parsePath, resolveArrayIndex } from './replay';
-
-/** A value read at a path: `isPresent` is false when the path leads nowhere (a missing key or array element). */
-interface PathValue {
-  isPresent: boolean;
-  value?: unknown;
-}
-
-/** The value at an audit path in `record`, resolved as replay resolves it (boxed ids and array indexes). */
-function readAtPath(record: unknown, path: string): PathValue {
-  let current: unknown = record;
-  for (const segment of parsePath(path)) {
-    if (current == null || typeof current !== 'object') return { isPresent: false };
-    if (Array.isArray(current)) {
-      const index = resolveArrayIndex(current, segment);
-      if (index == null) return { isPresent: false };
-      current = current[index];
-      continue;
-    }
-    const key = String(segment);
-    if (!Object.prototype.hasOwnProperty.call(current, key)) return { isPresent: false };
-    current = (current as Record<string, unknown>)[key];
-  }
-  return { isPresent: true, value: current };
-}
+import { applyOp, readAtPath, type PathValue } from './replay';
 
 /** The operation that puts `path` back to what it was: its old value, or removed when it was not there. */
 function restoreOpFor(path: string, { isPresent, value }: PathValue): AuditOperation {
@@ -67,5 +43,5 @@ export function foldLateEntries<RecordType extends MXDBRecord>(
     for (const op of ops ?? []) compaction = applyLateOp(record, compaction, { id, op }, logger);
   }
   // Op values are stored JSON-safe (dates as ISO strings): revive them as replay does.
-  return { ...snapshot, record: to.deserialise<RecordType>(to.serialise(record)), compaction: capPathClocks(compaction) };
+  return { ...snapshot, record: to.deserialise<RecordType>(to.serialise(record)), compaction: capPathClocks(compaction, record) };
 }

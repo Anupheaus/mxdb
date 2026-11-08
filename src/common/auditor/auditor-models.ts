@@ -68,10 +68,12 @@ export interface AuditPathClock {
 export interface AuditCompaction {
   /** ULID of the `Created` entry the history began with: an entry older than it is dropped, as after an audit reset. */
   historyStart: string;
-  /** Per path, the newest folded entry that wrote it. A path with no clock was last written at or before `clocksFloor`. */
+  /**
+   * Per path, the newest folded entry that wrote it. To stay bounded, the oldest clocks are folded into their parent path
+   * (coverage only widens inside the part of the record that churned), and a top-level clock for a key the record does not
+   * hold is dropped. A path no clock covers was never written by a folded entry that still matters.
+   */
   clocks: AuditPathClock[];
-  /** Clocks at or before this ULID were dropped to keep the list bounded: a folded write is assumed to be this recent. */
-  clocksFloor?: string;
 }
 
 export interface AuditUpdateEntry extends AuditCommonEntry {

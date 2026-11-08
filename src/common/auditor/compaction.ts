@@ -96,7 +96,7 @@ export function compactAuditEntries<RecordType extends MXDBRecord>(
   const record = replayHistory(folded, undefined, logger);
   if (record == null) return;
   const starting = startingCompactionOf(first);
-  const compaction = capPathClocks({ ...starting, clocks: clocksAfter(starting.clocks, folded.slice(1)) });
+  const compaction = capPathClocks({ ...starting, clocks: clocksAfter(starting.clocks, folded.slice(1)) }, record);
   const snapshot: AuditCreatedEntry<RecordType> = { type: AuditEntryType.Created, id: folded[folded.length - 1]!.id, record, compaction };
   return { entries: [snapshot, ...sorted.slice(foldEnd)], folded };
 }
