@@ -6,7 +6,9 @@ import { ulid } from 'ulidx';
 import { SqliteWorkerClient } from '../../db-worker/SqliteWorkerClient';
 import { buildTableDDL } from '../../db-worker/buildTableDDL';
 import { queryRecordsInMemory } from '../../db-worker/queryRecordsInMemory';
-import { OPERAND_CASE_RECORDS, operandCasesFor, type OperandCaseRecord } from '../../../common/filters/filterOperandCases.fixture';
+import {
+  OPERAND_CASE_RECORDS, PARITY_CASE_RECORDS, operandCasesFor, parityCases, type OperandCaseRecord, type ParityCaseRecord,
+} from '../../../common/filters/filterOperandCases.fixture';
 import { expectedCanonicalFilter, generateFuzzCases, generateGarbageCases } from '../../../common/filters/filterFuzzCases.fixture';
 import { isReadableFilter, normaliseFilterConditions } from '../../../common/filters';
 import type { MXDBCollectionConfig } from '../../../common/models';
@@ -42,6 +44,28 @@ describe('filter operands on the device', () => {
     const [brokenIds, matchNothingIds] = [sortedIds((await collection.query({ filters: broken })).records), sortedIds((await collection.query({ filters: matchNothing })).records)];
     expect(brokenIds.filter(id => !matchNothingIds.includes(id))).toEqual([]);
     expect(brokenIds).toEqual([]);
+  });
+
+  // sc-2783: comparisons across kinds, "does not exist", nested conditions and case-insensitive patterns.
+  describe('the filters that once read differently from the server (sc-2783)', () => {
+    let parityCollection: DbCollection<ParityCaseRecord>;
+
+    beforeAll(async () => {
+      const parityConfig: MXDBCollectionConfig<ParityCaseRecord> = { name: 'parity-cases', indexes: [] };
+      parityCollection = new DbCollection<ParityCaseRecord>(worker, worker.open(parityConfig.name, buildTableDDL(parityConfig.name, [], true)), parityConfig);
+      await parityCollection.whenReady();
+      parityCollection.batchApplyServerWriteSync(PARITY_CASE_RECORDS.map(record => ({ record, lastAuditEntryId: ulid() })));
+    });
+
+    it.each(parityCases())('%s — DbCollection.query', async (_label, { filters, expectedIds }) => {
+      const { records } = await parityCollection.query({ filters: filters as DataFilters<ParityCaseRecord> });
+      expect(records.map(({ id }) => id).sort()).toEqual(expectedIds);
+    });
+
+    it.each(parityCases())('%s — the in-memory evaluator', (_label, { filters, expectedIds }) => {
+      const { records } = queryRecordsInMemory(PARITY_CASE_RECORDS, { filters: filters as DataFilters<ParityCaseRecord> });
+      expect(records.map(({ id }) => id).sort()).toEqual(expectedIds);
+    });
   });
 
   // Arbitrary values of any shape: an unreadable one returns nothing; a readable one is made canonical (missing values

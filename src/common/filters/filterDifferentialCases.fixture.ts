@@ -32,6 +32,9 @@ export const DIFFERENTIAL_RECORDS: DifferentialRecord[] = [
   { id: 'd14', name: 'Mike', mix: { k: 'v' }, nest: [{ k: 'v' }, { k: [] }], list: [], value: [[10]], when: day('2025-12-31T23:59:59.999Z') },
   // List items with their own `id` (the record's is `_id` on the server, an item's is not) and mixed items (sc-2758).
   { id: 'd15', name: 'November', items: [{ id: 's1', sku: 's2', qty: 2 }, { id: 'd1', qty: 5 }], list: [{ id: 'd1', ref: 'd4' }], tags: [1, 'x', null, ['y']] },
+  // Letters whose case folds differently across engines if either gets it wrong (sc-2783): the Kelvin sign, the long
+  // s, Greek sigmas, dotted and dotless i, sharp s; and an address in capitals beside one in lower case.
+  { id: 'd16', name: 'Oscar K', category: 'ſ', tags: ['ΣΑΣ', 'σας', 'İstanbul', 'ıi', 'Straße'], address: { city: 'LEEDS', zip: 'de1' } },
 ];
 
 /** Fields of the list items above, for `$elemMatch` item filters. */
@@ -54,7 +57,15 @@ const VALUES: unknown[] = [
 const PATTERNS = [
   '^A', 'a', 'a$', '^$', '', 'x', 'ot$', '^Foxtrot$', 'É', '^É', '\\.', 'e', 'ho', '^D', 'by$', 'v', '^s', 'lat',
   '[[:alpha:]]', '\\p{L}', '\\AO', 'e\\Z', '^(a+)+$', '(?i)a', 'a|b', '2026-01-01T00:00:00Z',
+  // Case-insensitive edge letters (sc-2783).
+  'k', 'K', 's', 'S', 'σ', 'Σ', 'ς', 'i', 'I', 'İ', 'ı', 'ss', 'SS', 'ß', 'leeds', '^DE', 'é', 'É', '^ALPHA$',
 ];
+
+/** Pattern options: 'i' and none are readable; the rest must match nothing on both engines (sc-2783). */
+const PATTERN_OPTIONS = ['i', 'i', 'i', '', 'm', 's', 'x', 'im'];
+
+/** Keys of nested objects in the records, for nested conditions (sc-2783). */
+const NESTED_KEYS = ['city', 'zip', 'sku', 'qty', 'k', 'm', 'a', 'b', 'ref', 'id', 'missing'] as const;
 
 const SCALAR_OPERATORS = ['$eq', '$ne', '$gt', '$gte', '$lt', '$lte'] as const;
 const LOGICAL_OPERATORS = ['$and', '$or', '$nor'] as const;
@@ -144,13 +155,26 @@ function generateItemCondition(generator: Generator, depth: number): { [key: str
 }
 
 function generateCondition(generator: Generator, depth: number): unknown {
-  const kind = generator.pick(['value', 'value', 'missing', 'list', 'operators', 'operators', 'operators'] as const);
+  const kind = generator.pick(['value', 'value', 'missing', 'list', 'operators', 'operators', 'operators', 'pattern', 'nested'] as const);
   switch (kind) {
     case 'value': return generator.pick(VALUES);
     case 'missing': return generator.chance(0.5) ? null : undefined;
     case 'list': return generateList(generator, { minimum: 0 }); // the bare-list shorthand
     case 'operators': return Object.fromEntries(Array.from({ length: generator.pick([1, 1, 2]) }, () => generateOperator(generator, depth)));
+    case 'pattern': return generatePatternCondition(generator);
+    case 'nested': return depth > 2 ? generator.pick(VALUES) : generateNestedCondition(generator, depth);
   }
+}
+
+/** A `$regex` with `$options`, sometimes negated (sc-2783). */
+function generatePatternCondition(generator: Generator): unknown {
+  const pattern = { $regex: generator.pick(PATTERNS), $options: generator.pick(PATTERN_OPTIONS) };
+  return generator.chance(0.3) ? { $not: pattern } : pattern;
+}
+
+/** A nested condition: one or two nested fields, each its own condition (sc-2783). */
+function generateNestedCondition(generator: Generator, depth: number): unknown {
+  return Object.fromEntries(Array.from({ length: generator.pick([1, 1, 2]) }, () => [generator.pick(NESTED_KEYS), generateCondition(generator, depth + 1)]));
 }
 
 function generateFilter(generator: Generator, depth: number): { [key: string]: unknown } {
@@ -215,4 +239,29 @@ export const DIFFERENTIAL_NAMED_CASES: [string, DataFilters<DifferentialRecord>]
   ['$elemMatch: under $not', { tags: { $not: { $elemMatch: { $eq: 'x' } } } } as never],
   ['$elemMatch: under $nor', { $nor: [{ items: { $elemMatch: { qty: { $gt: 1 } } } }] } as never],
   ['$elemMatch: ISO date-time text in an item condition', { when: { $elemMatch: { $eq: '2026-01-01T00:00:00Z' } } } as never],
+  // sc-2783: nested conditions, "does not exist", comparisons across kinds and case-insensitive patterns.
+  ['nested: a city', { address: { city: 'Derby' } } as never],
+  ['nested: a city and a zip', { address: { city: 'derby', zip: 7 } } as never],
+  ['nested: a missing city', { address: { city: null } } as never],
+  ['nested: through a list of objects', { items: { sku: 's1', qty: { $gte: 2 } } } as never],
+  ['nested: an item id', { list: { id: 'd1' } } as never],
+  ['nested: two levels', { deep: { a: { b: 1 } } } as never],
+  ['nested: under $nor', { $nor: [{ address: { city: { $exists: true } } }] } as never],
+  ['nested and dotted on the same path', { address: { city: 'Derby' }, 'address.city': { $ne: 'Leeds' } } as never],
+  ['$exists false beside a null', { category: { $exists: false } } as never],
+  ['a number bound never reads text', { value: { $gt: 1 } } as never],
+  ['a text bound never reads numbers', { value: { $lt: '9' } } as never],
+  ['ignoring case: a', { name: { $regex: 'a', $options: 'i' } } as never],
+  ['ignoring case: the Kelvin sign', { name: { $regex: 'k', $options: 'i' } } as never],
+  ['ignoring case: the long s', { category: { $regex: 's', $options: 'i' } } as never],
+  ['ignoring case: final sigma', { tags: { $regex: 'ς', $options: 'i' } } as never],
+  ['ignoring case: dotted capital I', { tags: { $regex: 'i̇', $options: 'i' } } as never],
+  ['ignoring case: dotless i', { tags: { $regex: 'I', $options: 'i' } } as never],
+  ['ignoring case: sharp s is not ss', { tags: { $regex: 'SS', $options: 'i' } } as never],
+  ['ignoring case: accents', { name: { $regex: 'é', $options: 'i' } } as never],
+  ['ignoring case: anchored, before a final newline', { name: { $regex: '^foxtrot$', $options: 'i' } } as never],
+  ['ignoring case, negated', { 'address.city': { $not: { $regex: 'LEEDS', $options: 'i' } } } as never],
+  ['a RegExp ignoring case', { 'address.city': /^derby$/i } as never],
+  ['a RegExp under $not', { name: { $not: /^a/i } } as never],
+  ['option m matches nothing', { name: { $regex: 'a', $options: 'm' } } as never],
 ];

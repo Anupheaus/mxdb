@@ -1,6 +1,6 @@
 import { is, ValidationError, type DataFilters } from '@anupheaus/common';
 import { DateTime } from 'luxon';
-import { isReadableFilter } from './isReadableFilter';
+import { isReadableFilter, READABLE_PATTERN_OPTIONS } from './isReadableFilter';
 import { parseLiteralPattern, toCanonicalPattern } from './literalPattern';
 
 // ─── The grammar ──────────────────────────────────────────────────────────────
@@ -88,7 +88,6 @@ function normaliseOperand(operator: string, operand: unknown): unknown {
   if (LIST_OPERATORS.has(operator)) return normaliseList(operand, { allowEmpty: operator !== '$all' });
   if (TEXT_OPERATORS.has(operator)) return is.string(operand) ? operand : unreadable(`${operator} needs text`);
   switch (operator) {
-    case '$regex': return normalisePattern(operand);
     case '$exists': return is.boolean(operand) ? operand : unreadable('$exists needs true or false');
     case '$size': return Number.isInteger(operand) && (operand as number) >= 0 ? operand : unreadable('$size needs a whole number');
     case '$not': return normaliseNot(operand);
@@ -106,8 +105,27 @@ function normalisePattern(operand: unknown): string {
   return Date.isIsoString(canonical) ? unreadable('$regex text that the transport reads as a date-time') : canonical;
 }
 
-/** `$not` negates an operator object; anything else could negate "nothing" into "everything". */
+/** Pattern options in canonical form: 'i' kept, none dropped, anything else unreadable (sc-2783). */
+function normalisePatternOptions(options: unknown): FilterObject {
+  if (!is.string(options) || !READABLE_PATTERN_OPTIONS.has(options)) return unreadable(`$options can only be 'i': ${String(options)}`);
+  return options === '' ? {} : { $options: options };
+}
+
+/**
+ * A pattern in its ONE canonical form, `{ $regex: text, $options?: 'i' }`, whether it was written as text with
+ * `$options` or as a RegExp. A RegExp does not survive the JSON trip to the server, so it never leaves in that form.
+ */
+function normalisePatternOperators(pattern: unknown, options: unknown): FilterObject {
+  if (pattern instanceof RegExp) {
+    if (options !== undefined) return unreadable('a RegExp $regex carries its own flags; $options beside it is ambiguous');
+    return { $regex: normalisePattern(pattern.source), ...normalisePatternOptions(pattern.flags) };
+  }
+  return { $regex: normalisePattern(pattern), ...normalisePatternOptions(options ?? '') };
+}
+
+/** `$not` negates an operator object or a pattern; anything else could negate "nothing" into "everything". */
 function normaliseNot(operand: unknown): unknown {
+  if (operand instanceof RegExp) return normalisePatternOperators(operand, undefined);
   if (!is.plainObject(operand) || !isOperatorObject(operand)) return unreadable('$not needs operators to negate');
   return normaliseOperators(operand);
 }
@@ -130,7 +148,10 @@ function isOperatorObject(value: FilterObject): boolean {
 }
 
 function normaliseOperators(operators: FilterObject): FilterObject {
-  return Object.fromEntries(Object.entries(operators).map(([operator, operand]) => [operator, normaliseOperand(operator, operand)]));
+  const { $regex: pattern, $options: options, ...others } = operators;
+  if (pattern === undefined && options !== undefined) return unreadable('$options needs a $regex beside it');
+  const normalised = Object.fromEntries(Object.entries(others).map(([operator, operand]) => [operator, normaliseOperand(operator, operand)]));
+  return pattern === undefined ? normalised : { ...normalised, ...normalisePatternOperators(pattern, options) };
 }
 
 // ─── Fields and filters ───────────────────────────────────────────────────────
@@ -140,9 +161,45 @@ function normaliseFieldValue(value: unknown): unknown {
   // Shorthand for $in. Written out as $in for BOTH engines: MongoDB alone would read a bare list as "equals this list".
   if (Array.isArray(value)) return { $in: normaliseList(value, { allowEmpty: true }) };
   if (isScalar(value)) return normaliseScalar(value, 'a field');
+  // Shorthand for $regex.
+  if (value instanceof RegExp) return normalisePatternOperators(value, undefined);
   if (!is.plainObject<FilterObject>(value)) return unreadable('a field can only be compared with a single value, a list or conditions');
-  if (Object.keys(value).length === 0) return unreadable('a field condition with nothing in it');
-  return isOperatorObject(value) ? normaliseOperators(value) : normaliseFilter(value, { allowEmpty: false });
+  if (!isOperatorObject(value)) return unreadable('a field condition with nothing in it');
+  return normaliseOperators(value);
+}
+
+/** A nested condition (`{ address: { city: 'Leeds' } }`): a non-empty object with no operator keys. */
+function isNestedCondition(value: unknown): value is FilterObject {
+  if (!is.plainObject<FilterObject>(value)) return false;
+  const keys = Object.keys(value);
+  return keys.length > 0 && keys.every(key => !key.startsWith('$'));
+}
+
+/**
+ * One field's conditions as `[path, canonical value]` pairs. A nested condition means "each nested field listed
+ * matches", so it is written as dotted paths — `{ address: { city: 'Leeds' } }` becomes `{ 'address.city': 'Leeds' }`
+ * — which both engines read alike; MongoDB alone would read the nested object as "equals exactly this object"
+ * (sc-2783). A nested `id` stays `id`: only the record's own top-level `id` is `_id` on the server.
+ */
+function normaliseField(path: string, value: unknown): [string, unknown][] {
+  if (!isNestedCondition(value)) return [[path, normaliseFieldValue(value)]];
+  return Object.entries(value).flatMap(([key, nestedValue]) => normaliseField(`${path}.${key}`, nestedValue));
+}
+
+/**
+ * The pairs as one filter object. A path written twice (`{ address: { city: 'Leeds' }, 'address.city': 'York' }`)
+ * keeps BOTH conditions: the repeats are added to `$and`, so neither is silently dropped.
+ */
+function toFilterObject(pairs: [string, unknown][]): FilterObject {
+  const filter: FilterObject = {};
+  const repeats: FilterObject[] = [];
+  for (const [key, value] of pairs) {
+    if (Object.hasOwn(filter, key)) repeats.push({ [key]: value });
+    else filter[key] = value;
+  }
+  if (repeats.length === 0) return filter;
+  const existing = (filter.$and as FilterObject[] | undefined) ?? [];
+  return { ...filter, $and: [...existing, ...repeats] };
 }
 
 function normaliseBranches(operator: string, branches: unknown): FilterObject[] {
@@ -158,10 +215,10 @@ function normaliseBranches(operator: string, branches: unknown): FilterObject[] 
 function normaliseFilter(filter: FilterObject, { allowEmpty }: { allowEmpty: boolean }): FilterObject {
   const entries = Object.entries(filter);
   if (!allowEmpty && entries.length === 0) return unreadable('an empty condition');
-  return Object.fromEntries(entries.map(([key, value]) => {
-    if (LOGICAL_OPERATORS.has(key)) return [key, normaliseBranches(key, value)];
+  return toFilterObject(entries.flatMap(([key, value]): [string, unknown][] => {
+    if (LOGICAL_OPERATORS.has(key)) return [[key, normaliseBranches(key, value)]];
     if (key.startsWith('$')) return unreadable(`${key} is not an operator MXDB knows here`);
-    return [key, normaliseFieldValue(value)];
+    return normaliseField(key, value);
   }));
 }
 
@@ -172,7 +229,11 @@ function normaliseFilter(filter: FilterObject, { allowEmpty }: { allowEmpty: boo
  *
  * - a bare list (`{ category: ['a', 'b'] }`) is written as `{ $in: [...] }` (MongoDB alone would read the bare list as
  *   "equals this list");
- * - a `$regex` is written as its canonical literal pattern (literalPattern.ts);
+ * - a `$regex` is written as its canonical literal pattern (literalPattern.ts), with `$options: 'i'` when it is
+ *   case-insensitive; a RegExp (as a field value, a `$regex` or under `$not`) is written the same way, since a RegExp
+ *   does not survive the JSON trip to the server (sc-2783);
+ * - a nested condition (`{ address: { city: 'Leeds' } }`) is written as dotted paths (`{ 'address.city': 'Leeds' }`):
+ *   "each nested field listed matches", where MongoDB alone would read "equals exactly this object" (sc-2783);
  * - a Date, a DateTime and ISO date-time text are all written as a DateTime, as the transport to the server does.
  *
  * First the WHITELIST (`isReadableFilter`) runs on the raw filter: a filter not built only from MXDB's small grammar

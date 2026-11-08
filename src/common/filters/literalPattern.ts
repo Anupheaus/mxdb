@@ -1,7 +1,7 @@
 // `$regex` patterns MXDB accepts: a literal text with optional anchors — the one shape JavaScript and MongoDB's PCRE
 // read the same way, matched in linear time on the device (no backtracking engine, so no catastrophic patterns).
 //
-//   pattern := "^"? literal* "$"?          (at most MAX_PATTERN_LENGTH characters, no flags)
+//   pattern := "^"? literal* "$"?          (at most MAX_PATTERN_LENGTH characters; the only option is 'i')
 //   literal := any character except  \ ^ $ . | ? * + ( ) [ ] { }  and control characters
 //            | "\" followed by one of  \ ^ $ . | ? * + ( ) [ ] { } / -
 //
@@ -56,6 +56,17 @@ function createTest({ literal, isAnchoredAtStart, isAnchoredAtEnd }: Omit<Litera
 export function toCanonicalPattern({ literal, isAnchoredAtStart, isAnchoredAtEnd }: LiteralPattern): string {
   const escaped = Array.from(literal).map(character => (METACHARACTERS.has(character) ? `\\${character}` : character)).join('');
   return `${isAnchoredAtStart ? '^' : ''}${escaped}${isAnchoredAtEnd ? '$' : ''}`;
+}
+
+/**
+ * The case-insensitive test (`$options: 'i'`, sc-2783): Unicode simple case folding, as MongoDB's PCRE does in UTF
+ * mode. The literal has no quantifier, class or group, so the RegExp built from it cannot backtrack catastrophically.
+ */
+export function createCaseInsensitiveTest({ literal, isAnchoredAtStart, isAnchoredAtEnd }: LiteralPattern): (text: string) => boolean {
+  const escaped = Array.from(literal).map(character => (METACHARACTERS.has(character) ? `\\${character}` : character)).join('');
+  // "$" also matches just before a final newline, as PCRE reads it.
+  const expression = new RegExp(`${isAnchoredAtStart ? '^' : ''}${escaped}${isAnchoredAtEnd ? '\\n?$' : ''}`, 'iu');
+  return text => expression.test(text);
 }
 
 /** The pattern parsed, or undefined when it is not a literal pattern MXDB accepts. */

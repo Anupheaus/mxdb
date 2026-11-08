@@ -1,6 +1,6 @@
 import { is, type DataFilters } from '@anupheaus/common';
 import { DateTime } from 'luxon';
-import { parseLiteralPattern } from './literalPattern';
+import { createCaseInsensitiveTest, parseLiteralPattern } from './literalPattern';
 
 // The device's ONLY filter evaluator. It reads the canonical filters `normaliseFilterConditions` produces (the
 // whitelist grammar; bare lists as $in; ISO date-time text as DateTime; $regex as canonical literal text) exactly as
@@ -23,7 +23,9 @@ import { parseLiteralPattern } from './literalPattern';
 //   milliseconds (normaliseFilterConditions turns ISO date-time text into a DateTime, exactly as the transport to the
 //   server does, so the server compares the same instant). A record field holding text is text.
 // - `$ne` / `$nin` / `$not` / `$nor` are exact negations, so a missing field counts as "not".
-// - `$regex` holds a literal pattern (literalPattern.ts), tested in linear time.
+// - `$regex` holds a literal pattern (literalPattern.ts), tested in linear time; with `$options: 'i'` it ignores case
+//   by Unicode simple case folding (sc-2783).
+// - A nested condition has already been written as dotted paths, and RegExps as `$regex` (normaliseFilterConditions).
 // - `$elemMatch` (sc-2758) looks inside each LIST the path reaches (a list at the end is not expanded into its
 //   elements first; anything that is not a list never matches) for ONE item meeting the whole condition. An item
 //   condition (`{ $gte: 2 }`) reads the item as one value; an item filter (`{ product: 'P', quantity: 2 }`) reads only
@@ -175,16 +177,18 @@ function createOrder(operand: unknown, accepts: (order: number) => boolean): Pat
   });
 }
 
-function createPattern(operand: unknown): PathCondition {
+function createPattern(operand: unknown, options: unknown): PathCondition {
   const pattern = parseLiteralPattern(operand as string)!;
-  return ({ values }) => values.some(value => is.string(value) && pattern.test(value));
+  const test = options === 'i' ? createCaseInsensitiveTest(pattern) : pattern.test;
+  return ({ values }) => values.some(value => is.string(value) && test(value));
 }
 
 function negate(condition: PathCondition): PathCondition {
   return path => !condition(path);
 }
 
-function compileOperator(operator: string, operand: unknown): PathCondition {
+/** One operator; `operators` is the object it sits in, read only for the `$options` beside a `$regex`. */
+function compileOperator(operator: string, operand: unknown, operators: FilterObject): PathCondition {
   switch (operator) {
     case '$eq': return createMembership([operand]);
     case '$ne': return negate(createMembership([operand]));
@@ -199,7 +203,9 @@ function compileOperator(operator: string, operand: unknown): PathCondition {
       return path => items.every(item => item(path));
     }
     case '$exists': return ({ exists }) => exists === operand;
-    case '$regex': return createPattern(operand);
+    case '$regex': return createPattern(operand, operators.$options);
+    // Read by the `$regex` beside it; on its own it is no condition (the whitelist never lets it stand alone).
+    case '$options': return () => true;
     case '$not': return negate(compileOperators(operand as FilterObject));
     case '$elemMatch': return createElemMatch(operand as FilterObject);
     // The whitelist lets no other operator through; never read one as a match.
@@ -208,7 +214,7 @@ function compileOperator(operator: string, operand: unknown): PathCondition {
 }
 
 function compileOperators(operators: FilterObject): PathCondition {
-  const conditions = Object.entries(operators).map(([operator, operand]) => compileOperator(operator, operand));
+  const conditions = Object.entries(operators).map(([operator, operand]) => compileOperator(operator, operand, operators));
   return path => conditions.every(condition => condition(path));
 }
 

@@ -131,9 +131,10 @@ const ELEM_MATCH_CASES: OperandCase[] = [
   { label: 'sc-2758 #5: $all on an item', filters: { tags: { $elemMatch: { $all: ['x'] } } } as Loose, expectedIds: NOTHING, engines: 'both' },
   { label: 'sc-2758 #5: $elemMatch on an item', filters: { tags: { $elemMatch: { $elemMatch: { $eq: 'x' } } } } as Loose, expectedIds: NOTHING, engines: 'both' },
   { label: 'sc-2758 #5: operators and fields mixed', filters: { lines: { $elemMatch: { $eq: 'P', product: 'P' } } } as Loose, expectedIds: NOTHING, engines: 'both' },
-  { label: 'sc-2758 #5: a nested-object value inside a line', filters: { lines: { $elemMatch: { product: { name: 'P' } } } } as Loose, expectedIds: NOTHING, engines: 'both' },
+  { label: 'sc-2758: a nested condition in a line is a dotted path (none has product.name)', filters: { lines: { $elemMatch: { product: { name: 'P' } } } } as Loose, expectedIds: NOTHING, engines: 'both' },
   { label: 'sc-2758 #5: a bare list of values', filters: { tags: { $elemMatch: ['x'] } } as Loose, expectedIds: NOTHING, engines: 'both' },
-  { label: 'sc-2758 #5: a regex with flags', filters: { tags: { $elemMatch: { $regex: 'x', $options: 'i' } } } as Loose, expectedIds: NOTHING, engines: 'both' },
+  { label: 'sc-2783: a case-insensitive pattern on an item', filters: { tags: { $elemMatch: { $regex: 'X', $options: 'i' } } } as Loose, expectedIds: ['r1', 'r2'], engines: 'both' },
+  { label: 'sc-2783: a pattern option no engine honours alike, on an item', filters: { tags: { $elemMatch: { $regex: 'x', $options: 'm' } } } as Loose, expectedIds: NOTHING, engines: 'both' },
   { label: 'sc-2758 #5: negated, an unreadable form is still nothing', filters: { tags: { $not: { $elemMatch: { $size: 1 } } } } as Loose, expectedIds: NOTHING, engines: 'both' },
   { label: 'sc-2758 #5: under $nor, an unreadable form is still nothing', filters: { $nor: [{ lines: { $elemMatch: { $where: 'true' } } }] } as Loose, expectedIds: NOTHING, engines: 'both' },
 ];
@@ -169,9 +170,11 @@ export const OPERAND_CASES: OperandCase[] = [
   // negations are exact: every record without a "y" tag, including those with no tags at all.
   { label: 'QA r3 #1: $elemMatch under $not', filters: { tags: { $not: { $elemMatch: { $eq: 'y' } } } } as Loose, expectedIds: ['r2', 'r3', 'r4', 'r5'], engines: 'both' },
   { label: 'QA r3 #1: $elemMatch under $nor', filters: { $nor: [{ tags: { $elemMatch: { $eq: 'y' } } }], name: { $exists: true } } as Loose, expectedIds: ['r2', 'r3', 'r4', 'r5'], engines: 'both' },
-  { label: 'QA r3 #2: a flagged RegExp under $not', filters: { category: { $not: /A/i } } as Loose, expectedIds: NOTHING, engines: 'both' },
-  { label: 'QA r3 #2: a flagged $regex under $not', filters: { category: { $not: { $regex: /A/i } } } as Loose, expectedIds: NOTHING, engines: 'both' },
-  { label: 'QA r3 #2: $regex with $options', filters: { category: { $regex: 'a', $options: 'i' } } as Loose, expectedIds: NOTHING, engines: 'both' },
+  // Since sc-2783 a case-insensitive literal pattern is readable, so these are exact negations / matches.
+  { label: 'QA r3 #2: a flagged RegExp under $not', filters: { category: { $not: /A/i } } as Loose, expectedIds: ['r2', 'r3', 'r4', 'r5'], engines: 'both' },
+  { label: 'QA r3 #2: a flagged $regex under $not', filters: { category: { $not: { $regex: /A/i } } } as Loose, expectedIds: ['r2', 'r3', 'r4', 'r5'], engines: 'both' },
+  { label: 'QA r3 #2: $regex with $options', filters: { category: { $regex: 'A', $options: 'i' } } as Loose, expectedIds: ['r1'], engines: 'both' },
+  { label: 'QA r3 #2: a RegExp with a flag no engine honours alike', filters: { category: { $not: /a/g } } as Loose, expectedIds: NOTHING, engines: 'both' },
   { label: 'QA r3 #2: a pattern that does not compile, under $not', filters: { category: { $not: { $regex: '(' } } } as Loose, expectedIds: NOTHING, engines: 'both' },
   { label: 'QA r3 #3: a non-object filter (true)', filters: true as unknown as Loose, expectedIds: NOTHING, engines: 'both' },
   { label: 'QA r3 #3: a non-object filter (1)', filters: 1 as unknown as Loose, expectedIds: NOTHING, engines: 'both' },
@@ -180,7 +183,7 @@ export const OPERAND_CASES: OperandCase[] = [
   { label: 'QA r3 #4: a field name that is not a field path', filters: { 'x\') OR 1=1 OR (\'': 1, name: { $exists: true } } as Loose, expectedIds: NOTHING, engines: 'both' },
   { label: 'a __proto__ field', filters: JSON.parse('{"__proto__": 1, "name": "One"}') as Loose, expectedIds: NOTHING, engines: 'both' },
   { label: 'an empty field name', filters: { '': 1 } as Loose, expectedIds: NOTHING, engines: 'both' },
-  { label: 'a nested-object field value (sc-2783)', filters: { category: { sub: 'a' } } as Loose, expectedIds: NOTHING, engines: 'both' },
+  { label: 'a nested condition on a text field reads a path no record has (sc-2783)', filters: { category: { sub: 'a' } } as Loose, expectedIds: NOTHING, engines: 'both' },
   { label: 'an array index in a field path (SQLite and MongoDB read it differently)', filters: { 'tags.0': 'x' } as Loose, expectedIds: NOTHING, engines: 'both' },
   { label: 'deeper than the limit', filters: Array.from({ length: 10 }).reduce<Loose>(inner => ({ $and: [inner] }) as Loose, { name: 'One' } as Loose), expectedIds: NOTHING, engines: 'both' },
   // QA round 5: shapes JavaScript and MongoDB's PCRE read differently, and a catastrophic pattern. Only literal
@@ -205,4 +208,73 @@ export function operandCasesFor(engine: 'device' | 'server'): [string, OperandCa
   return OPERAND_CASES
     .filter(({ engines }) => engines === 'both' || engines === engine)
     .map(operandCase => [operandCase.label, operandCase]);
+}
+
+// ─── sc-2783: the four filters that read differently on the device and the server ──
+
+export interface ParityCaseRecord extends Record {
+  name: string;
+  value?: number | string | null;
+  address?: { city?: string | null; zip?: string };
+  linkedTo?: { kind: string; id: string };
+  category?: string;
+}
+
+/**
+ * sc-2783's QA example: values 30, 10, the text '5', the text '60', null and none; addresses with and without a city
+ * of Leeds (one with another field beside it); links of two kinds; categories in mixed case.
+ */
+export const PARITY_CASE_RECORDS: ParityCaseRecord[] = [
+  { id: 'p1', name: 'Thirty', value: 30, address: { city: 'Leeds', zip: 'LS1' }, linkedTo: { kind: 'lead', id: 'L1' }, category: 'Apple' },
+  { id: 'p2', name: 'Ten', value: 10, address: { city: 'York' }, linkedTo: { kind: 'lead', id: 'L2' }, category: 'banana' },
+  { id: 'p3', name: 'Five', value: '5', address: { city: 'Leeds' }, linkedTo: { kind: 'job', id: 'L1' }, category: 'APRICOT' },
+  { id: 'p4', name: 'Sixty', value: '60', address: { zip: 'LS2' }, linkedTo: { kind: 'lead', id: 'L3' }, category: 'cherry' },
+  { id: 'p5', name: 'Null', value: null, address: { city: null }, category: 'Ålborg' },
+  { id: 'p6', name: 'None' },
+];
+
+type ParityFilters = DataFilters<ParityCaseRecord>;
+
+/** Its acceptance criteria 1-4 and 6 as rows: every engine must return exactly these records. */
+export const PARITY_CASES: OperandCase[] = ([
+  // 1-2: comparisons match only values of the same kind.
+  { label: 'sc-2783 #1: value greater than 25 (a number) is only the number 30', filters: { value: { $gt: 25 } }, expectedIds: ['p1'] },
+  { label: 'sc-2783 #2: value less than \'50\' (text) is only the text below it', filters: { value: { $lt: '50' } }, expectedIds: ['p3'] },
+  { label: 'sc-2783 #2: value at least \'50\' (text) is only the text above it', filters: { value: { $gte: '50' } }, expectedIds: ['p4'] },
+  // 3: "does not exist" means absent; "missing" means absent or null.
+  { label: 'sc-2783 #3: value does not exist is only the record with no value', filters: { value: { $exists: false } }, expectedIds: ['p6'] },
+  { label: 'sc-2783 #3: value exists includes the null one', filters: { value: { $exists: true } }, expectedIds: ['p1', 'p2', 'p3', 'p4', 'p5'] },
+  { label: 'sc-2783 #3: value is missing (no value written) is null or absent', filters: { value: undefined }, expectedIds: ['p5', 'p6'] },
+  // 4: a nested condition means each nested field listed matches; a nested id stays id.
+  { label: 'sc-2783 #4: address city is Leeds, written nested', filters: { address: { city: 'Leeds' } }, expectedIds: ['p1', 'p3'] },
+  { label: 'sc-2783 #4: address city is Leeds, written as a path', filters: { 'address.city': 'Leeds' } as ParityFilters, expectedIds: ['p1', 'p3'] },
+  { label: 'sc-2783 #4: a nested kind and a list of ids', filters: { linkedTo: { kind: 'lead', id: { $in: ['L1', 'L2'] } } }, expectedIds: ['p1', 'p2'] },
+  { label: 'sc-2783 #4: a nested id alone', filters: { linkedTo: { id: 'L1' } }, expectedIds: ['p1', 'p3'] },
+  { label: 'sc-2783 #4: a nested missing city', filters: { address: { city: null } }, expectedIds: ['p4', 'p5', 'p6'] },
+  { label: 'sc-2783 #4: a nested condition under $nor', filters: { $nor: [{ linkedTo: { kind: 'lead' } }] }, expectedIds: ['p3', 'p5', 'p6'] },
+  { label: 'sc-2783 #4: the same path nested and dotted keeps both conditions', filters: { address: { city: 'Leeds' }, 'address.city': { $ne: 'York' } } as ParityFilters, expectedIds: ['p1', 'p3'] },
+  { label: 'sc-2783 #4: the same path nested and dotted, contradicting', filters: { address: { city: 'Leeds' }, 'address.city': 'York' } as ParityFilters, expectedIds: [] },
+  { label: 'sc-2783 #4: an empty nested condition still matches nothing', filters: { address: { city: {} } } as ParityFilters, expectedIds: [] },
+  // 6: a case-insensitive pattern, as text with $options or as a RegExp, reaches the server intact.
+  { label: 'sc-2783 #6: category matches "a" ignoring case ($options)', filters: { category: { $regex: 'a', $options: 'i' } }, expectedIds: ['p1', 'p2', 'p3'] },
+  { label: 'sc-2783 #6: category matches /a/i (a RegExp)', filters: { category: /a/i } as ParityFilters, expectedIds: ['p1', 'p2', 'p3'] },
+  { label: 'sc-2783 #6: category matches { $regex: /^ap/i }', filters: { category: { $regex: /^ap/i } } as ParityFilters, expectedIds: ['p1', 'p3'] },
+  { label: 'sc-2783 #6: category does not match /a/i', filters: { category: { $not: /a/i } } as ParityFilters, expectedIds: ['p4', 'p5', 'p6'] },
+  { label: 'sc-2783 #6: case still matters without the option', filters: { category: { $regex: 'A' } }, expectedIds: ['p1', 'p3'] },
+  { label: 'sc-2783 #6: an anchored case-insensitive pattern', filters: { category: { $regex: '^CHERRY$', $options: 'i' } }, expectedIds: ['p4'] },
+  { label: 'sc-2783 #6: a letter outside ASCII, ignoring case', filters: { category: { $regex: 'åL', $options: 'i' } }, expectedIds: ['p5'] },
+  { label: 'sc-2783 #6: an empty $options is no option', filters: { category: { $regex: 'A', $options: '' } }, expectedIds: ['p1', 'p3'] },
+  { label: 'sc-2783 #6: option m matches nothing', filters: { category: { $regex: 'a', $options: 'm' } }, expectedIds: [] },
+  { label: 'sc-2783 #6: option x matches nothing', filters: { category: { $regex: 'a', $options: 'ix' } }, expectedIds: [] },
+  { label: 'sc-2783 #6: option s under $not matches nothing', filters: { category: { $not: { $regex: 'a', $options: 's' } } }, expectedIds: [] },
+  { label: 'sc-2783 #6: $options without a $regex matches nothing', filters: { category: { $options: 'i' } } as ParityFilters, expectedIds: [] },
+  { label: 'sc-2783 #6: a RegExp $regex beside $options matches nothing', filters: { category: { $regex: /a/, $options: 'i' } } as ParityFilters, expectedIds: [] },
+  { label: 'sc-2783 #6: a RegExp with flag u matches nothing', filters: { category: /a/u } as ParityFilters, expectedIds: [] },
+  { label: 'sc-2783 #6: a RegExp that is not a literal pattern matches nothing', filters: { category: /a.c/i } as ParityFilters, expectedIds: [] },
+  { label: 'sc-2783 #6: a RegExp in a list matches nothing', filters: { category: { $in: [/a/i] } } as ParityFilters, expectedIds: [] },
+] as Omit<OperandCase, 'engines'>[]).map(parityCase => ({ ...parityCase, engines: 'both' }));
+
+/** The sc-2783 rows, labelled for `it.each`. */
+export function parityCases(): [string, OperandCase][] {
+  return PARITY_CASES.map(parityCase => [parityCase.label, parityCase]);
 }

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { parseLiteralPattern, toCanonicalPattern } from './literalPattern';
+import { createCaseInsensitiveTest, parseLiteralPattern, toCanonicalPattern } from './literalPattern';
 
 // Vision sc-2518 QA round 5: `$regex` is limited to literal patterns, the one shape JavaScript and MongoDB's PCRE read
 // alike, tested here without a backtracking engine.
@@ -32,6 +32,26 @@ describe('parseLiteralPattern', () => {
     const pattern = parseLiteralPattern(`^${'a'.repeat(100)}$`)!;
     const started = performance.now();
     expect(pattern.test(`${'a'.repeat(1_000_000)}!`)).toBe(false);
+    expect(performance.now() - started).toBeLessThan(100);
+  });
+});
+
+// sc-2783: `$options: 'i'`, with Unicode simple case folding as MongoDB's PCRE reads it in UTF mode (the differential
+// test checks these letters against MongoDB itself).
+describe('createCaseInsensitiveTest', () => {
+  it.each([
+    ['contains, any case', 'OT', 'Foxtrot', true], ['anchored, any case', '^fox$', 'FOX\n', true], ['not a prefix', '^fox$', 'Foxtrot', false],
+    ['an escaped metacharacter stays literal', 'A\\.B', 'a.b', true], ['and is not a wildcard', 'A\\.B', 'axb', false],
+    ['accented letters', 'é', 'ÉCHELLE', true], ['the Kelvin sign folds to k', 'k', 'K', true], ['the long s folds to s', 's', 'ſ', true],
+    ['final sigma folds to sigma', 'ς', 'Σ', true], ['sharp s is not ss', 'ss', 'ß', false], ['a slash and a dash stay literal', 'a/b-c', 'A/B-C', true],
+  ])('%s', (_label, pattern, text, expected) => {
+    expect(createCaseInsensitiveTest(parseLiteralPattern(pattern)!)(text)).toBe(expected);
+  });
+
+  it('tests a long text quickly', () => {
+    const test = createCaseInsensitiveTest(parseLiteralPattern(`^${'a'.repeat(100)}$`)!);
+    const started = performance.now();
+    expect(test(`${'A'.repeat(1_000_000)}!`)).toBe(false);
     expect(performance.now() - started).toBeLessThan(100);
   });
 });
