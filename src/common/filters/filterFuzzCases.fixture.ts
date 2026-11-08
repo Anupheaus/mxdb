@@ -142,26 +142,49 @@ function generateGarbage(generator: Generator, depth: number): unknown {
 const toMissingAsNull = (value: unknown): unknown => (value === undefined ? null : value);
 
 function canonicalOperators(operators: Node): Node {
-  return Object.fromEntries(Object.entries(operators).map(([operator, operand]) => {
+  // An empty `$options` is no option at all (sc-2783).
+  const entries = Object.entries(operators).filter(([operator, operand]) => !(operator === '$options' && operand === ''));
+  return Object.fromEntries(entries.map(([operator, operand]) => {
     if (Array.isArray(operand)) return [operator, operand.map(toMissingAsNull)];
     if (operator === '$not') return [operator, canonicalOperators(operand as Node)];
+    if (operator === '$elemMatch') return [operator, canonicalItemCondition(operand as Node)];
     return [operator, operand];
   }));
 }
 
+/** An `$elemMatch` operand: an item filter when any key is a field or a logical, otherwise item operators (sc-2758). */
+function canonicalItemCondition(condition: Node): Node {
+  const isItemFilter = Object.keys(condition).some(key => !key.startsWith('$') || ['$and', '$or', '$nor'].includes(key));
+  return isItemFilter ? expectedCanonicalFilter(condition) : canonicalOperators(condition);
+}
+
+const isObjectLiteral = (value: unknown): value is Node => value != null && typeof value === 'object' && Object.getPrototypeOf(value) === Object.prototype;
+
+/** A field's conditions as `[path, value]` pairs, a nested condition (no operator keys) as dotted paths (sc-2783). */
+function expectedFieldPairs(path: string, value: unknown): [string, unknown][] {
+  const isNested = isObjectLiteral(value) && Object.keys(value).length > 0 && Object.keys(value).every(key => !key.startsWith('$'));
+  if (isNested) return Object.entries(value).flatMap(([key, nested]) => expectedFieldPairs(`${path}.${key}`, nested));
+  if (value === undefined) return [[path, null]];
+  if (Array.isArray(value)) return [[path, { $in: value.map(toMissingAsNull) }]];
+  if (isObjectLiteral(value)) return [[path, canonicalOperators(value)]];
+  return [[path, value]];
+}
+
 /**
  * The canonical form a readable filter reaches BOTH engines in, written out independently of the code under test:
- * every missing value as `null`, and a bare list as `{ $in: … }`. The garbage tests compare against it, so a readable
- * filter is known to reach the device and the server as one and the same filter.
+ * every missing value as `null`, a bare list as `{ $in: … }`, a nested condition as dotted paths (a path written twice
+ * keeps its repeat under `$and`). The garbage tests compare against it, so a readable filter is known to reach the
+ * device and the server as one and the same filter.
  */
 export function expectedCanonicalFilter(filter: Node): Node {
-  return Object.fromEntries(Object.entries(filter).map(([key, value]) => {
-    if (key === '$and' || key === '$or' || key === '$nor') return [key, (value as Node[]).map(expectedCanonicalFilter)];
-    if (value === undefined) return [key, null];
-    if (Array.isArray(value)) return [key, { $in: value.map(toMissingAsNull) }];
-    if (value != null && typeof value === 'object' && Object.getPrototypeOf(value) === Object.prototype) return [key, canonicalOperators(value as Node)];
-    return [key, value];
-  }));
+  const pairs = Object.entries(filter).flatMap(([key, value]): [string, unknown][] => {
+    if (key === '$and' || key === '$or' || key === '$nor') return [[key, (value as Node[]).map(expectedCanonicalFilter)]];
+    return expectedFieldPairs(key, value);
+  });
+  const canonical: Node = {};
+  const repeats: Node[] = [];
+  pairs.forEach(([key, value]) => (Object.prototype.hasOwnProperty.call(canonical, key) ? repeats.push({ [key]: value }) : (canonical[key] = value)));
+  return repeats.length === 0 ? canonical : { ...canonical, $and: [...((canonical.$and as Node[] | undefined) ?? []), ...repeats] };
 }
 
 /** How many garbage values are generated. */

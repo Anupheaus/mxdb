@@ -120,6 +120,7 @@ describe('queryRecordsInMemory', () => {
     ['$regex', { name: { $regex: '^A' } }, ['a']],
     ['$not $regex', { city: { $not: { $regex: 'on$' } } }, ['b', 'c']],
     ['$all', { tags: { $all: ['red'] } }, ['a', 'c']],
+    ['$elemMatch (sc-2758)', { tags: { $elemMatch: { $eq: 'red' } } }, ['a', 'c']],
   ];
 
   it.each(negatingAndOtherFilters)('answers %s in memory', (_label, filters, expectedIds) => {
@@ -129,7 +130,7 @@ describe('queryRecordsInMemory', () => {
   // sc-2518: outside MXDB's filter whitelist — the whole query matches nothing, here as on every other path.
   it.each([
     ['$ni', { size: { $ni: [20] } }], ['$beginsWith', { name: { $beginsWith: 'A' } }],
-    ['$elemMatch (sc-2758)', { tags: { $elemMatch: { $eq: 'red' } } }],
+    ['$size inside $elemMatch (sc-2758)', { tags: { $elemMatch: { $size: 1 } } }],
   ])('matches nothing for %s', (_label, filters) => {
     expect(idsOf(queryRecordsInMemory(makeWidgets(), { filters: filters as never })!.records)).toEqual([]);
   });

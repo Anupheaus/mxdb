@@ -69,11 +69,50 @@ Every filter is checked against a small grammar before any engine sees it (`src/
 dotted field paths (`address.city`, no array indexes), `$and` / `$or` / `$nor`, `$eq` / `$ne` / `$gt` / `$gte` / `$lt` /
 `$lte` with a single value, `$in` / `$nin` / `$all` with a list, `$exists`, `$regex` with a **literal pattern**
 (`src/common/filters/literalPattern.ts`: plain text with optional `^` / `$` anchors and backslash-escaped
-metacharacters, at most 128 characters, no flags), `$not`. A filter using anything else — `$elemMatch`, `$size`,
-`$type`, `$where`, a regex with classes, groups, quantifiers, alternation, `.`, `\d` / `\p{…}` / `\A` / `\Z` or flags, a
-RegExp, a nested object as a field value (`{ address: { city } }`: write `'address.city'`), a non-object filter —
-returns **nothing**, on the device and the server alike. Write filters only from the grammar; to support a new
-operator, add it to the whitelist, to `createFilterMatcher`, and to the differential test.
+metacharacters, at most 128 characters) with `$options: 'i'` or none, a RegExp of such a pattern with flag `i` or none,
+`$not`, nested conditions and `$elemMatch` (below). A filter using anything else — `$size`, `$type`, `$where`, a regex
+with classes, groups, quantifiers, alternation, `.`, `\d` / `\p{…}` / `\A` / `\Z`, any option or flag but `i`, a
+logical inside a nested condition, a non-object filter — returns **nothing**, on the device and the server alike.
+Write filters only from the grammar; to support a new operator, add it to the whitelist, to `createFilterMatcher`, and
+to the differential test.
+
+### What four filters mean, everywhere (sc-2783)
+These once read differently on the device and the server. Each now means one thing on the device (SQLite and the
+in-memory evaluator), in the browser and on the server, and `filterOperandCases.fixture.ts` (`PARITY_CASES`) holds them
+together:
+- **Comparisons match only values of the same kind.** A number bound (`{ value: { $gt: 25 } }`) compares numbers, so a
+  value saved as the text `'5'` is never above or below it; a text bound (`{ $lt: '50' }`) compares text only, by code
+  point. Store numbers as numbers.
+- **`$exists: false` means the field is absent.** A field holding `null` exists. "Missing" — `{ field: null }`, or a
+  field written with no value — still matches both absent and `null`.
+- **A nested condition means "each nested field listed matches".** `{ address: { city: 'Leeds' } }` is written as
+  `{ 'address.city': 'Leeds' }` before either engine sees it, so a record whose address has other fields too still
+  matches (MongoDB alone would want the address to equal `{ city: 'Leeds' }` exactly). `{ linkedTo: { kind: 'lead', id:
+  { $in: ids } } }` reads `linkedTo.kind` and `linkedTo.id`; a nested `id` stays `id`. Through a list, each nested field
+  may match a different item; use `$elemMatch` for "the same item". A path written both nested and dotted keeps both
+  conditions. A nested condition holds field paths only (no `$or` inside it) and is never empty.
+- **A text pattern ignoring case** — `{ category: { $regex: 'a', $options: 'i' } }` or `{ category: /a/i }` — is
+  written as `{ $regex, $options: 'i' }` before it leaves the device, so it reaches the server intact (a RegExp does not
+  survive JSON). Case is ignored by Unicode simple case folding on both engines: the Kelvin sign matches `k`, the long
+  s matches `s`, `ß` does not match `ss`. Any other option or flag (`m`, `s`, `x`, `u`, `g`…), `$options` without a
+  `$regex`, or a RegExp `$regex` beside `$options` matches **nothing** on both.
+
+### Matching inside a list: `$elemMatch`
+`{ tags: { $elemMatch: { $eq: 'y' } } }` matches a record whose `tags` list holds at least ONE item meeting the whole
+condition; `{ lines: { $elemMatch: { product: 'P', quantity: { $gte: 2 } } } }` needs product P and quantity 2 or more
+on the **same** line (`{ 'lines.product': 'P', 'lines.quantity': { $gte: 2 } }` lets them be on different lines). The
+device reads it exactly as MongoDB does, and the differential test holds them together (Vision sc-2758):
+- The operand is either **item operators** — `$eq` / `$ne` / `$gt` / `$gte` / `$lt` / `$lte` / `$in` / `$nin` /
+  `$regex`, and `$not` over those — or an **item filter** over the item's own fields (field paths, `$and` / `$or` /
+  `$nor`, and any field condition, including another `$elemMatch`). Never both kinds of key in one operand.
+- A field that is not a list, or is missing, never matches; an empty list never matches. Under `$not` / `$nor` those
+  records count as "not", as with every negation.
+- An item condition reads each item as one value: an item that is itself a list is not opened (`[['x']]` holds no item
+  equal to `'x'`). An item filter reads only items that are objects; a list item reads as an object with no fields.
+- An item's `id` is the item's own field: on the server only the record's `id` is `_id`.
+- Anything else inside `$elemMatch` — `$size`, `$exists`, `$all`, `$elemMatch` on an item (not in an item filter),
+  operators mixed with fields, an empty operand — makes the whole query match **nothing** on the device and the server,
+  never every record.
 
 ### One canonical filter, one device evaluator
 `normaliseFilterConditions` returns each readable filter in ONE canonical form, and both engines evaluate only that form:

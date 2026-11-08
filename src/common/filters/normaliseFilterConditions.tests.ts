@@ -75,11 +75,41 @@ describe('normaliseFilterConditions', () => {
   });
 
   it.each([
-    ['$elemMatch (sc-2758)', { c: { $elemMatch: { $eq: 'x' } } }], ['a nested-object value (sc-2783)', { address: { city: 'Derby' } }],
-    ['a RegExp', { c: /x/ }], ['$regex with flags', { c: { $regex: 'x', $options: 'i' } }], ['a field path with an index', { 'tags.0': 'x' }],
+    ['$size on a list item (sc-2758)', { c: { $elemMatch: { $size: 1 } } }], ['$exists on a list item', { c: { $elemMatch: { $exists: true } } }],
+    ['$elemMatch on a list item', { c: { $elemMatch: { $elemMatch: { $eq: 'x' } } } }], ['item operators and fields mixed', { c: { $elemMatch: { $eq: 'x', sku: 'x' } } }],
+    ['a logical inside a nested condition', { address: { $or: [{ city: 'Derby' }] } }], ['an empty nested condition', { address: { city: {} } }],
+    ['a RegExp with a flag other than i (sc-2783)', { c: /x/m }], ['a RegExp that is not a literal pattern', { c: /x+/i }],
+    ['$regex with option m', { c: { $regex: 'x', $options: 'm' } }], ['$options without a $regex', { c: { $options: 'i' } }],
+    ['a RegExp $regex beside $options', { c: { $regex: /x/, $options: 'i' } }], ['a RegExp in a list', { c: { $in: [/x/] } }],
+    ['a field path with an index', { 'tags.0': 'x' }],
     ['a field name that is not a path', { 'a b': 1 }], ['__proto__', JSON.parse('{"__proto__": 1}')], ['a filter that is not an object', 'x'],
   ])('reads %s, outside the whitelist, as matching nothing', (_label, filters) => {
     expect(normalise(filters as Loose)).toEqual(MATCH_NOTHING);
+  });
+
+  it('writes a nested condition as dotted paths, keeping a nested id as id and a repeated path under $and (sc-2783)', () => {
+    expect(normalise({ linkedTo: { kind: 'lead', id: ['L1', undefined] }, address: { geo: { lat: { $gt: 1 } } } } as Loose))
+      .toEqual({ 'linkedTo.kind': 'lead', 'linkedTo.id': { $in: ['L1', null] }, 'address.geo.lat': { $gt: 1 } });
+    expect(normalise({ address: { city: 'Leeds' }, 'address.city': { $ne: 'York' }, $and: [{ name: 'A' }] } as Loose))
+      .toEqual({ 'address.city': 'Leeds', $and: [{ name: 'A' }, { 'address.city': { $ne: 'York' } }] });
+    expect(normalise({ $or: [{ address: { city: null } }] } as Loose)).toEqual({ $or: [{ 'address.city': null }] });
+  });
+
+  it('writes a pattern as { $regex, $options: \'i\' } whether it came as text or a RegExp, so it survives JSON (sc-2783)', () => {
+    expect(normalise({ a: /^x\.y$/i, b: { $regex: /x/ }, c: { $not: /x/i }, d: { $regex: 'x', $options: '' }, e: { $regex: 'x', $options: 'i' } } as Loose))
+      .toEqual({ a: { $regex: '^x\\.y$', $options: 'i' }, b: { $regex: 'x' }, c: { $not: { $regex: 'x', $options: 'i' } }, d: { $regex: 'x' }, e: { $regex: 'x', $options: 'i' } });
+    expect(JSON.parse(JSON.stringify(normalise({ a: /x/i } as Loose)))).toEqual({ a: { $regex: 'x', $options: 'i' } });
+  });
+
+  it('keeps a sound $elemMatch in canonical form: an item condition, and an item filter that may start with a logical (sc-2758)', () => {
+    const when = new Date('2026-01-01T00:00:00Z');
+    expect(normalise({
+      tags: { $elemMatch: { $in: ['x', undefined], $not: { $regex: '^a\\-' } } },
+      lines: { $elemMatch: { $or: [{ product: ['P', 'Q'] }, { at: when }], quantity: { $gte: 2 } } },
+    } as Loose)).toEqual({
+      tags: { $elemMatch: { $in: ['x', null], $not: { $regex: '^a-' } } },
+      lines: { $elemMatch: { $or: [{ product: { $in: ['P', 'Q'] } }, { at: DateTime.fromJSDate(when) }], quantity: { $gte: 2 } } },
+    });
   });
 
   it('keeps a sound list, and an empty $in / $nin (which already mean "nothing" / "anything")', () => {

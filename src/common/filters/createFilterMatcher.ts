@@ -1,6 +1,6 @@
 import { is, type DataFilters } from '@anupheaus/common';
 import { DateTime } from 'luxon';
-import { parseLiteralPattern } from './literalPattern';
+import { createCaseInsensitiveTest, parseLiteralPattern } from './literalPattern';
 
 // The device's ONLY filter evaluator. It reads the canonical filters `normaliseFilterConditions` produces (the
 // whitelist grammar; bare lists as $in; ISO date-time text as DateTime; $regex as canonical literal text) exactly as
@@ -23,7 +23,13 @@ import { parseLiteralPattern } from './literalPattern';
 //   milliseconds (normaliseFilterConditions turns ISO date-time text into a DateTime, exactly as the transport to the
 //   server does, so the server compares the same instant). A record field holding text is text.
 // - `$ne` / `$nin` / `$not` / `$nor` are exact negations, so a missing field counts as "not".
-// - `$regex` holds a literal pattern (literalPattern.ts), tested in linear time.
+// - `$regex` holds a literal pattern (literalPattern.ts), tested in linear time; with `$options: 'i'` it ignores case
+//   by Unicode simple case folding (sc-2783).
+// - A nested condition has already been written as dotted paths, and RegExps as `$regex` (normaliseFilterConditions).
+// - `$elemMatch` (sc-2758) looks inside each LIST the path reaches (a list at the end is not expanded into its
+//   elements first; anything that is not a list never matches) for ONE item meeting the whole condition. An item
+//   condition (`{ $gte: 2 }`) reads the item as one value; an item filter (`{ product: 'P', quantity: 2 }`) reads only
+//   items that are objects, and an item that is itself a list as an object with no fields — both as MongoDB does.
 //
 // The filter is COMPILED once per query (paths split, $in / $nin lists made into sets), then run per record.
 // `ServerDbCollection.differential.tests.ts` runs random whitelisted filters through this and MongoDB and asserts
@@ -35,6 +41,8 @@ type FilterObject = { [key: string]: unknown };
 interface PathValues {
   /** Every value the path reaches, plus the elements of a list at its end. */
   values: unknown[];
+  /** Every value the path reaches, WITHOUT the elements of a list at its end: what `$elemMatch` looks inside. */
+  ends: unknown[];
   /** Some branch of the path found nothing (a missing field, or a plain value where an object was needed). */
   isMissingSomewhere: boolean;
   /** Some branch of the path reached a value. */
@@ -137,6 +145,7 @@ function collect(value: unknown, segments: string[], index: number, out: PathVal
   if (index === segments.length) {
     if (value === undefined) { out.isMissingSomewhere = true; return; }
     out.exists = true;
+    out.ends.push(value);
     out.values.push(value);
     if (Array.isArray(value)) out.values.push(...value);
     return;
@@ -153,7 +162,7 @@ function collect(value: unknown, segments: string[], index: number, out: PathVal
 function createPathReader(path: string): (record: object) => PathValues {
   const segments = path.split('.');
   return record => {
-    const out: PathValues = { values: [], isMissingSomewhere: false, exists: false };
+    const out: PathValues = { values: [], ends: [], isMissingSomewhere: false, exists: false };
     collect(record, segments, 0, out);
     return out;
   };
@@ -168,16 +177,18 @@ function createOrder(operand: unknown, accepts: (order: number) => boolean): Pat
   });
 }
 
-function createPattern(operand: unknown): PathCondition {
+function createPattern(operand: unknown, options: unknown): PathCondition {
   const pattern = parseLiteralPattern(operand as string)!;
-  return ({ values }) => values.some(value => is.string(value) && pattern.test(value));
+  const test = options === 'i' ? createCaseInsensitiveTest(pattern) : pattern.test;
+  return ({ values }) => values.some(value => is.string(value) && test(value));
 }
 
 function negate(condition: PathCondition): PathCondition {
   return path => !condition(path);
 }
 
-function compileOperator(operator: string, operand: unknown): PathCondition {
+/** One operator; `operators` is the object it sits in, read only for the `$options` beside a `$regex`. */
+function compileOperator(operator: string, operand: unknown, operators: FilterObject): PathCondition {
   switch (operator) {
     case '$eq': return createMembership([operand]);
     case '$ne': return negate(createMembership([operand]));
@@ -192,16 +203,46 @@ function compileOperator(operator: string, operand: unknown): PathCondition {
       return path => items.every(item => item(path));
     }
     case '$exists': return ({ exists }) => exists === operand;
-    case '$regex': return createPattern(operand);
+    case '$regex': return createPattern(operand, operators.$options);
+    // Read by the `$regex` beside it; on its own it is no condition (the whitelist never lets it stand alone).
+    case '$options': return () => true;
     case '$not': return negate(compileOperators(operand as FilterObject));
+    case '$elemMatch': return createElemMatch(operand as FilterObject);
     // The whitelist lets no other operator through; never read one as a match.
     default: return () => false;
   }
 }
 
 function compileOperators(operators: FilterObject): PathCondition {
-  const conditions = Object.entries(operators).map(([operator, operand]) => compileOperator(operator, operand));
+  const conditions = Object.entries(operators).map(([operator, operand]) => compileOperator(operator, operand, operators));
   return path => conditions.every(condition => condition(path));
+}
+
+// ─── $elemMatch ───────────────────────────────────────────────────────────────
+
+/** A compiled `$elemMatch` condition: whether one list item meets it. */
+type ItemCondition = (item: unknown) => boolean;
+
+/** An item condition (`{ $gte: 2 }`): the item is ONE value, never expanded, so a list item is not matched by its elements. */
+function compileItemOperators(operators: FilterObject): ItemCondition {
+  const condition = compileOperators(operators);
+  return item => condition({ values: [item], ends: [item], isMissingSomewhere: false, exists: true });
+}
+
+/** An item filter (`{ product: 'P' }`): only objects are read, and a list item reads as an object with no fields, as in MongoDB. */
+function compileItemFilter(filter: FilterObject): ItemCondition {
+  const matches = compileFilterObject(filter);
+  return item => {
+    if (Array.isArray(item)) return matches({});
+    return isDocument(item) && matches(item);
+  };
+}
+
+/** Whether any of the lists the path reaches holds at least ONE item meeting the condition; anything not a list never matches. */
+function createElemMatch(operand: FilterObject): PathCondition {
+  const isItemFilter = Object.keys(operand).some(key => !key.startsWith('$') || key === '$and' || key === '$or' || key === '$nor');
+  const itemMatches = isItemFilter ? compileItemFilter(operand) : compileItemOperators(operand);
+  return ({ ends }) => ends.some(end => Array.isArray(end) && end.some(itemMatches));
 }
 
 // ─── Filters ──────────────────────────────────────────────────────────────────

@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeAll, afterAll, beforeEach } from 'vitest';
 import { MongoClient } from 'mongodb';
 import { MongoMemoryReplSet } from 'mongodb-memory-server';
-import type { Logger, Record } from '@anupheaus/common';
+import type { DataFilters, Logger, Record } from '@anupheaus/common';
 import { defineCollection } from '../../../common/defineCollection';
 import { ServerDbCollection } from './ServerDbCollection';
 import { hashRecord } from '../../../common/auditor/hash';
@@ -9,7 +9,9 @@ import { auditor } from '../../../common/auditor';
 import { AuditEntryType } from '../../../common/auditor/auditor-models';
 import { DateTime } from 'luxon';
 import { isReadableFilter, normaliseFilterConditions } from '../../../common/filters';
-import { OPERAND_CASE_RECORDS, operandCasesFor, type OperandCaseRecord } from '../../../common/filters/filterOperandCases.fixture';
+import {
+  OPERAND_CASE_RECORDS, PARITY_CASE_RECORDS, operandCasesFor, parityCases, type OperandCaseRecord, type ParityCaseRecord,
+} from '../../../common/filters/filterOperandCases.fixture';
 import { expectedCanonicalFilter, generateFuzzCases, generateGarbageCases } from '../../../common/filters/filterFuzzCases.fixture';
 
 // The acting user comes from the nexus socket/auth context (external); stub it so audit
@@ -651,6 +653,38 @@ describe('ServerDbCollection', () => {
         expect((await col.distinct({ field: 'name', filters: { category: undefined } as any })).map(({ name }) => name)).toEqual(['Delta']);
         const { total } = await col.query({ filters: { category: undefined } as any, getAccurateTotal: true });
         expect(total).toBe(1);
+      });
+    });
+
+    // sc-2783: comparisons across kinds, "does not exist", nested conditions and case-insensitive patterns read on the
+    // server exactly as on the device (DbCollection.operands.tests.ts runs the same rows).
+    describe('the filters that once read differently on the device (sc-2783)', () => {
+      const parityCollection = defineCollection<ParityCaseRecord>({ name: 'test_parity_cases', indexes: [], disableAudit: true });
+      let parityCol: ServerDbCollection<ParityCaseRecord>;
+
+      beforeAll(async () => {
+        const db = client.db('testdb');
+        try { await db.createCollection(parityCollection.name); } catch { /* already there from an earlier run */ }
+        knownCollectionNames.add(parityCollection.name);
+        await db.collection(parityCollection.name).deleteMany({});
+        parityCol = new ServerDbCollection<ParityCaseRecord>({
+          getDb: () => Promise.resolve(db),
+          collection: parityCollection,
+          collectionNames: Promise.resolve(new Set(knownCollectionNames)),
+          logger: mockLogger,
+        });
+        await parityCol.upsert(PARITY_CASE_RECORDS);
+      });
+
+      it.each(parityCases())('%s — server code', async (_label, { filters, expectedIds }) => {
+        const { data } = await parityCol.query({ filters: filters as DataFilters<ParityCaseRecord> });
+        expect(data.ids().sort()).toEqual(expectedIds);
+      });
+
+      it.each(parityCases())('%s — as a client sends it', async (_label, { filters, expectedIds }) => {
+        const sent = JSON.parse(JSON.stringify(normaliseFilterConditions(filters as DataFilters<ParityCaseRecord>)));
+        const { data } = await parityCol.query({ filters: sent });
+        expect(data.ids().sort()).toEqual(expectedIds);
       });
     });
 
