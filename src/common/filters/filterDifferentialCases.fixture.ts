@@ -30,7 +30,12 @@ export const DIFFERENTIAL_RECORDS: DifferentialRecord[] = [
   { id: 'd12', name: 'Kilo', mix: [[{ k: 'v' }]], nest: [null, { k: 1 }], list: [null], items: [null, { sku: 's1' }] },
   { id: 'd13', name: 'Lima', tags: [['x'], 'y'], value: [10, 20], flag: null, items: [{ qty: [1, 5] }], deep: 'flat' },
   { id: 'd14', name: 'Mike', mix: { k: 'v' }, nest: [{ k: 'v' }, { k: [] }], list: [], value: [[10]], when: day('2025-12-31T23:59:59.999Z') },
+  // List items with their own `id` (the record's is `_id` on the server, an item's is not) and mixed items (sc-2758).
+  { id: 'd15', name: 'November', items: [{ id: 's1', sku: 's2', qty: 2 }, { id: 'd1', qty: 5 }], list: [{ id: 'd1', ref: 'd4' }], tags: [1, 'x', null, ['y']] },
 ];
+
+/** Fields of the list items above, for `$elemMatch` item filters. */
+const ITEM_FIELDS = ['sku', 'qty', 'k', 'k.m', 'b', 'ref', 'id', 'missing'] as const;
 
 const FIELDS = [
   'name', 'category', 'value', 'flag', 'tags', 'address.city', 'address.zip', 'items.sku', 'items.qty', 'when', 'id', 'missing',
@@ -93,7 +98,7 @@ function generateList(generator: Generator, { minimum }: { minimum: number }): u
 }
 
 function generateOperator(generator: Generator, depth: number): [string, unknown] {
-  const kind = generator.pick(['scalar', 'scalar', 'scalar', 'in', 'nin', 'all', 'exists', 'regex', 'not'] as const);
+  const kind = generator.pick(['scalar', 'scalar', 'scalar', 'in', 'nin', 'all', 'exists', 'regex', 'not', 'elemMatch', 'elemMatch'] as const);
   switch (kind) {
     case 'scalar': return [generator.pick(SCALAR_OPERATORS), generator.pick(VALUES)];
     case 'in': return ['$in', generateList(generator, { minimum: 0 })];
@@ -102,7 +107,40 @@ function generateOperator(generator: Generator, depth: number): [string, unknown
     case 'exists': return ['$exists', generator.chance(0.5)];
     case 'regex': return ['$regex', generator.pick(PATTERNS)];
     case 'not': return depth > 1 ? ['$eq', generator.pick(VALUES)] : ['$not', Object.fromEntries([generateOperator(generator, depth + 1)])];
+    case 'elemMatch': return depth > 1 ? ['$eq', generator.pick(VALUES)] : ['$elemMatch', generateItemCondition(generator, depth + 1)];
   }
+}
+
+// ─── $elemMatch (sc-2758) ─────────────────────────────────────────────────────
+
+/** An operator an `$elemMatch` item condition may hold. */
+function generateItemOperator(generator: Generator, depth: number): [string, unknown] {
+  const kind = generator.pick(['scalar', 'scalar', 'in', 'nin', 'regex', 'not'] as const);
+  switch (kind) {
+    case 'scalar': return [generator.pick(SCALAR_OPERATORS), generator.pick(VALUES)];
+    case 'in': return ['$in', generateList(generator, { minimum: 0 })];
+    case 'nin': return ['$nin', generateList(generator, { minimum: 0 })];
+    case 'regex': return ['$regex', generator.pick(PATTERNS)];
+    case 'not': return depth > 2 ? ['$eq', generator.pick(VALUES)] : ['$not', Object.fromEntries([generateItemOperator(generator, depth + 1)])];
+  }
+}
+
+/** One condition on an item field, from the same grammar as a record field's. */
+function generateItemFieldCondition(generator: Generator, depth: number): [string, unknown] {
+  return [generator.pick(ITEM_FIELDS), generateCondition(generator, depth + 1)];
+}
+
+/** An item filter: one or two item-field conditions, sometimes under `$or` / `$and` / `$nor`. */
+function generateItemFilter(generator: Generator, depth: number): { [key: string]: unknown } {
+  const conditions = () => Object.fromEntries(Array.from({ length: generator.pick([1, 1, 2]) }, () => generateItemFieldCondition(generator, depth)));
+  if (!generator.chance(0.3)) return conditions();
+  return { [generator.pick(LOGICAL_OPERATORS)]: Array.from({ length: generator.pick([1, 2]) }, conditions) };
+}
+
+/** An `$elemMatch` operand: item operators, or an item filter. */
+function generateItemCondition(generator: Generator, depth: number): { [key: string]: unknown } {
+  if (generator.chance(0.5)) return generateItemFilter(generator, depth);
+  return Object.fromEntries(Array.from({ length: generator.pick([1, 1, 2]) }, () => generateItemOperator(generator, depth)));
 }
 
 function generateCondition(generator: Generator, depth: number): unknown {
@@ -154,4 +192,27 @@ export const DIFFERENTIAL_NAMED_CASES: [string, DataFilters<DifferentialRecord>]
   ['QA r6 #3: ISO date-time text', { when: '2026-01-01T00:00:00.000Z' } as never],
   ['QA r6 #3: ISO date-time text in $in', { when: { $in: ['2026-02-01T12:30:00.000Z', 'x'] } } as never],
   ['QA r6 #3: ISO date-time text as a bound', { when: { $gte: '2026-02-01T00:00:00Z' } } as never],
+  // sc-2758: $elemMatch through every shape a list can take.
+  ['$elemMatch: an item equal to a value', { tags: { $elemMatch: { $eq: 'y' } } } as never],
+  ['$elemMatch: an item that is not a value (lists and nulls as items)', { tags: { $elemMatch: { $ne: 'x' } } } as never],
+  ['$elemMatch: $nin of nothing (any item at all)', { tags: { $elemMatch: { $nin: [] } } } as never],
+  ['$elemMatch: a null item', { tags: { $elemMatch: { $in: [null] } } } as never],
+  ['$elemMatch: two bounds on one item', { value: { $elemMatch: { $gte: 10, $lt: 20 } } } as never],
+  ['$elemMatch: an item inside a list of lists is not expanded', { value: { $elemMatch: { $eq: 10 } } } as never],
+  ['$elemMatch: a negated item condition', { tags: { $elemMatch: { $not: { $regex: '^x' } } } } as never],
+  ['$elemMatch: two fields on one item', { items: { $elemMatch: { sku: 's2', qty: { $gte: 2 } } } } as never],
+  ['$elemMatch: an item field that is missing (null and list items)', { items: { $elemMatch: { sku: null } } } as never],
+  ['$elemMatch: an item field that does not exist', { nest: { $elemMatch: { k: { $exists: false } } } } as never],
+  ['$elemMatch: an item\'s own id', { items: { $elemMatch: { id: 'd1' } } } as never],
+  ['$elemMatch: an item\'s own id is not the record\'s', { list: { $elemMatch: { id: 'd15' } } } as never],
+  ['$elemMatch: an item filter starting with $or', { items: { $elemMatch: { $or: [{ sku: 's1' }, { qty: { $gt: 4 } }] } } } as never],
+  ['$elemMatch: an item filter under $nor', { items: { $elemMatch: { $nor: [{ sku: 's1' }] } } } as never],
+  ['$elemMatch: a path through a list of objects', { 'items.qty': { $elemMatch: { $gte: 5 } } } as never],
+  ['$elemMatch: a dotted path inside an item', { nest: { $elemMatch: { 'k.m': 5 } } } as never],
+  ['$elemMatch: a list of mixed items', { mix: { $elemMatch: { k: 'v' } } } as never],
+  ['$elemMatch: nested, on an item field that is a list', { 'deep.a': { $elemMatch: { b: { $elemMatch: { $eq: 2 } } } } } as never],
+  ['$elemMatch: a field that is not a list', { mix: { $elemMatch: { k: { $exists: true } } } } as never],
+  ['$elemMatch: under $not', { tags: { $not: { $elemMatch: { $eq: 'x' } } } } as never],
+  ['$elemMatch: under $nor', { $nor: [{ items: { $elemMatch: { qty: { $gt: 1 } } } }] } as never],
+  ['$elemMatch: ISO date-time text in an item condition', { when: { $elemMatch: { $eq: '2026-01-01T00:00:00Z' } } } as never],
 ];

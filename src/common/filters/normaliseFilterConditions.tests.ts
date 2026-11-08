@@ -75,11 +75,24 @@ describe('normaliseFilterConditions', () => {
   });
 
   it.each([
-    ['$elemMatch (sc-2758)', { c: { $elemMatch: { $eq: 'x' } } }], ['a nested-object value (sc-2783)', { address: { city: 'Derby' } }],
+    ['$size on a list item (sc-2758)', { c: { $elemMatch: { $size: 1 } } }], ['$exists on a list item', { c: { $elemMatch: { $exists: true } } }],
+    ['$elemMatch on a list item', { c: { $elemMatch: { $elemMatch: { $eq: 'x' } } } }], ['item operators and fields mixed', { c: { $elemMatch: { $eq: 'x', sku: 'x' } } }],
+    ['a nested-object value (sc-2783)', { address: { city: 'Derby' } }],
     ['a RegExp', { c: /x/ }], ['$regex with flags', { c: { $regex: 'x', $options: 'i' } }], ['a field path with an index', { 'tags.0': 'x' }],
     ['a field name that is not a path', { 'a b': 1 }], ['__proto__', JSON.parse('{"__proto__": 1}')], ['a filter that is not an object', 'x'],
   ])('reads %s, outside the whitelist, as matching nothing', (_label, filters) => {
     expect(normalise(filters as Loose)).toEqual(MATCH_NOTHING);
+  });
+
+  it('keeps a sound $elemMatch in canonical form: an item condition, and an item filter that may start with a logical (sc-2758)', () => {
+    const when = new Date('2026-01-01T00:00:00Z');
+    expect(normalise({
+      tags: { $elemMatch: { $in: ['x', undefined], $not: { $regex: '^a\\-' } } },
+      lines: { $elemMatch: { $or: [{ product: ['P', 'Q'] }, { at: when }], quantity: { $gte: 2 } } },
+    } as Loose)).toEqual({
+      tags: { $elemMatch: { $in: ['x', null], $not: { $regex: '^a-' } } },
+      lines: { $elemMatch: { $or: [{ product: { $in: ['P', 'Q'] } }, { at: DateTime.fromJSDate(when) }], quantity: { $gte: 2 } } },
+    });
   });
 
   it('keeps a sound list, and an empty $in / $nin (which already mean "nothing" / "anything")', () => {

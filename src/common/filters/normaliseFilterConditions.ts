@@ -112,10 +112,14 @@ function normaliseNot(operand: unknown): unknown {
   return normaliseOperators(operand);
 }
 
-/** `$elemMatch` holds either operators for each element (`{ $gt: 5 }`) or a filter over element fields. */
+/**
+ * `$elemMatch` holds either operators for each element (`{ $gt: 5 }`) or a filter over element fields
+ * (`{ product: 'P', quantity: { $gte: 2 } }`, which may start with `$and` / `$or` / `$nor`, as MongoDB reads it).
+ */
 function normaliseElemMatch(operand: unknown): FilterObject {
-  if (!is.plainObject(operand) || Object.keys(operand).length === 0) return unreadable('$elemMatch needs a condition');
-  return isOperatorObject(operand) ? normaliseOperators(operand) : normaliseFilter(operand, { allowEmpty: false });
+  if (!is.plainObject<FilterObject>(operand) || Object.keys(operand).length === 0) return unreadable('$elemMatch needs a condition');
+  const isItemFilter = Object.keys(operand).some(key => !key.startsWith('$') || LOGICAL_OPERATORS.has(key));
+  return isItemFilter ? normaliseFilter(operand, { allowEmpty: false }) : normaliseOperators(operand);
 }
 
 function isOperatorObject(value: FilterObject): boolean {

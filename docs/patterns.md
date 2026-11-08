@@ -69,11 +69,28 @@ Every filter is checked against a small grammar before any engine sees it (`src/
 dotted field paths (`address.city`, no array indexes), `$and` / `$or` / `$nor`, `$eq` / `$ne` / `$gt` / `$gte` / `$lt` /
 `$lte` with a single value, `$in` / `$nin` / `$all` with a list, `$exists`, `$regex` with a **literal pattern**
 (`src/common/filters/literalPattern.ts`: plain text with optional `^` / `$` anchors and backslash-escaped
-metacharacters, at most 128 characters, no flags), `$not`. A filter using anything else — `$elemMatch`, `$size`,
+metacharacters, at most 128 characters, no flags), `$not`, `$elemMatch` (below). A filter using anything else — `$size`,
 `$type`, `$where`, a regex with classes, groups, quantifiers, alternation, `.`, `\d` / `\p{…}` / `\A` / `\Z` or flags, a
 RegExp, a nested object as a field value (`{ address: { city } }`: write `'address.city'`), a non-object filter —
 returns **nothing**, on the device and the server alike. Write filters only from the grammar; to support a new
 operator, add it to the whitelist, to `createFilterMatcher`, and to the differential test.
+
+### Matching inside a list: `$elemMatch`
+`{ tags: { $elemMatch: { $eq: 'y' } } }` matches a record whose `tags` list holds at least ONE item meeting the whole
+condition; `{ lines: { $elemMatch: { product: 'P', quantity: { $gte: 2 } } } }` needs product P and quantity 2 or more
+on the **same** line (`{ 'lines.product': 'P', 'lines.quantity': { $gte: 2 } }` lets them be on different lines). The
+device reads it exactly as MongoDB does, and the differential test holds them together (Vision sc-2758):
+- The operand is either **item operators** — `$eq` / `$ne` / `$gt` / `$gte` / `$lt` / `$lte` / `$in` / `$nin` /
+  `$regex`, and `$not` over those — or an **item filter** over the item's own fields (field paths, `$and` / `$or` /
+  `$nor`, and any field condition, including another `$elemMatch`). Never both kinds of key in one operand.
+- A field that is not a list, or is missing, never matches; an empty list never matches. Under `$not` / `$nor` those
+  records count as "not", as with every negation.
+- An item condition reads each item as one value: an item that is itself a list is not opened (`[['x']]` holds no item
+  equal to `'x'`). An item filter reads only items that are objects; a list item reads as an object with no fields.
+- An item's `id` is the item's own field: on the server only the record's `id` is `_id`.
+- Anything else inside `$elemMatch` — `$size`, `$exists`, `$all`, `$elemMatch` on an item (not in an item filter),
+  operators mixed with fields, an empty operand — makes the whole query match **nothing** on the device and the server,
+  never every record.
 
 ### One canonical filter, one device evaluator
 `normaliseFilterConditions` returns each readable filter in ONE canonical form, and both engines evaluate only that form:

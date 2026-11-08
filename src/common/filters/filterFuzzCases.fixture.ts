@@ -145,8 +145,15 @@ function canonicalOperators(operators: Node): Node {
   return Object.fromEntries(Object.entries(operators).map(([operator, operand]) => {
     if (Array.isArray(operand)) return [operator, operand.map(toMissingAsNull)];
     if (operator === '$not') return [operator, canonicalOperators(operand as Node)];
+    if (operator === '$elemMatch') return [operator, canonicalItemCondition(operand as Node)];
     return [operator, operand];
   }));
+}
+
+/** An `$elemMatch` operand: an item filter when any key is a field or a logical, otherwise item operators (sc-2758). */
+function canonicalItemCondition(condition: Node): Node {
+  const isItemFilter = Object.keys(condition).some(key => !key.startsWith('$') || ['$and', '$or', '$nor'].includes(key));
+  return isItemFilter ? expectedCanonicalFilter(condition) : canonicalOperators(condition);
 }
 
 /**

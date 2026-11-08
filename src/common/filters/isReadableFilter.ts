@@ -19,18 +19,27 @@ import { parseLiteralPattern } from './literalPattern';
 //                  $exists                    → true or false
 //                  $regex                     → a literal pattern string (literalPattern.ts: text with optional
 //                                               ^ / $ anchors, no flags, at most 128 characters)
-//                  $not                       → a non-empty operator object (any of the operators above)
+//                  $not                       → a non-empty operator object (any of the operators here)
+//                  $elemMatch                 → the field is a list holding at least ONE item that meets either
+//                                               an item condition: a non-empty object of item operators, or
+//                                               an item filter: a non-empty filter over the item's own fields
+//                                               (an object of field paths and logicals; never both kinds of key)
+//   item operators := $eq $ne $gt $gte $lt $lte $in $nin $regex, as above, and $not over item operators
 //   single value := text | a finite number | true / false | a valid Date | a valid luxon DateTime
 //   list value   := a single value | missing (undefined / null, read as "the field is missing")
 //
 // Deliberately absent (each reads differently on the device and the server, or is not used by any app):
-// $elemMatch (sc-2758), $size, $type, $where, $expr, $text, $options and regex flags, RegExp objects (they do not
-// survive JSON), nested-object field values (a dotted path on the device, an exact match on the server: sc-2783),
-// and MXDB's device-only $ni / $like / $beginsWith / $endsWith.
+// $size, $type, $where, $expr, $text, $options and regex flags, RegExp objects (they do not survive JSON), nested-object
+// field values (a dotted path on the device, an exact match on the server: sc-2783), $exists / $all / $elemMatch on a
+// list ITEM (sc-2758: not needed, and an item that is itself a list reads them differently), and MXDB's device-only
+// $ni / $like / $beginsWith / $endsWith.
 
 const LOGICAL_OPERATORS = new Set(['$and', '$or', '$nor']);
 const SINGLE_VALUE_OPERATORS = new Set(['$eq', '$ne', '$gt', '$gte', '$lt', '$lte']);
 const LIST_OPERATORS = new Set(['$in', '$nin']);
+
+/** The operators an `$elemMatch` item condition may hold (sc-2758). */
+const ITEM_OPERATORS = new Set([...SINGLE_VALUE_OPERATORS, ...LIST_OPERATORS, '$regex', '$not']);
 
 /** A path segment: an identifier. Not an array index — SQLite's JSON path reads `tags.0` as a key, MongoDB as an index. */
 const FIELD_SEGMENT = /^[A-Za-z_][A-Za-z0-9_]*$/;
@@ -85,8 +94,24 @@ function isReadableOperand(operator: string, operand: unknown, depth: number): b
     case '$exists': return is.boolean(operand);
     case '$regex': return isLiteralPattern(operand);
     case '$not': return isOperatorObject(operand, depth + 1);
+    case '$elemMatch': return isItemOperatorObject(operand, depth + 1) || isItemFilter(operand, depth + 1);
     default: return false;
   }
+}
+
+/** An `$elemMatch` item condition: item operators only, each with a readable operand. */
+function isItemOperatorObject(value: unknown, depth: number): boolean {
+  if (depth > MAX_DEPTH || !isPlainObject(value)) return false;
+  const entries = Object.entries(value);
+  return entries.length > 0 && entries.every(([operator, operand]) => {
+    if (!ITEM_OPERATORS.has(operator)) return false;
+    return operator === '$not' ? isItemOperatorObject(operand, depth + 1) : isReadableOperand(operator, operand, depth);
+  });
+}
+
+/** An `$elemMatch` item filter: a non-empty filter over the item's fields (a filter has no operator keys but logicals). */
+function isItemFilter(value: unknown, depth: number): boolean {
+  return isPlainObject(value) && Object.keys(value).length > 0 && isFilter(value, depth);
 }
 
 function isReadableFieldValue(value: unknown, depth: number): boolean {

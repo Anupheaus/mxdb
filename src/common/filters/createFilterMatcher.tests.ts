@@ -26,6 +26,19 @@ describe('createFilterMatcher', () => {
     ['types never mix', { value: '5' }, { value: 5 }, false],
     ['$ne counts a missing field as "not"', {}, { value: { $ne: 5 } }, true],
     ['text orders by code point', { name: '\u{1F600}' }, { name: { $gt: '￿' } }, true],
+    // sc-2758: $elemMatch, as MongoDB reads it.
+    ['$elemMatch needs one item meeting the whole condition', { lines: [{ p: 'P', q: 1 }, { p: 'Q', q: 2 }] }, { lines: { $elemMatch: { p: 'P', q: { $gte: 2 } } } }, false],
+    ['$elemMatch on the same item', { lines: [{ p: 'Q', q: 5 }, { p: 'P', q: 2 }] }, { lines: { $elemMatch: { p: 'P', q: { $gte: 2 } } } }, true],
+    ['$elemMatch never matches a field that is not a list', { tags: 'x' }, { tags: { $elemMatch: { $eq: 'x' } } }, false],
+    ['$elemMatch never matches a missing field', {}, { tags: { $elemMatch: { $nin: ['x'] } } }, false],
+    ['$elemMatch never matches an empty list', { tags: [] }, { tags: { $elemMatch: { $nin: ['x'] } } }, false],
+    ['$elemMatch reads an item as one value, never its elements', { tags: [['x']] }, { tags: { $elemMatch: { $eq: 'x' } } }, false],
+    ['so a list item is "not x"', { tags: [['x']] }, { tags: { $elemMatch: { $ne: 'x' } } }, true],
+    ['$elemMatch reads a list item as an object with no fields', { lines: [[1]] }, { lines: { $elemMatch: { p: null } } }, true],
+    ['$elemMatch skips plain items in an item filter', { lines: ['P', null] }, { lines: { $elemMatch: { p: null } } }, false],
+    ['$elemMatch matches a null item by $in [null]', { tags: [null] }, { tags: { $elemMatch: { $in: [null] } } }, true],
+    ['$elemMatch looks inside each list a path reaches', { items: [{ q: [1] }, { q: [5] }] }, { 'items.q': { $elemMatch: { $gte: 5 } } }, true],
+    ['$not over $elemMatch counts a missing field as "not"', {}, { tags: { $not: { $elemMatch: { $eq: 'x' } } } }, true],
   ])('%s', (_label, record, filters, expected) => {
     expect(matches(record, filters as Loose)).toBe(expected);
   });

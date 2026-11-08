@@ -43,15 +43,17 @@ function withStableOrder(sort: MongoSortSpec | undefined): Sort {
  * `DateTime`s become native `Date`s. Recurses into arrays too, so values inside logical operators
  * (`$or`/`$and`/`$nor`) and array operators (`$in`/`$nin`/`$all`) are translated as well — otherwise
  * `{ $or: [{ id: 'a' }] }` would query a non-existent `id` field and silently match nothing.
+ * Only the RECORD's `id` is stored as `_id`: inside `$elemMatch` the keys are a list item's own fields, so an item's
+ * `id` stays `id`, as the device reads it (sc-2758).
  * Returns new objects/arrays; the caller's filters are never mutated.
  */
-function toMongoFilterValue(value: unknown): unknown {
+function toMongoFilterValue(value: unknown, isInsideListItem = false): unknown {
   if (DateTime.isDateTime(value)) return value.toJSDate();
-  if (Array.isArray(value)) return value.map(toMongoFilterValue);
+  if (Array.isArray(value)) return value.map(element => toMongoFilterValue(element, isInsideListItem));
   if (!is.plainObject(value)) return value;
   return Object.fromEntries(Object.entries(value).map(([key, nestedValue]) => [
-    key === 'id' ? '_id' : key,
-    toMongoFilterValue(nestedValue),
+    key === 'id' && !isInsideListItem ? '_id' : key,
+    toMongoFilterValue(nestedValue, isInsideListItem || key === '$elemMatch'),
   ]));
 }
 

@@ -9,14 +9,26 @@ export interface OperandCaseRecord extends Record {
   category?: string | null;
   value?: number;
   tags?: string[];
+  lines?: OperandCaseLine[];
 }
 
-/** One record per shape a field can take: set, set to another value, empty string, null, and missing. */
+/** A line item: `$elemMatch` must find product AND quantity on the SAME line (sc-2758). */
+export interface OperandCaseLine {
+  id?: string;
+  product: string;
+  quantity: number;
+}
+
+/**
+ * One record per shape a field can take: set, set to another value, empty string, null, and missing. The tags are
+ * sc-2758's QA example (A: x and y, B: x, C: none, D and E: no tags field); r1's lines hold product P and quantity 2
+ * on DIFFERENT lines.
+ */
 export const OPERAND_CASE_RECORDS: OperandCaseRecord[] = [
-  { id: 'r1', name: 'One', category: 'a', value: 10, tags: ['x', 'y'] },
-  { id: 'r2', name: 'Two', category: 'b', value: 20, tags: ['x'] },
-  { id: 'r3', name: 'Three', category: '', value: 30, tags: [] },
-  { id: 'r4', name: 'Four', category: null, value: 40 },
+  { id: 'r1', name: 'One', category: 'a', value: 10, tags: ['x', 'y'], lines: [{ product: 'P', quantity: 1 }, { product: 'Q', quantity: 2 }] },
+  { id: 'r2', name: 'Two', category: 'b', value: 20, tags: ['x'], lines: [{ id: 'L1', product: 'P', quantity: 3 }] },
+  { id: 'r3', name: 'Three', category: '', value: 30, tags: [], lines: [{ product: 'Q', quantity: 5 }, { product: 'P', quantity: 2 }] },
+  { id: 'r4', name: 'Four', category: null, value: 40, lines: [] },
   { id: 'r5', name: 'Five' },
 ];
 
@@ -97,6 +109,36 @@ function logicalCases({ operator, engines }: typeof LOGICAL_ROWS[number]): Opera
 }
 
 /**
+ * sc-2758: a filter that matches inside a list. Its acceptance criteria 1-5 over the QA example records: the device,
+ * its in-memory evaluator and the server must each return exactly these records.
+ */
+const ELEM_MATCH_CASES: OperandCase[] = [
+  { label: 'sc-2758 #1: tags hold an item equal to "y"', filters: { tags: { $elemMatch: { $eq: 'y' } } } as Loose, expectedIds: ['r1'], engines: 'both' },
+  { label: 'sc-2758 #2: tags hold an item equal to "x"', filters: { tags: { $elemMatch: { $eq: 'x' } } } as Loose, expectedIds: ['r1', 'r2'], engines: 'both' },
+  { label: 'sc-2758 #3: tags hold an item equal to "z" (no record)', filters: { tags: { $elemMatch: { $eq: 'z' } } } as Loose, expectedIds: NOTHING, engines: 'both' },
+  { label: 'sc-2758 #4: product P and quantity at least 2 on the SAME line', filters: { lines: { $elemMatch: { product: 'P', quantity: { $gte: 2 } } } } as Loose, expectedIds: ['r2', 'r3'], engines: 'both' },
+  { label: 'sc-2758 #4: without $elemMatch, the two may be on different lines', filters: { 'lines.product': 'P', 'lines.quantity': { $gte: 2 } } as Loose, expectedIds: ['r1', 'r2', 'r3'], engines: 'both' },
+  { label: 'sc-2758: a line\'s own id is the line\'s, not the record\'s', filters: { lines: { $elemMatch: { id: 'L1' } } } as Loose, expectedIds: ['r2'], engines: 'both' },
+  { label: 'sc-2758: two bounds on the same item', filters: { tags: { $elemMatch: { $gte: 'x', $lt: 'y' } } } as Loose, expectedIds: ['r1', 'r2'], engines: 'both' },
+  { label: 'sc-2758: an item that is not "x"', filters: { tags: { $elemMatch: { $not: { $eq: 'x' } } } } as Loose, expectedIds: ['r1'], engines: 'both' },
+  { label: 'sc-2758: an item in a list of values', filters: { tags: { $elemMatch: { $in: ['y', 'z'] } } } as Loose, expectedIds: ['r1'], engines: 'both' },
+  { label: 'sc-2758: any item at all ($nin of nothing)', filters: { tags: { $elemMatch: { $nin: [] } } } as Loose, expectedIds: ['r1', 'r2'], engines: 'both' },
+  { label: 'sc-2758: a line meeting either branch', filters: { lines: { $elemMatch: { $or: [{ product: 'Q' }, { quantity: { $gte: 3 } }] } } } as Loose, expectedIds: ['r1', 'r2', 'r3'], engines: 'both' },
+  { label: 'sc-2758: a field that is not a list never matches', filters: { name: { $elemMatch: { $eq: 'One' } } } as Loose, expectedIds: NOTHING, engines: 'both' },
+  // #5: forms MXDB does not evaluate inside a list match nothing on every engine, never every record.
+  { label: 'sc-2758 #5: $size on an item', filters: { tags: { $elemMatch: { $size: 1 } } } as Loose, expectedIds: NOTHING, engines: 'both' },
+  { label: 'sc-2758 #5: $exists on an item', filters: { tags: { $elemMatch: { $exists: true } } } as Loose, expectedIds: NOTHING, engines: 'both' },
+  { label: 'sc-2758 #5: $all on an item', filters: { tags: { $elemMatch: { $all: ['x'] } } } as Loose, expectedIds: NOTHING, engines: 'both' },
+  { label: 'sc-2758 #5: $elemMatch on an item', filters: { tags: { $elemMatch: { $elemMatch: { $eq: 'x' } } } } as Loose, expectedIds: NOTHING, engines: 'both' },
+  { label: 'sc-2758 #5: operators and fields mixed', filters: { lines: { $elemMatch: { $eq: 'P', product: 'P' } } } as Loose, expectedIds: NOTHING, engines: 'both' },
+  { label: 'sc-2758 #5: a nested-object value inside a line', filters: { lines: { $elemMatch: { product: { name: 'P' } } } } as Loose, expectedIds: NOTHING, engines: 'both' },
+  { label: 'sc-2758 #5: a bare list of values', filters: { tags: { $elemMatch: ['x'] } } as Loose, expectedIds: NOTHING, engines: 'both' },
+  { label: 'sc-2758 #5: a regex with flags', filters: { tags: { $elemMatch: { $regex: 'x', $options: 'i' } } } as Loose, expectedIds: NOTHING, engines: 'both' },
+  { label: 'sc-2758 #5: negated, an unreadable form is still nothing', filters: { tags: { $not: { $elemMatch: { $size: 1 } } } } as Loose, expectedIds: NOTHING, engines: 'both' },
+  { label: 'sc-2758 #5: under $nor, an unreadable form is still nothing', filters: { $nor: [{ lines: { $elemMatch: { $where: 'true' } } }] } as Loose, expectedIds: NOTHING, engines: 'both' },
+];
+
+/**
  * Every operator × (undefined, null, empty, wrong type), plus a broken operand beside a sound condition, and the
  * conditions that must keep matching: a field with no value matches records missing it, and no filter reads everything.
  */
@@ -119,13 +161,14 @@ export const OPERAND_CASES: OperandCase[] = [
   // Sound queries using the same operators keep working, on both engines.
   { label: 'a sound $nor', filters: { $nor: [{ category: 'a' }, { value: { $gte: 30 } }] } as Loose, expectedIds: ['r2', 'r5'], engines: 'both' },
   { label: 'a sound $not', filters: { value: { $not: { $gt: 15 } } } as Loose, expectedIds: ['r1', 'r5'], engines: 'both' },
-  { label: '$elemMatch is not in the whitelist (sc-2758)', filters: { tags: { $elemMatch: { $eq: 'y' } } } as Loose, expectedIds: NOTHING, engines: 'both' },
+  ...ELEM_MATCH_CASES,
   { label: 'an empty branch is "no condition"', filters: { $and: [{}, { name: 'Two' }] } as Loose, expectedIds: ['r2'], engines: 'both' },
   { label: 'a sound $regex', filters: { name: { $regex: '^T' } } as Loose, expectedIds: ['r2', 'r3'], engines: 'both' },
   { label: 'a sound negated $regex counts a missing field as "not"', filters: { category: { $not: { $regex: '^a' } } } as Loose, expectedIds: ['r2', 'r3', 'r4', 'r5'], engines: 'both' },
-  // QA round 3's four holes: each read every record on the device.
-  { label: 'QA r3 #1: $elemMatch under $not', filters: { tags: { $not: { $elemMatch: { $eq: 'y' } } } } as Loose, expectedIds: NOTHING, engines: 'both' },
-  { label: 'QA r3 #1: $elemMatch under $nor', filters: { $nor: [{ tags: { $elemMatch: { $eq: 'y' } } }], name: { $exists: true } } as Loose, expectedIds: NOTHING, engines: 'both' },
+  // QA round 3's four holes: each read every record on the device. $elemMatch is now readable (sc-2758), so its
+  // negations are exact: every record without a "y" tag, including those with no tags at all.
+  { label: 'QA r3 #1: $elemMatch under $not', filters: { tags: { $not: { $elemMatch: { $eq: 'y' } } } } as Loose, expectedIds: ['r2', 'r3', 'r4', 'r5'], engines: 'both' },
+  { label: 'QA r3 #1: $elemMatch under $nor', filters: { $nor: [{ tags: { $elemMatch: { $eq: 'y' } } }], name: { $exists: true } } as Loose, expectedIds: ['r2', 'r3', 'r4', 'r5'], engines: 'both' },
   { label: 'QA r3 #2: a flagged RegExp under $not', filters: { category: { $not: /A/i } } as Loose, expectedIds: NOTHING, engines: 'both' },
   { label: 'QA r3 #2: a flagged $regex under $not', filters: { category: { $not: { $regex: /A/i } } } as Loose, expectedIds: NOTHING, engines: 'both' },
   { label: 'QA r3 #2: $regex with $options', filters: { category: { $regex: 'a', $options: 'i' } } as Loose, expectedIds: NOTHING, engines: 'both' },
