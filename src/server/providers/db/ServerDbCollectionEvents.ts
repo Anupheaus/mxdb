@@ -17,16 +17,23 @@ interface Props {
   debounceMs?: number;
   /** Runs before change callbacks; awaited so clients are notified only after this completes. */
   onAfterDispatch?: (event: ServerDbChangeEvent) => void | Promise<void>;
+  /**
+   * Runs first, with the batch's inserted and updated documents as stored (`_meta` included), before `onAfterDispatch`
+   * and the callbacks. Awaited.
+   */
+  onStoredDocuments?: (documents: MongoDocOf<Record>[]) => Promise<void>;
 }
 
 export class ServerDbCollectionEvents {
-  constructor({ collectionName, callbacks, operationType, debounceMs, onAfterDispatch }: Props) {
+  constructor({ collectionName, callbacks, operationType, debounceMs, onAfterDispatch, onStoredDocuments }: Props) {
     this.#collectionName = collectionName;
     this.#callbacks = callbacks;
     this.#operationType = operationType;
     this.#debounceMs = debounceMs ?? DEFAULT_DEBOUNCE_MS;
     this.#onAfterDispatch = onAfterDispatch;
+    this.#onStoredDocuments = onStoredDocuments;
     this.#insertUpdateEvents = new Map();
+    this.#storedDocuments = new Map();
     this.#deleteEvents = new Set();
   }
 
@@ -34,7 +41,9 @@ export class ServerDbCollectionEvents {
   #operationType: OperationType;
   #debounceMs: number;
   #onAfterDispatch: ((event: ServerDbChangeEvent) => void | Promise<void>) | undefined;
+  #onStoredDocuments: ((documents: MongoDocOf<Record>[]) => Promise<void>) | undefined;
   #insertUpdateEvents: Map<string, Record>;
+  #storedDocuments: Map<string, MongoDocOf<Record>>;
   #deleteEvents: Set<string>;
   #timer: NodeJS.Timeout | undefined;
   #callbacks: Set<(event: ServerDbChangeEvent) => void>;
@@ -47,6 +56,7 @@ export class ServerDbCollectionEvents {
         const record = 'fullDocument' in streamEvent && streamEvent.fullDocument != null ? dbUtils.deserialize(streamEvent.fullDocument) : undefined;
         if (record != null) {
           this.#insertUpdateEvents.set(record.id, record);
+          this.#storedDocuments.set(record.id, (streamEvent as { fullDocument: MongoDocOf<Record> }).fullDocument);
         }
         break;
       }
@@ -77,6 +87,7 @@ export class ServerDbCollectionEvents {
     const operationType = this.#operationType;
     const deleteIds = operationType === 'delete' ? Array.from(this.#deleteEvents) : [];
     const upsertRecords = operationType !== 'delete' ? Array.from(this.#insertUpdateEvents.values()) : [];
+    const storedDocuments = Array.from(this.#storedDocuments.values());
 
     const event: ServerDbChangeEvent = operationType === 'delete'
       ? { collectionName: this.#collectionName, type: 'delete', recordIds: deleteIds }
@@ -86,8 +97,10 @@ export class ServerDbCollectionEvents {
       this.#deleteEvents.clear();
     } else {
       this.#insertUpdateEvents.clear();
+      this.#storedDocuments.clear();
     }
 
+    if (storedDocuments.length > 0) await this.#onStoredDocuments?.(storedDocuments);
     await Promise.resolve(this.#onAfterDispatch?.(event));
     this.#callbacks.forEach(callback => callback(event));
   }
