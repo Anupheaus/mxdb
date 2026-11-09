@@ -39,6 +39,7 @@ Raw functions pre-bound by the facade. Also exports:
 ### Replay (`replay.ts`)
 - `replayHistoryEndState(entries, baseRecord?)` — folds all entries into `{ live, shadow }`. `live` is `undefined` for tombstoned records; `shadow` preserves the last non-deleted state.
 - `applyOp(record, op)` — applies a single `AuditOperation` to a record
+- `parsePath(path)` / `readAtPath(record, path)` — the one place paths are parsed: a path naming `__proto__`, `constructor` or `prototype` parses to nothing, so replay, merge and compaction all ignore it (paths come from devices; prototype pollution guard, sc-4409)
 
 ### Diff (`diff.ts`)
 - `recordDiff(before, after)` — produces `AuditOperation[]` describing the minimal change set. Uses boxed-id path anchoring for arrays with `id`/`_id` elements; hash-anchored numeric indexing for anonymous arrays.
@@ -48,6 +49,11 @@ Raw functions pre-bound by the facade. Also exports:
 - `AuditOperation` — single field change (dot-notation path + optional hash for array moves)
 - Type hierarchy: `AuditCreatedEntry`, `AuditUpdateEntry`, `AuditDeletedEntry`, `AuditRestoredEntry`, `AuditBranchedEntry`
 - Server-side variants: `ServerAuditOf`, `ServerAuditEntry`, etc. — add `socketId`, `timestamp`
+
+### Compaction (`compaction.ts`, `foldLateEntries.ts`, `pathClocks.ts`) — server audits only (sc-4409)
+A server audit is rewritten whole on every write, so it must stay bounded however often the record is written (MongoDB refuses a document over 16 MB, and every save reads and rewrites it).
+- `compactAuditEntries(entries, limits?)` — once an audit holds more than `AUDIT_COMPACTION_LIMITS.maxEntries` (40) entries or `maxCharacters` (512 KB of JSON), folds its oldest entries into ONE `Created` snapshot, keeping the newest (up to 20 entries / 256 KB) as they are. Replaying the result gives exactly the same record. The snapshot takes the id of the newest entry it folded and carries `compaction` (`AuditCompaction`): `historyStart` (the original `Created` id) and, per path, the newest folded entry that wrote it (`clocks`, at most `MAX_AUDIT_PATH_CLOCKS` / `MAX_AUDIT_PATH_CLOCK_CHARACTERS`). Past the limits, `capPathClocks` folds the oldest clocks into their parent path (`list.[id:m1]` → `list`) and drops a top-level clock only for a key the record does not hold; there is NO global floor, so a folded write can only suppress a late change on a path it covers, and coverage widens only inside the part of the record that churned. Clocks are built in a `Map` (`PathClockMap`), at most `MAX_CLOCK_PATH_SEGMENTS` (8) deep and `MAX_CLOCK_PATH_CHARACTERS` (256) long (`clockPathOf`; a deeper write is clocked at its ancestor), and capped between entries past `PATH_CLOCK_BUILD_LIMIT`: folding and merging are linear in the ops, however many one crafted write carries. Keep it so: never scan the whole clock list once per op. Nothing is folded from a `Deleted`/`Restored` entry on. `ServerDbCollection` calls it on every audit write (through `server/audit/compactServerAudit.ts`, which attributes the snapshot to the last person among the folded entries).
+- `foldLateEntries(snapshot, lateEntries)` — used by `merge`: a client entry older than the snapshot (a device offline, or syncing a backlog) cannot sort in before it (replay would apply the snapshot over it), so each of its ops is applied to the snapshot unless a newer folded write covers its path (`latestCoveringWrite`); a newer folded write INSIDE the path is put back after the entry. An entry's own clocks are recorded only after all its ops, so its ops are judged against the history before it, as replay applies them. Last-write-wins holds path by path, a resent folded entry changes nothing, and a change is only lost to a newer one. A late `Deleted` is appended after the latest entry (delete is final). `compaction.tests.ts` checks random histories and arrival orders against the full, never-compacted history.
 
 ### Utilities
 - `hash.ts` — `hashRecord(record)` short hash; used by the sync engine to skip no-op S2C dispatches
@@ -69,7 +75,7 @@ Raw functions pre-bound by the facade. Also exports:
 `replayHistoryEndState` folds entries in insertion order. After `merge`, insertion order matches ULID order. Result is `{ live, shadow }`.
 
 ### `merge` semantics
-Deduplicates by `entry.id`, then sorts by ULID ascending. Called **only on the server** in `ServerReceiver`. After merge, replay produces the new authoritative state; both the merged audit and materialised record are written.
+Deduplicates by `entry.id`, then sorts by ULID ascending. Into a compacted audit, client entries older than its snapshot are folded into the snapshot instead (`foldLateEntries`). Called **only on the server** in `ServerReceiver`. After merge, replay produces the new authoritative state; both the merged audit and materialised record are written.
 
 ### Array path encoding
 `AuditOperation.path` uses two strategies:

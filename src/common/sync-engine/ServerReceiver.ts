@@ -3,7 +3,8 @@ import { auditor, AuditEntryType } from '../auditor';
 import { replayHistoryEndState } from '../auditor/replay';
 import { hashRecord } from '../auditor/hash';
 import { generateAnchorUlid } from '../auditor/time';
-import type { AuditEntry } from '../auditor';
+import { updateAuditWith } from '../auditor/api';
+import type { AuditCreatedEntry, AuditEntry, AuditOf } from '../auditor';
 import {
   type ClientDispatcherRequest,
   type MXDBRecordStatesRequest,
@@ -15,6 +16,7 @@ import {
   type MXDBDeletedRecordCursor,
   type MXDBSyncEngineResponse,
   type ServerDispatcherFilter,
+  type ServerDispatcherFilterRecord,
   type MXDBRecordCursors,
   type MXDBReadableRecords,
 } from './models';
@@ -81,6 +83,13 @@ interface ServerReceiverProps {
  */
 let srIdCounter = 0;
 
+/** A client's entry without the server-only `reset` mark (see `AuditCreatedEntry.reset`). */
+function withoutResetMark(entry: AuditEntry): AuditEntry {
+  if (entry.type !== AuditEntryType.Created || !('reset' in entry)) return entry;
+  const { reset: _reset, ...rest } = entry as AuditCreatedEntry;
+  return rest as AuditEntry;
+}
+
 /** An edit (not a create, not a delete) to a record the server holds no state for. */
 interface UnheldWrite {
   collectionName: string;
@@ -134,6 +143,8 @@ export class ServerReceiver {
       // wired or the stored hash is absent/different.
       const isBranchedOnly = (rec: { entries: AuditEntry[] }) => rec.entries.every(e => e.type === AuditEntryType.Branched);
       const metaMatched = new Map<string, Set<string>>(); // collectionName -> ids confirmed consistent via meta
+      // The stored audit's last entry id of each meta-matched record (`collection::id`), when its `_meta` has one.
+      const metaLastAuditEntryIds = new Map<string, string>();
       if (this.#props.onRetrieveMeta != null) {
         const metaRequest: MXDBRecordStatesRequest = [];
         for (const item of request) {
@@ -143,6 +154,9 @@ export class ServerReceiver {
         if (metaRequest.length > 0) {
           const metas = await this.#props.onRetrieveMeta(metaRequest);
           const hashByColId = new Map(metas.map(m => [m.collectionName, new Map(m.records.map(r => [r.id, r.hash]))]));
+          for (const { collectionName, records } of metas) {
+            for (const { id, lastAuditEntryId } of records) if (lastAuditEntryId != null) metaLastAuditEntryIds.set(`${collectionName}::${id}`, lastAuditEntryId);
+          }
           for (const item of request) {
             const colHashes = hashByColId.get(item.collectionName);
             if (colHashes == null) continue;
@@ -186,6 +200,10 @@ export class ServerReceiver {
         mergedEntries: AuditEntry[];
         liveRecord: MXDBRecord | undefined;
         clientHash?: string;
+        /** What the server held before this write (none for a create). */
+        serverState?: MXDBActiveRecordState | MXDBDeletedRecordState;
+        /** Set once judged: the write changed nothing the server holds, so its entries were not stored. */
+        isUnchanged?: boolean;
       };
 
       const mergeT0 = performance.now();
@@ -218,8 +236,17 @@ export class ServerReceiver {
           }
 
           const serverStateForEntries = colServerMap.get(recordId);
+          // Only the server marks a history reset: a client's mark is dropped, so it can never be stored (sc-4321).
+          const clientEntries = rec.entries.map(withoutResetMark);
+          // sc-4321: a create made before another device's create of the same record reached the server.
+          const lateCreateEntries = this.#entriesWithLateSecondCreate(recordId, clientEntries, serverStateForEntries);
+          const lateCreateRecord = lateCreateEntries != null ? replayHistoryEndState(lateCreateEntries, undefined, this.#logger).live : undefined;
+          if (lateCreateEntries != null && lateCreateRecord != null) {
+            pendingPersist.push({ collectionName: colName, recordId, mergedEntries: lateCreateEntries, liveRecord: lateCreateRecord, clientHash: rec.hash, serverState: serverStateForEntries });
+            continue;
+          }
           const strippedEntries = this.#entriesSinceHistoryStart(
-            rec.entries.filter(e => e.type !== AuditEntryType.Branched),
+            clientEntries.filter(e => e.type !== AuditEntryType.Branched),
             serverStateForEntries,
           );
 
@@ -293,7 +320,7 @@ export class ServerReceiver {
             continue;
           }
 
-          pendingPersist.push({ collectionName: colName, recordId, mergedEntries, liveRecord, clientHash: rec.hash });
+          pendingPersist.push({ collectionName: colName, recordId, mergedEntries, liveRecord, clientHash: rec.hash, serverState });
         }
       }
 
@@ -448,6 +475,28 @@ export class ServerReceiver {
       branchedActive.forEach((_, i) => branchedHashByIdx.set(i, branchedHashes[i]!));
       const persistedHashByKey = new Map<string, string>();
       persistedActive.forEach((item, i) => persistedHashByKey.set(`${item.collectionName}::${item.recordId}`, persistedHashes[i]!));
+      // A record `onUpdate` stored nothing for (its write changed nothing the server holds) keeps the server's history.
+      const unchangedKeys = new Set(updateResponse.flatMap(({ collectionName, unchangedRecordIds }) => (unchangedRecordIds ?? []).map(id => `${collectionName}::${id}`)));
+      for (const item of persistedActive) {
+        item.isUnchanged = item.serverState != null && isActiveRecordState(item.serverState) && unchangedKeys.has(`${item.collectionName}::${item.recordId}`);
+      }
+
+      // The client's claim, as mirrored into the dispatcher's filter, may name an entry the server never stored (one it
+      // judged to change nothing). A filter ahead of the server's history would hold back every later change that sorts
+      // before that id (another device's clock may run behind), so the filter is put back to the server's last entry.
+      const claimedLastIds = new Map(request.flatMap(({ collectionName, records }) => records.map(({ id, entries }) => [`${collectionName}::${id}`, this.#getLastAuditEntryId(entries)] as const)));
+      const claimAlignments = new Map<string, ServerDispatcherFilterRecord[]>();
+      const alignClaim = (collectionName: string, recordId: string, clientHash: string | undefined, serverLastId: string | undefined): void => {
+        if (clientHash == null || serverLastId == null || serverLastId === '') return;
+        if ((claimedLastIds.get(`${collectionName}::${recordId}`) ?? '') <= serverLastId) return;
+        claimAlignments.set(collectionName, [...(claimAlignments.get(collectionName) ?? []), { id: recordId, hash: clientHash, lastAuditEntryId: serverLastId }]);
+      };
+      for (const item of request) {
+        for (const { id, hash } of item.records) {
+          if (metaMatched.get(item.collectionName)?.has(id) !== true || !isReadable(item.collectionName, id)) continue;
+          alignClaim(item.collectionName, id, hash, metaLastAuditEntryIds.get(`${item.collectionName}::${id}`));
+        }
+      }
 
       // Branched-only disparities (and server-missing ghosts — branched or updated records with no server state).
       let branchedActiveIdx = 0;
@@ -467,9 +516,10 @@ export class ServerReceiver {
           continue;
         }
         if (isActiveRecordState(d.serverState)) {
+          const serverLastId = this.#getLastAuditEntryId(d.serverState.audit);
+          alignClaim(d.collectionName, d.recordId, d.clientHash, serverLastId);
           if (serverHash === d.clientHash) continue; // already consistent
           if (!isGatedVersion(d.collectionName, d.recordId, serverHash!)) continue;
-          const serverLastId = this.#getLastAuditEntryId(d.serverState.audit);
           const cursor: MXDBActiveRecordCursor & { hash: string } = {
             record: d.serverState.record,
             lastAuditEntryId: serverLastId,
@@ -491,6 +541,7 @@ export class ServerReceiver {
         const successIds = persistSuccessMap.get(colName) ?? new Set();
         if (!successIds.has(item.recordId)) continue;
 
+        // Still the merged entries' last id for an unchanged record: the client declines a push older than its own entry.
         const lastAuditEntryId = this.#getLastAuditEntryId(item.mergedEntries);
 
         if (!isReadable(colName, item.recordId)) {
@@ -505,6 +556,7 @@ export class ServerReceiver {
         }
 
         if (item.liveRecord != null) {
+          if (item.isUnchanged === true) alignClaim(colName, item.recordId, item.clientHash, this.#getLastAuditEntryId(item.serverState!.audit));
           const mergedHash = persistedHashByKey.get(`${colName}::${item.recordId}`)!;
           if (mergedHash === item.clientHash) continue; // client already matches the merged state
           if (!isGatedVersion(colName, item.recordId, mergedHash)) continue;
@@ -524,6 +576,10 @@ export class ServerReceiver {
 
       if (tombstonedUnreadable.size > 0) {
         serverDispatcher.updateFilter([...tombstonedUnreadable].map(([collectionName, deletedRecordIds]) => ({ collectionName, records: [], deletedRecordIds })));
+      }
+      // Before the pushes, so a push answering a claim is judged against the server's history, not the claim.
+      if (claimAlignments.size > 0) {
+        serverDispatcher.updateFilter([...claimAlignments].map(([collectionName, records]) => ({ collectionName, records })));
       }
       if (pushPayload.length > 0) {
         serverDispatcher.push(pushPayload);
@@ -640,9 +696,50 @@ export class ServerReceiver {
    * record with no server state, or an audit not starting with `Created`, keeps all of them.
    */
   #entriesSinceHistoryStart(entries: AuditEntry[], serverState: MXDBActiveRecordState | MXDBDeletedRecordState | undefined): AuditEntry[] {
-    const historyStart = (serverState?.audit as AuditEntry[] | undefined)?.[0];
-    if (historyStart == null || historyStart.type !== AuditEntryType.Created) return entries;
-    return entries.filter(entry => entry.id >= historyStart.id);
+    const first = (serverState?.audit as AuditEntry[] | undefined)?.[0];
+    if (first == null || first.type !== AuditEntryType.Created) return entries;
+    // A compacted audit's first entry is a snapshot of older entries, not the start: entries older than it are still merged
+    // (folded into it by `auditor.merge`) back to where the history really began.
+    const historyStart = first.compaction?.historyStart ?? first.id;
+    return entries.filter(entry => entry.id >= historyStart);
+  }
+
+  /**
+   * sc-4321 — the server's audit with a late second create's change appended, or undefined when the client's entries are not
+   * one (or change nothing), and are merged as usual.
+   *
+   * Two devices can create the same record offline. A create that reaches the server after the other's is merged as an edit
+   * of the stored record: the create's own entry is not merged (the first create stays the record's start) and every change
+   * the device made after it is (`auditor.merge`). A create made BEFORE the stored one began would instead be dropped with
+   * every change after it, as {@link #entriesSinceHistoryStart} drops any entry older than the server's history: the change
+   * the device made would be lost without a word, and no before-write hook would ever see it.
+   *
+   * So when the client's entries hold a `Created` older than the start of the server's history for a live record, the
+   * device's changes since its create — its record as it ends, against its own created record — are laid over the stored
+   * record as ONE `Updated` entry, dated after every entry the server and the device hold. The result is exactly what the
+   * same entries give when the create sorts after the stored one, and the before-write hooks judge it like any other write,
+   * so an app can refuse a change made without seeing the other device's. A device that created and then deleted the record,
+   * a stored record that is deleted, and a change the stored record already has leave the record as it is.
+   */
+  #entriesWithLateSecondCreate(recordId: string, clientEntries: AuditEntry[], serverState: MXDBActiveRecordState | MXDBDeletedRecordState | undefined): AuditEntry[] | undefined {
+    if (serverState == null || !isActiveRecordState(serverState)) return undefined;
+    const serverEntries = serverState.audit as AuditEntry[];
+    const first = serverEntries[0];
+    // Whitelist: only a history that began with a create. One the server cleared on purpose (`reset`) keeps every older
+    // client entry out, a device's own create included: a pre-reset edit must never come back onto the cleared record.
+    if (first == null || first.type !== AuditEntryType.Created || (first as AuditCreatedEntry).reset === true) return undefined;
+    const historyStart = first.compaction?.historyStart ?? first.id;
+    const entries = clientEntries.filter(entry => entry.type !== AuditEntryType.Branched);
+    const clientCreate = entries.find(entry => entry.type === AuditEntryType.Created);
+    if (clientCreate == null || clientCreate.id >= historyStart) return undefined;
+    const clientRecord = replayHistoryEndState(entries, undefined, this.#logger).live;
+    const storedRecord = replayHistoryEndState(serverEntries, undefined, this.#logger).live;
+    if (clientRecord == null || storedRecord == null) return undefined;
+    const changed = auditor.rebaseRecord((clientCreate as AuditCreatedEntry).record, clientRecord, storedRecord);
+    const latestId = this.#getLastAuditEntryId([...serverEntries, ...entries]);
+    const audit = updateAuditWith(changed, { id: recordId, entries: serverEntries } as AuditOf<MXDBRecord>, () => auditor.generateUlidAfter(latestId), storedRecord, this.#logger);
+    const mergedEntries = auditor.entriesOf(audit) as AuditEntry[];
+    return mergedEntries.length > serverEntries.length ? mergedEntries : undefined;
   }
 
   #getLastAuditEntryId(entries: AuditEntry[]): string {

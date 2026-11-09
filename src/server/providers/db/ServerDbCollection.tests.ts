@@ -851,6 +851,11 @@ describe('ServerDbCollection', () => {
       await col.upsert(makeItem({ id: 'au-4', name: 'Third' }), { resetAudit: true });
 
       await waitForAuditTypes(col, 'au-4', [AuditEntryType.Created]);
+      // Marked as a reset, so no device's entry from before it can change the record (sc-4321); an ordinary start is not.
+      expect(((await col.getAudit('au-4'))!.entries[0] as { reset?: true }).reset).toBe(true);
+      await col.upsert(makeItem({ id: 'au-4b', name: 'Plain' }));
+      await waitForAuditTypes(col, 'au-4b', [AuditEntryType.Created]);
+      expect(((await col.getAudit('au-4b'))!.entries[0] as { reset?: true }).reset).toBeUndefined();
     });
 
     it('starts an audit for a stored record that never had one', async () => {
@@ -977,6 +982,70 @@ describe('ServerDbCollection', () => {
 
       const deleted = (await col.getAudit('au-18'))?.entries.find(entry => entry.type === AuditEntryType.Deleted);
       expect(deleted).toMatchObject({ record: item });
+    });
+
+    // sc-4409: a record written many times kept every change, so its audit grew until MongoDB refused to save it.
+    describe('a record synced many times (sc-4409)', () => {
+      const LONG_TEXT = 'p'.repeat(4_000);
+      /** The record and audit after `count` alternating changes, each synced as the C2S path syncs it (the merged audit). */
+      async function syncChanges(col: ServerDbCollection<TestItem>, id: string, count: number, from = 0): Promise<void> {
+        for (let step = from + 1; step <= from + count; step += 1) {
+          const stored = await col.get(id);
+          const audit = (await col.getAudit(id)) ?? auditor.createAuditFrom(stored!);
+          const next = makeItem({ id, name: step % 2 === 0 ? `Problem ${step} ${LONG_TEXT}` : 'Fitted', value: step });
+          await col.sync({ updated: [next], updatedAudits: [auditor.updateAuditWith(next, audit, stored)], removedIds: [] });
+        }
+      }
+      const storedAuditSize = async (col: ServerDbCollection<TestItem>, id: string): Promise<number> => JSON.stringify(await col.getAudit(id)).length;
+
+      it('keeps the stored audit flat after the first few dozen changes', async () => {
+        const col = await makeAudited();
+        const item = makeItem({ id: 'au-many', name: 'Fitted' });
+        await col.sync({ updated: [item], updatedAudits: [auditor.createAuditFrom(item)], removedIds: [] });
+
+        await syncChanges(col, item.id, 48);
+        const afterFewDozen = await storedAuditSize(col, item.id);
+        const sizes: number[] = [];
+        for (let round = 0; round < 4; round += 1) {
+          await syncChanges(col, item.id, 40, 48 + round * 40);
+          sizes.push(await storedAuditSize(col, item.id));
+        }
+
+        expect(Math.max(...sizes)).toBeLessThanOrEqual(afterFewDozen * 1.5);
+        expect(auditor.createRecordFrom((await col.getAudit(item.id))!)).toEqual(await col.get(item.id));
+      }, 120_000);
+
+      it('stores nothing for a write that changes nothing, and says so', async () => {
+        const col = await makeAudited();
+        const item = makeItem({ id: 'au-same', name: 'Fitted' });
+        await col.sync({ updated: [item], updatedAudits: [auditor.createAuditFrom(item)], removedIds: [] });
+        await syncChanges(col, item.id, 3);
+        const stored = (await col.get(item.id))!;
+        const before = await col.getAudit(item.id);
+
+        const results: unknown[] = [];
+        for (let resend = 0; resend < 100; resend += 1) {
+          // The device's own entry for "the same again": a change the server's copy does not need.
+          const audit = { id: item.id, entries: [...before!.entries, { type: AuditEntryType.Updated, id: auditor.generateUlid(), ops: [] }] };
+          results.push(...await col.sync({ updated: [{ ...stored }], updatedAudits: [audit as never], removedIds: [] }));
+        }
+
+        expect([await col.getAudit(item.id), results.every(result => (result as { isUnchanged?: boolean }).isUnchanged === true)]).toEqual([before, true]);
+      }, 60_000);
+
+      it('attributes the folded history to the last person who changed the record', async () => {
+        const col = await makeAudited();
+        const item = makeItem({ id: 'au-person', name: 'Fitted' });
+        // Created by the server (a seed), changed twice by a fitter, then many times by the server again.
+        await col.sync({ updated: [item], updatedAudits: [auditor.createAuditFrom(item)], removedIds: [] });
+        mockAuthenticatedUser.mockReturnValue({ id: 'fitter-1' });
+        await syncChanges(col, item.id, 2);
+        mockAuthenticatedUser.mockReturnValue(undefined);
+        await syncChanges(col, item.id, 60, 2);
+
+        const [snapshot] = (await col.getAudit(item.id))!.entries;
+        expect([snapshot!.type, snapshot!.userId]).toEqual([AuditEntryType.Created, 'fitter-1']);
+      }, 60_000);
     });
   });
 

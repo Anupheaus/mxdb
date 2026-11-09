@@ -10,6 +10,9 @@ import { auditor } from '../../../common';
 import type { AnyAuditOf, ServerAuditOf } from '../../../common';
 import { normaliseFilterConditions } from '../../../common/filters';
 import { toServerAuditOf } from '../../audit/toServerAuditOf';
+import { compactServerAudit } from '../../audit/compactServerAudit';
+import { MXDB_SYSTEM_USER_ID } from '../../audit/systemUserId';
+import { hashRecord } from '../../../common/auditor/hash';
 import { runBeforeUpsertHook } from '../../collections/runBeforeUpsertHook';
 import { runBeforeDeleteHook } from '../../collections/runBeforeDeleteHook';
 import { getCollectionExtensions } from '../../collections/extendCollection';
@@ -89,6 +92,8 @@ export interface SyncWriteResult {
   id: string;
   /** Set when write permanently failed after all retries. */
   error?: string;
+  /** Set when the record was already stored exactly as given, so nothing was written (neither the record nor its audit). */
+  isUnchanged?: boolean;
 }
 
 export interface DbCollectionSyncProps<RecordType extends Record> {
@@ -433,11 +438,16 @@ export class ServerDbCollection<RecordType extends Record = Record> {
       let txnAttempts = 0;
       let lastWriteRecordsMs = 0;
       let lastWriteAuditMs = 0;
+      let isUnchanged = false;
       try {
         await this.#withRecordRetry(record.id, async () => {
           const wtT0 = performance.now();
           await session.withTransaction(async () => {
             txnAttempts += 1;
+            // A write that changes nothing the server holds (the same value sent again, or a change a hook put back) is
+            // not stored: its entries would only grow the record's history.
+            isUnchanged = await this.#isStoredAsIs(record, session);
+            if (isUnchanged) return;
             const writeRecT0 = performance.now();
             await this.#writeRecords([record], session, new Map([[record.id, audit ? auditor.getLastEntryId(audit) : undefined]]));
             lastWriteRecordsMs = Math.round(performance.now() - writeRecT0);
@@ -456,7 +466,7 @@ export class ServerDbCollection<RecordType extends Record = Record> {
         if (recordSyncMs >= 2_000) {
           this.#logger.warn('[sync] slow upsert', { collection: this.#collection.name, recordId: record.id, durationMs: recordSyncMs, txnAttempts });
         }
-        return { id: record.id };
+        return isUnchanged ? { id: record.id, isUnchanged } : { id: record.id };
       } catch (err) {
         this.#logger.error('Permanent write failure (upsert)', {
           collectionName: this.#collection.name,
@@ -702,7 +712,7 @@ export class ServerDbCollection<RecordType extends Record = Record> {
     const recordIds = records.ids();
     const existingAuditRecords = await this.#getAuditRecords(recordIds);
     const newAuditRecords = records.mapWithoutNull(record => {
-      if (resetAudit) return auditor.createAuditFrom(record);
+      if (resetAudit) return auditor.createResetAuditFrom(record);
 
       let existingAuditRecord: AnyAuditOf<RecordType> | undefined = existingAuditRecords.findById(record.id);
       const existingRecord = existingRecords.findById(record.id);
@@ -722,7 +732,8 @@ export class ServerDbCollection<RecordType extends Record = Record> {
           });
           // Instead of skipping the audit entirely, reset to a fresh audit based
           // on the current record so subsequent updates can be tracked correctly.
-          existingAuditRecord = auditor.createAuditFrom(existingRecord);
+          // A history started again: no client entry from before it may change the record (sc-4321).
+          existingAuditRecord = auditor.createResetAuditFrom(existingRecord);
         } else if (!is.deepEqual(existingRecordFromAudit, existingRecord)) {
           existingAuditRecord = auditor.updateAuditWith(
             existingRecord,
@@ -844,7 +855,16 @@ export class ServerDbCollection<RecordType extends Record = Record> {
     } catch {
       // No socket context (e.g. background job)
     }
-    return '__mxdb_system__';
+    return MXDB_SYSTEM_USER_ID;
+  }
+
+  /** Whether the live record is stored exactly as `record` already, judged by the stored content hash (`_meta.hash`). */
+  async #isStoredAsIs(record: RecordType, session: ClientSession): Promise<boolean> {
+    const collection = await this.#getCollection();
+    const stored = await collection.findOne({ _id: record.id as any }, { projection: { _meta: 1 }, session });
+    const storedHash = (stored as { _meta?: { hash?: string } } | null)?._meta?.hash;
+    if (storedHash == null) return false;
+    return storedHash === await hashRecord(dbUtils.deserialize(dbUtils.serialize(record)) as Record);
   }
 
   async #writeRecords(records: RecordType[], session?: ClientSession, lastAuditEntryIds?: Map<string, string | undefined>) {
@@ -872,11 +892,12 @@ export class ServerDbCollection<RecordType extends Record = Record> {
     if (records.length === 0) return;
     const collection = await this.#getAuditCollection();
     const actingUserId = this.#getActingUserId();
+    // Every audit is written here, so here is where each record's history is kept bounded, however often it is written.
     const serverAudits = records.map(a =>
-      toServerAuditOf(a, actingUserId, {
+      compactServerAudit(toServerAuditOf(a, actingUserId, {
         deleteSnapshots: writeOpts?.deleteSnapshots,
         logger: this.#logger,
-      }),
+      }), this.#logger),
     );
     const bwT0 = performance.now();
     try {

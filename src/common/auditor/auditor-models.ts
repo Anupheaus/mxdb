@@ -48,6 +48,38 @@ export interface AuditCommonEntry {
 export interface AuditCreatedEntry<RecordType extends Record = Record> extends AuditCommonEntry {
   type: AuditEntryType.Created;
   record: RecordType;
+  /** Set only on a server audit's first entry when older entries were folded into it (see {@link AuditCompaction}). */
+  compaction?: AuditCompaction;
+  /**
+   * Set only by the server, on the first entry of an audit it started again from the stored record (`upsert(..., { resetAudit:
+   * true })`, or a repair of an audit that no longer replays): the history before it was cleared on purpose, so no client
+   * entry from before it may change the record (sc-4321). A client never sets it; the receiver drops one a client sends.
+   */
+  reset?: true;
+}
+
+/** The newest entry that wrote a path (or replaced it whole), among the entries a compaction folded away. */
+export interface AuditPathClock {
+  /** Dot-notation path, as in {@link AuditOperation.path}. */
+  path: string;
+  /** ULID of the newest folded entry that wrote it. */
+  id: string;
+}
+
+/**
+ * What a compacted audit still knows about the entries folded into its first entry, so a change a device made before
+ * them (offline, or a backlog) is still judged last-write-wins against them, path by path, instead of being lost.
+ * Server-only: a server audit's history is kept bounded by folding its oldest entries into one `Created` snapshot.
+ */
+export interface AuditCompaction {
+  /** ULID of the `Created` entry the history began with: an entry older than it is dropped, as after an audit reset. */
+  historyStart: string;
+  /**
+   * Per path, the newest folded entry that wrote it. To stay bounded, the oldest clocks are folded into their parent path
+   * (coverage only widens inside the part of the record that churned), and a top-level clock for a key the record does not
+   * hold is dropped. A path no clock covers was never written by a folded entry that still matters.
+   */
+  clocks: AuditPathClock[];
 }
 
 export interface AuditUpdateEntry extends AuditCommonEntry {

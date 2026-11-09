@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import '@anupheaus/common'; // ensure Object.clone and other extensions are installed
 import type { Logger } from '@anupheaus/common';
-import { auditor, AuditEntryType } from '../auditor';
+import { auditor, AuditEntryType, type AuditEntry } from '../auditor';
 import {
   ServerReceiver,
   ServerDispatcher,
@@ -340,11 +340,12 @@ describe('ServerReceiver', () => {
   it('drops a client\'s entries from before a reset audit, so an offline device\'s older edit never returns the old values', async () => {
     const { sd } = makeSD();
     const original = { id: 'r1', name: 'Casey Customer' };
-    // The device's edit was made offline, before the server rewrote the record with `resetAudit`.
-    const deviceEdit = auditor.updateAuditWith({ ...original, name: 'Casey C. Customer' }, auditor.createAuditFrom(original))
-      .entries.filter(entry => entry.type === AuditEntryType.Updated);
+    // The device created the record and edited it offline, before the server rewrote it with `resetAudit`. It sends its whole
+    // audit, its own `Created` included, as the real client does (sc-4321 QA 1).
+    const deviceEdit = auditor.updateAuditWith({ ...original, name: 'Casey C. Customer' }, auditor.createAuditFrom(original)).entries;
+    expect(deviceEdit.map(({ type }) => type)).toEqual([AuditEntryType.Created, AuditEntryType.Updated]);
     const reset = { id: 'r1', name: 'Anonymised customer #1' };
-    const resetAudit = auditor.createAuditFrom(reset);
+    const resetAudit = auditor.createResetAuditFrom(reset);
     const onRetrieve = vi.fn().mockResolvedValue([{ collectionName: 'items', records: [{ record: reset, audit: resetAudit.entries }] }] satisfies MXDBRecordStates);
     const onUpdate = vi.fn().mockResolvedValue([]);
     const sr = new ServerReceiver(mockLogger, { onRetrieve, onUpdate, serverDispatcher: sd });
@@ -358,7 +359,7 @@ describe('ServerReceiver', () => {
   it('still merges a client\'s entries made after a reset audit', async () => {
     const { sd } = makeSD();
     const reset = { id: 'r1', name: 'Anonymised customer #1' };
-    const resetAudit = auditor.createAuditFrom(reset);
+    const resetAudit = auditor.createResetAuditFrom(reset);
     const laterEdit = auditor.updateAuditWith({ ...reset, name: 'Renamed' }, resetAudit).entries.filter(entry => entry.type === AuditEntryType.Updated);
     const onRetrieve = vi.fn().mockResolvedValue([{ collectionName: 'items', records: [{ record: reset, audit: resetAudit.entries }] }] satisfies MXDBRecordStates);
     const onUpdate = vi.fn().mockResolvedValue([{ collectionName: 'items', successfulRecordIds: ['r1'] }]);
@@ -368,6 +369,68 @@ describe('ServerReceiver', () => {
 
     const [persisted] = (onUpdate.mock.calls[0]![0] as MXDBRecordStates)[0]!.records;
     expect(persisted && 'record' in persisted ? persisted.record : undefined).toEqual({ id: 'r1', name: 'Renamed' });
+  });
+
+  // sc-4409: the server folds a record's oldest entries into one snapshot; a device's older offline edit is still merged.
+  it('merges a device\'s offline edit made before a compacted history into its snapshot', async () => {
+    const { sd } = makeSD();
+    const [historyStart, deviceEditId, snapshotId] = [auditor.generateUlid(), auditor.generateUlid(), auditor.generateUlid()];
+    const stored = { id: 'r1', name: 'Fitted', notes: 'none' };
+    const compactedAudit = [{ type: AuditEntryType.Created, id: snapshotId, record: stored, compaction: { historyStart, clocks: [{ path: 'name', id: snapshotId }] } }];
+    const onRetrieve = vi.fn().mockResolvedValue([{ collectionName: 'items', records: [{ record: stored, audit: compactedAudit as never }] }] satisfies MXDBRecordStates);
+    const onUpdate = vi.fn().mockResolvedValue([{ collectionName: 'items', successfulRecordIds: ['r1'] }]);
+    const sr = new ServerReceiver(mockLogger, { onRetrieve, onUpdate, serverDispatcher: sd });
+
+    // The device changed both fields offline; the name was changed again on the server after it.
+    const deviceEdit = { type: AuditEntryType.Updated, id: deviceEditId, ops: [{ type: 1, path: 'notes', value: 'gap at top' }, { type: 1, path: 'name', value: 'Problem' }] };
+    await sr.process([{ collectionName: 'items', records: [{ id: 'r1', hash: 'mock-hash-r1', entries: [deviceEdit as never] }] }]);
+
+    const [persisted] = (onUpdate.mock.calls[0]![0] as MXDBRecordStates)[0]!.records;
+    expect(persisted && 'record' in persisted ? persisted.record : undefined).toEqual({ id: 'r1', name: 'Fitted', notes: 'gap at top' });
+  });
+
+  describe('a client claiming an entry the server never stored (sc-4409)', () => {
+    /** Lets the SD dispatch, then reports which record ids reached the client. */
+    const dispatchedIds = async (onDispatch: ReturnType<typeof vi.fn>): Promise<string[]> => {
+      for (let tick = 0; tick < 20; tick += 1) await Promise.resolve();
+      return onDispatch.mock.calls.flatMap(([payload]) => (payload as MXDBRecordCursors).flatMap(({ records }) => records.map(cursor => ('record' in cursor ? cursor.record.id : cursor.recordId))));
+    };
+    // Ids in time order: the server's last entry, another device's later change (its clock behind), the client's own entry.
+    const ids = () => { const [serverLast, otherDevice, clientEntry] = [auditor.generateUlid(), auditor.generateUlid(), auditor.generateUlid()]; return { serverLast, otherDevice, clientEntry }; };
+    /** The server holding the record as created at `serverLast`. */
+    const storedAt = (serverLast: string): MXDBRecordStates => {
+      const stored = makeRecord('r1', 'Fitted');
+      return [{ collectionName: 'items', records: [{ record: stored, audit: [{ type: AuditEntryType.Created, id: serverLast, record: stored }] }] }];
+    };
+
+    it('still receives a later change after a write the server stored nothing for', async () => {
+      const { sd, onDispatch } = makeSD();
+      const { serverLast, otherDevice, clientEntry } = ids();
+      const onRetrieve = vi.fn().mockResolvedValue(storedAt(serverLast));
+      const onUpdate = vi.fn().mockResolvedValue([{ collectionName: 'items', successfulRecordIds: ['r1'], unchangedRecordIds: ['r1'] }]);
+      const sr = new ServerReceiver(mockLogger, { onRetrieve, onUpdate, serverDispatcher: sd });
+      const entries: AuditEntry[] = [{ type: AuditEntryType.Branched, id: serverLast }, { type: AuditEntryType.Updated, id: clientEntry, ops: [] }];
+      await sr.process([{ collectionName: 'items', records: [{ id: 'r1', hash: 'mock-hash-r1', entries }] }]);
+      onDispatch.mockClear();
+
+      sd.push([{ collectionName: 'items', records: [{ record: makeRecord('r1', 'Problem'), lastAuditEntryId: otherDevice, hash: 'other-hash' } as never] }], false);
+
+      expect(await dispatchedIds(onDispatch)).toEqual(['r1']);
+    });
+
+    it('still receives a later change after claiming an anchor the server never stored', async () => {
+      const { sd, onDispatch } = makeSD();
+      const { serverLast, otherDevice, clientEntry } = ids();
+      const onRetrieve = vi.fn().mockResolvedValue(storedAt(serverLast));
+      const onRetrieveMeta = vi.fn().mockResolvedValue([{ collectionName: 'items', records: [{ id: 'r1', hash: 'mock-hash-r1', lastAuditEntryId: serverLast }] }]);
+      const sr = new ServerReceiver(mockLogger, { onRetrieve, onRetrieveMeta, onUpdate: vi.fn().mockResolvedValue([]), serverDispatcher: sd });
+      await sr.process([{ collectionName: 'items', records: [{ id: 'r1', hash: 'mock-hash-r1', entries: [{ type: AuditEntryType.Branched, id: clientEntry }] }] }]);
+      onDispatch.mockClear();
+
+      sd.push([{ collectionName: 'items', records: [{ record: makeRecord('r1', 'Problem'), lastAuditEntryId: otherDevice, hash: 'other-hash' } as never] }], false);
+
+      expect(await dispatchedIds(onDispatch)).toEqual(['r1']);
+    });
   });
 
   it('handles branched-only active record — seeds filter, no onUpdate', async () => {

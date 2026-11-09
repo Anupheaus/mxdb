@@ -63,6 +63,11 @@ export interface MXDBSyncEngineResponseItem {
    * client as usual. Absent ⇒ nothing amended with a note, and from a server older than mxdb 0.2.8.
    */
   amendedRecords?: MXDBSyncAmendedRecord[];
+  /**
+   * Server-internal (from `onUpdate` to the `ServerReceiver`, never sent to a client): of `successfulRecordIds`, the
+   * records whose write changed nothing the server holds, so it stored nothing for them (its history is as it was).
+   */
+  unchangedRecordIds?: string[];
 }
 
 /** A synced record the server saved but partly amended, and the hook's note for the user. */
