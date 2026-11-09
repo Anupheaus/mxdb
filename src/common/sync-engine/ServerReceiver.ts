@@ -3,7 +3,8 @@ import { auditor, AuditEntryType } from '../auditor';
 import { replayHistoryEndState } from '../auditor/replay';
 import { hashRecord } from '../auditor/hash';
 import { generateAnchorUlid } from '../auditor/time';
-import type { AuditEntry } from '../auditor';
+import { updateAuditWith } from '../auditor/api';
+import type { AuditCreatedEntry, AuditEntry, AuditOf } from '../auditor';
 import {
   type ClientDispatcherRequest,
   type MXDBRecordStatesRequest,
@@ -228,6 +229,13 @@ export class ServerReceiver {
           }
 
           const serverStateForEntries = colServerMap.get(recordId);
+          // sc-4321: a create made before another device's create of the same record reached the server.
+          const lateCreateEntries = this.#entriesWithLateSecondCreate(recordId, rec.entries, serverStateForEntries);
+          const lateCreateRecord = lateCreateEntries != null ? replayHistoryEndState(lateCreateEntries, undefined, this.#logger).live : undefined;
+          if (lateCreateEntries != null && lateCreateRecord != null) {
+            pendingPersist.push({ collectionName: colName, recordId, mergedEntries: lateCreateEntries, liveRecord: lateCreateRecord, clientHash: rec.hash, serverState: serverStateForEntries });
+            continue;
+          }
           const strippedEntries = this.#entriesSinceHistoryStart(
             rec.entries.filter(e => e.type !== AuditEntryType.Branched),
             serverStateForEntries,
@@ -685,6 +693,42 @@ export class ServerReceiver {
     // (folded into it by `auditor.merge`) back to where the history really began.
     const historyStart = first.compaction?.historyStart ?? first.id;
     return entries.filter(entry => entry.id >= historyStart);
+  }
+
+  /**
+   * sc-4321 — the server's audit with a late second create's change appended, or undefined when the client's entries are not
+   * one (or change nothing), and are merged as usual.
+   *
+   * Two devices can create the same record offline. A create that reaches the server after the other's is merged as an edit
+   * of the stored record: the create's own entry is not merged (the first create stays the record's start) and every change
+   * the device made after it is (`auditor.merge`). A create made BEFORE the stored one began would instead be dropped with
+   * every change after it, as {@link #entriesSinceHistoryStart} drops any entry older than the server's history: the change
+   * the device made would be lost without a word, and no before-write hook would ever see it.
+   *
+   * So when the client's entries hold a `Created` older than the start of the server's history for a live record, the
+   * device's changes since its create — its record as it ends, against its own created record — are laid over the stored
+   * record as ONE `Updated` entry, dated after every entry the server and the device hold. The result is exactly what the
+   * same entries give when the create sorts after the stored one, and the before-write hooks judge it like any other write,
+   * so an app can refuse a change made without seeing the other device's. A device that created and then deleted the record,
+   * a stored record that is deleted, and a change the stored record already has leave the record as it is.
+   */
+  #entriesWithLateSecondCreate(recordId: string, clientEntries: AuditEntry[], serverState: MXDBActiveRecordState | MXDBDeletedRecordState | undefined): AuditEntry[] | undefined {
+    if (serverState == null || !isActiveRecordState(serverState)) return undefined;
+    const serverEntries = serverState.audit as AuditEntry[];
+    const first = serverEntries[0];
+    if (first == null || first.type !== AuditEntryType.Created) return undefined;
+    const historyStart = first.compaction?.historyStart ?? first.id;
+    const entries = clientEntries.filter(entry => entry.type !== AuditEntryType.Branched);
+    const clientCreate = entries.find(entry => entry.type === AuditEntryType.Created);
+    if (clientCreate == null || clientCreate.id >= historyStart) return undefined;
+    const clientRecord = replayHistoryEndState(entries, undefined, this.#logger).live;
+    const storedRecord = replayHistoryEndState(serverEntries, undefined, this.#logger).live;
+    if (clientRecord == null || storedRecord == null) return undefined;
+    const changed = auditor.rebaseRecord((clientCreate as AuditCreatedEntry).record, clientRecord, storedRecord);
+    const latestId = this.#getLastAuditEntryId([...serverEntries, ...entries]);
+    const audit = updateAuditWith(changed, { id: recordId, entries: serverEntries } as AuditOf<MXDBRecord>, () => auditor.generateUlidAfter(latestId), storedRecord, this.#logger);
+    const mergedEntries = auditor.entriesOf(audit) as AuditEntry[];
+    return mergedEntries.length > serverEntries.length ? mergedEntries : undefined;
   }
 
   #getLastAuditEntryId(entries: AuditEntry[]): string {

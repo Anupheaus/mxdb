@@ -475,6 +475,86 @@ describe('handleClientToServerSync — collection before-write hooks', () => {
   });
 });
 
+// ─── Two devices create the same record offline (sc-4321) ─────────────────────
+
+describe('handleClientToServerSync — two devices create the same record offline (sc-4321)', () => {
+  const SOMEONE_ELSE = 'Someone else had already changed it.';
+  /** Device B's create, stored first: `{ name: 'b', colour: 'red' }` at entry 3. */
+  const STORED_B: Item = { id: 'i1', name: 'b', colour: 'red' };
+  /** What device A meant, laid over B's record: A's name, B's colour (A never set one). */
+  const A_OVER_B: Item = { id: 'i1', name: 'a', colour: 'red' };
+  const bare = (sequence: number) => createdEntry({ id: 'i1' }, sequence);
+
+  let harness: Harness;
+
+  beforeEach(() => {
+    harness = installHarness({ definition: hookedItemsCollection });
+    hooks.onBeforeUpsert.mockReset().mockResolvedValue(undefined);
+    hooks.onBeforeDelete.mockReset().mockResolvedValue(undefined);
+    harness.seed(STORED_B, [createdEntry(STORED_B, 3)]);
+  });
+
+  /** What A's sync led to: the records the hook judged, what the client was told, and what is stored. */
+  const syncA = async (entries: AuditEntry[]) => {
+    const response = await handleClientToServerSync(request(HOOKED, 'i1', entries, 'device-a-hash'));
+    return {
+      judged: hooks.onBeforeUpsert.mock.calls.map(([{ records }]) => records.map(record => ({ ...record }))),
+      rejected: response.flatMap(({ rejectedRecords = [] }) => rejectedRecords),
+      stored: harness.collection.records.get('i1'),
+    };
+  };
+  const refuse = (): void => { hooks.onBeforeUpsert.mockRejectedValue(new ValidationError(SOMEONE_ELSE, 'name')); };
+
+  // Device A's entries, by when A made them: before B's create (1, 2) — B's had not reached the server — or after it (4, 5).
+  // Expected outcomes are written out by hand: A's change is always judged by the hook, wherever its create sorts.
+  const changedRows: [string, AuditEntry[]][] = [
+    ['A created and changed it before B created it (C2b)', [bare(1), replaceEntry(2, 'name', 'a')]],
+    ['A created and changed it after B created it (C2a)', [bare(4), replaceEntry(5, 'name', 'a')]],
+    ['A created it before B, and changed it after B created it', [bare(1), replaceEntry(4, 'name', 'a')]],
+  ];
+
+  it.each(changedRows)('%s — the hook judges A\'s change on top of B\'s record, and its refusal reaches A', async (_row, entries) => {
+    refuse();
+
+    expect(await syncA(entries)).toEqual({ judged: [[A_OVER_B]], rejected: [{ id: 'i1', reason: SOMEONE_ELSE, kind: 'validation' }], stored: STORED_B });
+  });
+
+  it.each(changedRows)('%s — when the hook lets it through, A\'s change lands on B\'s record', async (_row, entries) => {
+    expect(await syncA(entries)).toEqual({ judged: [[A_OVER_B]], rejected: [], stored: A_OVER_B });
+    expect(auditor.createRecordFrom(harness.collection.audits.get('i1')!), 'the audit replays to what is stored').toEqual(A_OVER_B);
+  });
+
+  const unchangedRows: [string, AuditEntry[]][] = [
+    ['A only created it, before B (a create\'s own content never overwrites the first create, wherever it sorts)', [createdEntry({ id: 'i1', name: 'a' }, 1)]],
+    ['A only created it, after B', [createdEntry({ id: 'i1', name: 'a' }, 4)]],
+    ['A changed it to what B already holds', [bare(1), replaceEntry(2, 'name', 'b')]],
+    ['A created, changed and deleted it, all before B', [bare(0), replaceEntry(1, 'name', 'a'), deletedEntry(2)]],
+  ];
+
+  it.each(unchangedRows)('%s — nothing to judge, nothing refused, B\'s record kept', async (_row, entries) => {
+    refuse();
+
+    expect(await syncA(entries)).toEqual({ judged: [], rejected: [], stored: STORED_B });
+  });
+
+  it('A resends its landed change (its acknowledgement was lost) — nothing is judged again and nothing changes', async () => {
+    const entries = [bare(1), replaceEntry(2, 'name', 'a')];
+    await syncA(entries);
+    const auditAfterFirst = harness.collection.audits.get('i1')!.entries.length;
+    hooks.onBeforeUpsert.mockClear();
+
+    expect(await syncA(entries)).toEqual({ judged: [], rejected: [], stored: A_OVER_B });
+    expect(harness.collection.audits.get('i1')!.entries).toHaveLength(auditAfterFirst);
+  });
+
+  it('A\'s change is dated after every entry, B\'s and its own, so the audit replays in the order it was taken', async () => {
+    await syncA([bare(1), replaceEntry(2, 'name', 'a')]);
+
+    const ids = harness.collection.audits.get('i1')!.entries.map(({ id }) => id);
+    expect([ids[0], ids.length, ids.at(-1)! > entryId(3)]).toEqual([entryId(3), 2, true]);
+  });
+});
+
 // ─── The collection's write lock (sc-2402) ────────────────────────────────────
 
 interface Deferred {
