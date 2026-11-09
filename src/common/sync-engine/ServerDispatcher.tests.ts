@@ -101,6 +101,35 @@ describe('ServerDispatcher', () => {
       await vi.runAllTimersAsync();
       expect(onDispatch).toHaveBeenCalledOnce();
     });
+
+    // sc-3577. A record the server holds with no audit (written straight to the database, or in a disableAudit collection)
+    // has no audit position: its cursor carries an empty `lastAuditEntryId`, while a client anchors its copy on a ULID of
+    // its own (`lastAuditEntryId || ulid()`) and claims that anchor when it reconnects. Such a cursor is never older than
+    // the client's copy: it is sent when the content differs, and only then. The expected outcomes are the rule written
+    // out, not read from the implementation; every pairing of authoritative / change-stream and same / other content.
+    describe.each([true, false])('an active cursor for a record the client holds (authoritative push: %s)', addToFilter => {
+      const CLIENT_ANCHOR = '01KA0000000000000000000000';
+      const cases: [label: string, cursor: { hash: string; lastAuditEntryId: string }, isSent: boolean][] = [
+        ['no audit position, other content (the server\'s copy changed)', { hash: 'new-hash', lastAuditEntryId: '' }, true],
+        ['no audit position, the same content', { hash: 'client-hash', lastAuditEntryId: '' }, false],
+        ['a later audit position, other content', { hash: 'new-hash', lastAuditEntryId: '01KB0000000000000000000000' }, true],
+        ['an earlier audit position, other content (stale)', { hash: 'new-hash', lastAuditEntryId: '01K90000000000000000000000' }, false],
+        ['the same audit position and content', { hash: 'client-hash', lastAuditEntryId: CLIENT_ANCHOR }, false],
+        ['the same audit position, other content', { hash: 'new-hash', lastAuditEntryId: CLIENT_ANCHOR }, true],
+      ];
+
+      it.each(cases)('%s', async (_label, { hash, lastAuditEntryId }, isSent) => {
+        const onDispatch = vi.fn().mockResolvedValue([{ collectionName: 'items', successfulRecordIds: ['r1'] }]);
+        const sd = new ServerDispatcher(mockLogger, { onDispatch });
+        sd.updateFilter([{ collectionName: 'items', records: [{ id: 'r1', hash: 'client-hash', lastAuditEntryId: CLIENT_ANCHOR }] }]);
+
+        sd.push([{ collectionName: 'items', records: [makeActiveCursor('r1', hash, lastAuditEntryId)] }], addToFilter);
+        await vi.runAllTimersAsync();
+
+        if (isSent) expect(onDispatch).toHaveBeenCalledExactlyOnceWith([{ collectionName: 'items', records: [expect.objectContaining({ hash, lastAuditEntryId })] }]);
+        else expect(onDispatch).not.toHaveBeenCalled();
+      });
+    });
   });
 
   describe('filter management', () => {

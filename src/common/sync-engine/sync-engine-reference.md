@@ -228,6 +228,7 @@ All queued batches are squashed into a single per-collection map of tagged curso
         - Filter record is pending deletion: re-send the pending delete instead.
         - Filter `hash` + `lastAuditEntryId` match cursor: **skip** (client up to date).
         - Cursor `lastAuditEntryId` < filter `lastAuditEntryId`: **drop** (stale — prevents retry loops on outdated cursors).
+        - **Empty cursor `lastAuditEntryId`** (a record the server holds with no audit: a `disableAudit` collection, or a record written straight to the database): it has no audit position, while the client anchors its copy on a ULID of its own (6.3) and claims that anchor when it reconnects. Never stale: **skip** when the `hash` matches, otherwise **send**. Before sc-3577 it was dropped as stale after a reconnect, so a change to such a record never reached a client that had held it while offline.
         - Otherwise: send.
 3. If the fresh request is empty, trim queue and return.
 4. Set `#inFlight = true`, call `onDispatch(freshRequest)`.
@@ -446,6 +447,8 @@ If a regression causes a stress-test flake, check if one of these unit tests wou
 | Client Created on empty server must not push delete | `ServerReceiver.tests.ts` | "does not push delete for client Created record when server has no state" |
 | Orphan Updated without hash is skipped (no push) | `ServerReceiver.tests.ts` | "skips orphan Updated record without hash when server has no state" |
 | Edit to a live record with no audit is kept, not persisted as a deletion | `ServerReceiver.tests.ts` | "keeps an edit to a record that has no audit, anchoring it on the stored record" |
+| An empty-anchor cursor is never stale, and is sent only when the content differs | `ServerDispatcher.tests.ts` | "an active cursor for a record the client holds" (table) |
+| A record written without mxdb reaches a client online and after a reconnect | `tests/e2e/crud-operations/directWrites.crud.e2e.tests.ts` | every case |
 
 ---
 
