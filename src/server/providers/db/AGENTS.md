@@ -11,7 +11,9 @@ MongoDB persistence layer: connection, collection CRUD with audit, change stream
 ### Database
 - `ServerDb.ts` — `ServerDb` — `MongoClient` wrapper; creates `ServerDbCollection` per config, opens change stream, fans out change events per collection. Constructor takes a `watch?: boolean` prop (default **true**); when `false`, the change-stream watcher is never started (`#startWatching` is skipped after connect) — for write-only callers such as a controller writing into a tenant DB whose owning server already watches it
 - `ServerDbCollection.ts` — per-collection CRUD with audit: `get`, `getAll`, `find`, `query`, `upsert`, `remove`, `sync` (sync-engine write path), `distinct`, `clear`. `upsert` / `remove` / `clear` run the collection's `onBefore*` hooks (and `clear` its `onAfterClear`) before persisting; `sync` does not — the C2S action runs them on the batch first (see [../../collections/AGENTS.md](../../collections/AGENTS.md))
-- `ServerDbCollectionEvents.ts` — debounced change-stream fan-out; accumulates events within `changeStreamDebounceMs`, runs `onAfter*` hooks, then notifies the socket layer via registered callbacks
+- `ServerDbCollectionEvents.ts` — debounced change-stream fan-out; accumulates events within `changeStreamDebounceMs`, hands the batch's stored documents to `onStoredDocuments` (the stale-hash check below), runs `onAfter*` hooks, then notifies the socket layer via registered callbacks
+- `clearStaleStoredHashes.ts` — after a change, removes a stored `_meta.hash` that no longer describes the document (left by a write that bypassed mxdb), conditional on it still being stored; see "Writes that bypass mxdb" below
+- `isStoredMetaOnlyChange.ts` — whether a change-stream `update` touched only `_meta` (such a change is not reported to hooks or clients)
 
 ### Context
 - `DbContext.ts` — `AsyncLocalStorage`-based context
@@ -37,6 +39,7 @@ Change stream lifecycle:
 1. `ServerDb` opens a MongoDB change stream on startup.
 2. Each insert/update/delete event routes to the matching `ServerDbCollectionEvents` instance.
 3. `ServerDbCollectionEvents` accumulates events within `changeStreamDebounceMs` (default 20ms), then:
+   0. Clears any stale stored hash among the batch's documents (`onStoredDocuments` → `clearStaleStoredHashes`).
    a. Runs `onAfterUpsert` / `onAfterDelete` hooks for all batched records on an EMPTY async-context chain (`runOutsideAnyConnection`), with only the logger ambient when the `ServerDb` was built, scoped (`runInDbScope` + `setDb`) to the `ServerDb` that saw the change. The driver emits changes in whatever context the stream was started in — for a pooled tenant database, the first connection routed to it (with the controller as its ambient database) — so without the reset a hook's `useAuthentication()`/`useClient()` would see that unrelated member (sc-662), and without the scope its `useDb()`/`useCollection()` would reach the wrong database (sc-621). The `onChange` callbacks that follow are NOT reset: each runs in the context it was registered from (a connection's S2C fan-out needs its own connection).
    b. Notifies registered callbacks (which trigger `ServerDispatcher.push` for each connected client).
 4. This two-step ensures clients are notified only after cascade effects have been applied.
@@ -53,6 +56,7 @@ Change stream lifecycle:
 - **`changeStreamDebounceMs` trades latency for throughput** — lower values dispatch faster but increase per-event load. Default 20ms.
 - **`AsyncLocalStorage` context must be active** for `useDb()` to work. If you see "no ServerDb in context" in tests, ensure the call is wrapped in `provideDb`.
 - **`watch: false` means no change stream at all** — inserts/updates/deletes on that `ServerDb` never fire `onAfter*` extension hooks and never notify connected clients. Only use it for a `ServerDb` whose collection(s) are already watched elsewhere (e.g. the owning server's own default `ServerDb`), and reuse that one `ServerDb` instance via `withDb()` rather than constructing a fresh watch-free connection per call.
+- **Writes that bypass mxdb (sc-3577)** — a fix by hand or a migration that writes a live document with the driver. The stream is watched with `fullDocument: 'updateLookup'`, so an `update` (`$set`) carries its document and reaches hooks and clients like any write (mxdb's own writes are replaces). Such a write leaves `_meta.hash` describing the old content, and the C2S meta fast-path compares a reconnecting client's hash with it, so it would tell a client holding the old content that it is current: `clearStaleStoredHashes` removes it (only while that stale hash is still stored, so a later mxdb write is never undone), and the record is then compared in full. The follow-up `_meta`-only `update` is ignored (`isStoredMetaOnlyChange`). A write made while the server is stopped is not seen by the stream: such a script should `$unset: { _meta: '' }` on what it changes. The hash check costs one `hashRecord` per changed document.
 - **Change-stream log levels** — the driver resumes resumable errors itself and only emits `error` when it could not, so an `error` event logs at `error` unless it classifies as an expected transient failure (then `warn`). The watcher being restarted after a lost connection, or the stream closing while the `ServerDb` is not closing, logs `warn`.
 
 ## Related

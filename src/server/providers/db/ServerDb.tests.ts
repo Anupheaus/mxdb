@@ -11,6 +11,7 @@ import { extendCollection } from '../../collections/extendCollection';
 import { ServerDb } from './ServerDb';
 import { runInDbScope, setDb, useDb } from './DbContext';
 import type { ServerDbChangeEvent } from './server-db-models';
+import { dbUtils } from './db-transforms';
 
 // ─── Fake MongoDB driver (external boundary) ──────────────────────────────────
 //
@@ -29,6 +30,7 @@ function createFakeCollection(name: string) {
     createIndex: async () => name,
     dropIndex: async () => ({}),
     drop: vi.fn(async () => true),
+    updateOne: vi.fn(async (..._args: unknown[]) => ({ matchedCount: 1 })),
   };
 }
 
@@ -127,6 +129,13 @@ function makeServerDb({ collections = [], watch }: MakeServerDbProps = {}) {
   });
   const client = fakeMongo.clients.at(-1)!;
   return { serverDb, logger, client };
+}
+
+/** A live document as stored, with the content hash mxdb keeps beside it. */
+interface StoredDoc {
+  _id: string;
+  name?: string;
+  _meta: { hash: string };
 }
 
 /** Builds a change-stream document the way the Mongo driver delivers it. */
@@ -301,10 +310,10 @@ describe('ServerDb', () => {
   // ── change stream watcher ──────────────────────────────────────────────────
 
   describe('change stream watcher', () => {
-    it('watches the database with pre-images requested', async () => {
+    it('watches the database with pre-images requested and the current document looked up for an update', async () => {
       const { serverDb } = makeServerDb();
       await serverDb.getMongoDb();
-      expect(fakeMongo.db.watch).toHaveBeenCalledWith(expect.any(Array), { fullDocumentBeforeChange: 'whenAvailable' });
+      expect(fakeMongo.db.watch).toHaveBeenCalledWith(expect.any(Array), { fullDocument: 'updateLookup', fullDocumentBeforeChange: 'whenAvailable' });
     });
 
     it('does not watch the database when watch is false', async () => {
@@ -406,6 +415,7 @@ describe('ServerDb', () => {
       ['changes without a namespace', () => ({ operationType: 'insert', fullDocument: { _id: 'x', name: 'X' } })],
       ['changes with an unmapped operation type', collectionName => ({ operationType: 'drop', ns: { db: DB_NAME, coll: collectionName } })],
       ['updates whose document did not actually change', collectionName => changeEvent('update', collectionName, { _id: 'x', name: 'X' }, { fullDocumentBeforeChange: { _id: 'x', name: 'X' } })],
+      ['updates to the stored metadata alone', collectionName => changeEvent('update', collectionName, { _id: 'x', name: 'X' }, { updateDescription: { updatedFields: {}, removedFields: ['_meta.hash'] } })],
     ];
 
     it.each(ignoredChanges)('ignores %s', async (_label, buildChange) => {
@@ -416,6 +426,60 @@ describe('ServerDb', () => {
       await vi.advanceTimersByTimeAsync(DEBOUNCE_MS);
 
       expect(events).toEqual([]);
+    });
+
+    // A write that bypassed mxdb (a fix by hand, a migration) leaves the stored content hash describing the old content,
+    // and a reconnecting client holding the old content would be told it is up to date (sc-3577).
+    describe('a stored content hash left behind by a write that bypassed mxdb', () => {
+      /** Lets the batch go and waits until it is reported: the hash check (real hashing) runs before the report. */
+      const reportedChange = async (events: ServerDbChangeEvent[]): Promise<void> => {
+        await vi.advanceTimersByTimeAsync(DEBOUNCE_MS);
+        await vi.waitFor(() => expect(events).toHaveLength(1));
+      };
+      const storedHashOf = async (item: Item): Promise<string> => (await dbUtils.serializeWithMeta(item) as unknown as StoredDoc)._meta.hash;
+
+      it.each(['update', 'replace', 'insert'])('is cleared after a "%s", and only while it is still the stale one', async operationType => {
+        const collection = makeCollection();
+        const { events, emit } = await makeWatchingServerDb(collection);
+        const oldHash = await storedHashOf({ id: 'rec-1', name: 'Booked' });
+
+        emit(changeEvent(operationType, collection.name, { _id: 'rec-1', name: 'Cancelled', _meta: { hash: oldHash } } as StoredDoc));
+        await reportedChange(events);
+
+        expect(fakeMongo.db.collection(collection.name).updateOne).toHaveBeenCalledExactlyOnceWith({ _id: 'rec-1', '_meta.hash': oldHash }, { $unset: { '_meta.hash': '' } });
+        expect(events).toEqual([{ collectionName: collection.name, type: operationType === 'insert' ? 'insert' : 'update', records: [{ id: 'rec-1', name: 'Cancelled' }] }]);
+      });
+
+      it('is left alone when it still describes the content (every write mxdb makes)', async () => {
+        const collection = makeCollection();
+        const { events, emit } = await makeWatchingServerDb(collection);
+
+        emit(changeEvent('replace', collection.name, { _id: 'rec-1', name: 'Booked', _meta: { hash: await storedHashOf({ id: 'rec-1', name: 'Booked' }) } } as StoredDoc));
+        await reportedChange(events);
+
+        expect(fakeMongo.db.collection(collection.name).updateOne).not.toHaveBeenCalled();
+      });
+
+      it('is left alone on a document with no stored hash', async () => {
+        const collection = makeCollection();
+        const { events, emit } = await makeWatchingServerDb(collection);
+
+        emit(changeEvent('update', collection.name, { _id: 'rec-1', name: 'Cancelled' }));
+        await reportedChange(events);
+
+        expect(fakeMongo.db.collection(collection.name).updateOne).not.toHaveBeenCalled();
+      });
+
+      it('logs a failure to clear it, and still reports the change', async () => {
+        const collection = makeCollection();
+        const { events, emit, logger } = await makeWatchingServerDb(collection);
+        fakeMongo.db.collection(collection.name).updateOne.mockRejectedValueOnce(new Error('not primary'));
+
+        emit(changeEvent('update', collection.name, { _id: 'rec-1', name: 'Cancelled', _meta: { hash: 'stale' } } as StoredDoc));
+        await reportedChange(events);
+
+        expect(logger.warn).toHaveBeenCalledWith('[ServerDb] could not clear a stale stored hash', expect.objectContaining({ collectionName: collection.name, recordId: 'rec-1' }));
+      });
     });
 
     it('stops notifying a callback once it has unsubscribed', async () => {
