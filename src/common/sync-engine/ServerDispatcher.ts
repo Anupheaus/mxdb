@@ -369,11 +369,16 @@ export class ServerDispatcher {
             freshRecords.push({ recordId: id, lastAuditEntryId: filterRec.lastAuditEntryId });
           } else {
             const cursorHash = (cursor as unknown as { hash?: string }).hash;
-            if (filterRec.hash === cursorHash && filterRec.lastAuditEntryId === cursor.lastAuditEntryId) {
+            // A record the server holds with no audit (written straight to the database, or a disableAudit collection)
+            // has no audit position: its cursor's `lastAuditEntryId` is empty, while the client anchors its copy on a ULID
+            // of its own and claims that anchor on reconnect. Such a cursor is never older than the client's copy; it is
+            // current when the content matches (sc-3577: it was dropped as stale, so the change never reached the client).
+            const hasNoAuditPosition = cursor.lastAuditEntryId === '';
+            if (filterRec.hash === cursorHash && (hasNoAuditPosition || filterRec.lastAuditEntryId === cursor.lastAuditEntryId)) {
               skippedUpToDate++;
               continue;
             }
-            if (cursor.lastAuditEntryId < filterRec.lastAuditEntryId) {
+            if (!hasNoAuditPosition && cursor.lastAuditEntryId < filterRec.lastAuditEntryId) {
               skippedStale++;
               continue;
             }

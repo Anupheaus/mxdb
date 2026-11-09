@@ -11,6 +11,8 @@ import { is, type Logger, type Record, type Unsubscribe } from '@anupheaus/commo
 import { AsyncLocalStorage } from 'async_hooks';
 import { createMongoCommandLogging } from './mongoCommandLogging';
 import { classifyMongoFailure, type MongoFailureLike } from './classifyMongoError';
+import { clearStaleStoredHashes } from './clearStaleStoredHashes';
+import { isStoredMetaOnlyChange } from './isStoredMetaOnlyChange';
 
 interface Props {
   mongoDbName: string;
@@ -323,7 +325,9 @@ export class ServerDb {
     const isRestart = this.#changeStream != null;
     if (isRestart) this.#logger.warn('[ServerDb] changeStream restarting after the connection was lost');
     else this.#logger.info('[ServerDb] startWatching.begin');
-    const changeStream = this.#changeStream = db.watch([{ $project: { something: false } }], { fullDocumentBeforeChange: 'whenAvailable' });
+    // `updateLookup`: an `update` (a `$set` written without mxdb: a fix by hand, a migration) otherwise carries no
+    // document, and was dropped, so the change never reached a client (sc-3577). mxdb's own writes are replaces.
+    const changeStream = this.#changeStream = db.watch([{ $project: { something: false } }], { fullDocument: 'updateLookup', fullDocumentBeforeChange: 'whenAvailable' });
     // The driver resumes resumable errors itself and only emits 'error' when it could not, so a failure that is
     // not an expected transient one is an error: change notifications to clients have stopped.
     changeStream.on('error', err => {
@@ -354,6 +358,10 @@ export class ServerDb {
         this.#logger.silly('changeStream:ignore (fullDocument unchanged vs before)', { collectionName, operationType: op, documentId });
         return;
       }
+      if (isStoredMetaOnlyChange(change)) {
+        this.#logger.silly('changeStream:ignore (stored metadata only)', { collectionName, operationType: op, documentId });
+        return;
+      }
       const validOperationType: ServerDbChangeEvent['type'] | undefined = ['create', 'insert'].includes(change.operationType)
         ? 'insert' : ['update', 'replace'].includes(change.operationType) ? 'update' : change.operationType === 'delete' ? 'delete' : undefined;
       if (validOperationType == null) {
@@ -375,6 +383,7 @@ export class ServerDb {
         operationType: validOperationType,
         debounceMs: this.#changeStreamDebounceMs,
         onAfterDispatch: event => this.#runExtensionHooksAfterChange(event),
+        onStoredDocuments: documents => clearStaleStoredHashes({ collection: db.collection(collectionName), documents, logger: this.#logger }),
       }));
       events.process(change as ChangeStreamDocument<MongoDocOf<Record>>);
     });

@@ -55,8 +55,21 @@ async function serializeWithMeta<RecordType extends Record>(record: RecordType, 
   return { ...doc, _meta: meta } as unknown as MongoDocOf<RecordType>;
 }
 
+/**
+ * A stored document's `_meta.hash` when it no longer describes the document's content, else `undefined` (it matches,
+ * or there is none). Only a write that bypassed mxdb leaves one behind: a fix by hand or a migration that changed the
+ * document but not its `_meta`, or copied an old `_meta` into a replacement.
+ */
+async function staleStoredHashOf(storedDocument: MongoDocOf<Record>): Promise<string | undefined> {
+  const storedHash = (storedDocument as { _meta?: Partial<MXDBStoredMeta> })._meta?.hash;
+  if (storedHash == null) return;
+  const contentHash = await hashRecord(deserialize(storedDocument) as Record);
+  return contentHash === storedHash ? undefined : storedHash;
+}
+
 export const dbUtils = {
   deserialize,
   serialize,
   serializeWithMeta,
+  staleStoredHashOf,
 };
