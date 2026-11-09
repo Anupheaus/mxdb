@@ -674,18 +674,62 @@ describe('handleClientToServerSync — a before-write hook rejects a synced reco
       expect(response).toEqual([{ collectionName: HOOKED, successfulRecordIds: ['n1'], rejectedRecords: [{ id: 'n1', reason: REJECTION, kind: 'error' }] }]);
     });
 
-    it('is recorded as deleted, keeping the client\'s entry, and never stored live', async () => {
+    it('leaves nothing on the server, not even a deleted marker, so the id stays free (sc-5083)', async () => {
       await syncRejectedCreate();
 
-      expect([harness.collection.records.has('n1'), harness.collection.audits.get('n1')!.entries.map(entry => entry.type)])
-        .toEqual([false, [AuditEntryType.Created, AuditEntryType.Deleted]]);
+      expect([harness.collection.records.has('n1'), harness.collection.audits.has('n1')]).toEqual([false, false]);
     });
 
     it('tells the client to delete the record it created', async () => {
       await syncRejectedCreate();
 
-      const lastAuditEntryId = harness.collection.audits.get('n1')!.entries.at(-1)!.id;
-      expect(harness.emitted).toEqual([[{ collectionName: HOOKED, records: [{ recordId: 'n1', lastAuditEntryId }] }]]);
+      // The delete's entry is the server's own, after the client's create; it is sent but never stored.
+      expect(harness.emitted).toEqual([[{ collectionName: HOOKED, records: [{ recordId: 'n1', lastAuditEntryId: expect.any(String) }] }]]);
+      const cursor = harness.emitted[0]![0]!.records[0]!;
+      expect('lastAuditEntryId' in cursor && cursor.lastAuditEntryId > entryId(5)).toBe(true);
+    });
+
+    it('does not stop a later create under the same id that the hook allows: it is saved (sc-5083)', async () => {
+      await syncRejectedCreate();
+      const rightful: Item = { id: 'n1', name: 'fine' };
+
+      const response = await handleClientToServerSync(request(HOOKED, 'n1', [createdEntry(rightful, 9)], await hashRecord(rightful)));
+
+      expect(response).toEqual([{ collectionName: HOOKED, successfulRecordIds: ['n1'] }]);
+      expect([harness.collection.records.get('n1'), harness.collection.audits.get('n1')!.entries.map(entry => entry.id)])
+        .toEqual([rightful, [entryId(9)]]);
+    });
+
+    it('is refused again, leaving nothing, when the same create is sent again', async () => {
+      await syncRejectedCreate();
+
+      const response = await syncRejectedCreate();
+
+      expect(response).toEqual([{ collectionName: HOOKED, successfulRecordIds: ['n1'], rejectedRecords: [{ id: 'n1', reason: REJECTION, kind: 'error' }] }]);
+      expect([harness.collection.records.has('n1'), harness.collection.audits.has('n1')]).toEqual([false, false]);
+    });
+  });
+
+  describe('a record really created and then deleted', () => {
+    it('stays deleted when an old copy of its create is sent again (delete is final)', async () => {
+      const deletedRecord: Item = { id: 'd1', name: 'fine' };
+      harness.collection.audits.set('d1', { id: 'd1', entries: [createdEntry(deletedRecord, 1), deletedEntry(2)] } as AuditOf<Item>);
+
+      await handleClientToServerSync(request(HOOKED, 'd1', [createdEntry(deletedRecord, 1)], await hashRecord(deletedRecord)));
+
+      expect([harness.collection.records.has('d1'), harness.collection.audits.get('d1')!.entries.map(entry => entry.type).includes(AuditEntryType.Deleted)])
+        .toEqual([false, true]);
+    });
+
+    it('stays deleted when a new create under its id is sent', async () => {
+      const deletedRecord: Item = { id: 'd1', name: 'fine' };
+      harness.collection.audits.set('d1', { id: 'd1', entries: [createdEntry(deletedRecord, 1), deletedEntry(2)] } as AuditOf<Item>);
+
+      const again: Item = { ...deletedRecord, name: 'again' };
+
+      await handleClientToServerSync(request(HOOKED, 'd1', [createdEntry(again, 9)], await hashRecord(again)));
+
+      expect(harness.collection.records.has('d1')).toBe(false);
     });
   });
 
@@ -722,7 +766,8 @@ describe('handleClientToServerSync — a before-write hook rejects a synced reco
     }]);
 
     expect([response, harness.collection.records.get('ok')]).toEqual([
-      [{ collectionName: HOOKED, successfulRecordIds: ['n1', 'ok'], rejectedRecords: [{ id: 'n1', reason: REJECTION, kind: 'error' }] }],
+      // The refused create is acknowledged after the saved records, as it was never written (sc-5083).
+      [{ collectionName: HOOKED, successfulRecordIds: ['ok', 'n1'], rejectedRecords: [{ id: 'n1', reason: REJECTION, kind: 'error' }] }],
       accepted,
     ]);
   });
