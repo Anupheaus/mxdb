@@ -851,6 +851,11 @@ describe('ServerDbCollection', () => {
       await col.upsert(makeItem({ id: 'au-4', name: 'Third' }), { resetAudit: true });
 
       await waitForAuditTypes(col, 'au-4', [AuditEntryType.Created]);
+      // Marked as a reset, so no device's entry from before it can change the record (sc-4321); an ordinary start is not.
+      expect(((await col.getAudit('au-4'))!.entries[0] as { reset?: true }).reset).toBe(true);
+      await col.upsert(makeItem({ id: 'au-4b', name: 'Plain' }));
+      await waitForAuditTypes(col, 'au-4b', [AuditEntryType.Created]);
+      expect(((await col.getAudit('au-4b'))!.entries[0] as { reset?: true }).reset).toBeUndefined();
     });
 
     it('starts an audit for a stored record that never had one', async () => {

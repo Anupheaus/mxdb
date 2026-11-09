@@ -340,11 +340,12 @@ describe('ServerReceiver', () => {
   it('drops a client\'s entries from before a reset audit, so an offline device\'s older edit never returns the old values', async () => {
     const { sd } = makeSD();
     const original = { id: 'r1', name: 'Casey Customer' };
-    // The device's edit was made offline, before the server rewrote the record with `resetAudit`.
-    const deviceEdit = auditor.updateAuditWith({ ...original, name: 'Casey C. Customer' }, auditor.createAuditFrom(original))
-      .entries.filter(entry => entry.type === AuditEntryType.Updated);
+    // The device created the record and edited it offline, before the server rewrote it with `resetAudit`. It sends its whole
+    // audit, its own `Created` included, as the real client does (sc-4321 QA 1).
+    const deviceEdit = auditor.updateAuditWith({ ...original, name: 'Casey C. Customer' }, auditor.createAuditFrom(original)).entries;
+    expect(deviceEdit.map(({ type }) => type)).toEqual([AuditEntryType.Created, AuditEntryType.Updated]);
     const reset = { id: 'r1', name: 'Anonymised customer #1' };
-    const resetAudit = auditor.createAuditFrom(reset);
+    const resetAudit = auditor.createResetAuditFrom(reset);
     const onRetrieve = vi.fn().mockResolvedValue([{ collectionName: 'items', records: [{ record: reset, audit: resetAudit.entries }] }] satisfies MXDBRecordStates);
     const onUpdate = vi.fn().mockResolvedValue([]);
     const sr = new ServerReceiver(mockLogger, { onRetrieve, onUpdate, serverDispatcher: sd });
@@ -358,7 +359,7 @@ describe('ServerReceiver', () => {
   it('still merges a client\'s entries made after a reset audit', async () => {
     const { sd } = makeSD();
     const reset = { id: 'r1', name: 'Anonymised customer #1' };
-    const resetAudit = auditor.createAuditFrom(reset);
+    const resetAudit = auditor.createResetAuditFrom(reset);
     const laterEdit = auditor.updateAuditWith({ ...reset, name: 'Renamed' }, resetAudit).entries.filter(entry => entry.type === AuditEntryType.Updated);
     const onRetrieve = vi.fn().mockResolvedValue([{ collectionName: 'items', records: [{ record: reset, audit: resetAudit.entries }] }] satisfies MXDBRecordStates);
     const onUpdate = vi.fn().mockResolvedValue([{ collectionName: 'items', successfulRecordIds: ['r1'] }]);

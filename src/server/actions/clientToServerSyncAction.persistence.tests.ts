@@ -547,6 +547,55 @@ describe('handleClientToServerSync — two devices create the same record offlin
     expect(harness.collection.audits.get('i1')!.entries).toHaveLength(auditAfterFirst);
   });
 
+  // QA 1: a history the server cleared on purpose (`resetAudit`) is never mistaken for another device's create. Every stored
+  // start × everything a device made before it can send × the hook's answer, with each outcome written out by hand.
+  describe('a stored history that began with another device\'s create, or with a reset (QA 1)', () => {
+    type Start = 'plain create' | 'reset';
+    type Sent = 'full audit, its Created included' | 'edits only, after an acknowledged create' | 'bare create only';
+    type Hook = 'accepts' | 'refuses';
+    const sent: Record<Sent, AuditEntry[]> = {
+      'full audit, its Created included': [bare(1), replaceEntry(2, 'name', 'a')],
+      'edits only, after an acknowledged create': [branchedEntry(1), replaceEntry(2, 'name', 'a')],
+      'bare create only': [createdEntry({ id: 'i1', name: 'a' }, 1)],
+    };
+    const NOTHING = { judged: [], rejected: [], stored: STORED_B, written: false };
+    const expected: Record<Start, Record<Sent, Record<Hook, unknown>>> = {
+      'plain create': {
+        'full audit, its Created included': {
+          accepts: { judged: [[A_OVER_B]], rejected: [], stored: A_OVER_B, written: true },
+          refuses: { judged: [[A_OVER_B]], rejected: [{ id: 'i1', reason: SOMEONE_ELSE, kind: 'validation' }], stored: STORED_B, written: true },
+        },
+        // The split two-sync case: the server cannot tell it from a pre-reset edit, so it is dropped (a follow-up story).
+        'edits only, after an acknowledged create': { accepts: NOTHING, refuses: NOTHING },
+        'bare create only': { accepts: NOTHING, refuses: NOTHING },
+      },
+      reset: {
+        'full audit, its Created included': { accepts: NOTHING, refuses: NOTHING },
+        'edits only, after an acknowledged create': { accepts: NOTHING, refuses: NOTHING },
+        'bare create only': { accepts: NOTHING, refuses: NOTHING },
+      },
+    };
+    const rows = (Object.keys(expected) as Start[]).flatMap(start => (Object.keys(sent) as Sent[]).flatMap(what => (['accepts', 'refuses'] as Hook[])
+      .map(hook => [start, what, hook] as const)));
+
+    it.each(rows)('stored start: %s; device sends: %s; the hook %s', async (start, what, hook) => {
+      if (start === 'reset') harness.seed(STORED_B, [{ ...createdEntry(STORED_B, 3), reset: true } as AuditEntry]);
+      if (hook === 'refuses') refuse();
+      harness.collection.sync.mockClear();
+
+      const outcome = await syncA(sent[what]);
+
+      expect({ ...outcome, written: harness.collection.sync.mock.calls.length > 0 }).toEqual(expected[start][what][hook]);
+      if (start === 'reset') expect(harness.collection.audits.get('i1')!.entries.map(({ id }) => id), 'the reset audit is untouched').toEqual([entryId(3)]);
+    });
+
+    it('a reset mark a device sends is dropped, so a device can never make its own create look like a reset', async () => {
+      await handleClientToServerSync(request(HOOKED, 'i2', [{ ...createdEntry({ id: 'i2', name: 'mine' }, 5), reset: true } as AuditEntry], 'device-hash'));
+
+      expect('reset' in harness.collection.audits.get('i2')!.entries[0]!).toBe(false);
+    });
+  });
+
   it('A\'s change is dated after every entry, B\'s and its own, so the audit replays in the order it was taken', async () => {
     await syncA([bare(1), replaceEntry(2, 'name', 'a')]);
 

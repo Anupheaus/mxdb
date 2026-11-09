@@ -125,6 +125,14 @@ describe('compactAuditEntries', () => {
     expect((second.entries[0] as AuditCreatedEntry).compaction).toEqual({ historyStart: idAt(0), clocks: [{ path: 'b', id: idAt(9) }, { path: 'a.x', id: idAt(10) }] });
   });
 
+  it('keeps a reset start a reset when it folds it, and never makes an ordinary start one (sc-4321)', () => {
+    const updates = Array.from({ length: 9 }, (_, index) => update(index + 1, replace('b', index + 1)));
+    const reset = compactAuditEntries([{ ...created(), reset: true }, ...updates], SMALL_LIMITS)!;
+    const plain = compactAuditEntries([created(), ...updates], SMALL_LIMITS)!;
+
+    expect([(reset.entries[0] as AuditCreatedEntry).reset, (plain.entries[0] as AuditCreatedEntry).reset]).toEqual([true, undefined]);
+  });
+
   it('keeps the default audit far below MongoDB\'s 16 MB however often a record with a 4,000-character text is written', () => {
     let entries: AuditEntry<TestRecord>[] = [created()];
     let largest = 0;

@@ -50,6 +50,12 @@ export interface AuditCreatedEntry<RecordType extends Record = Record> extends A
   record: RecordType;
   /** Set only on a server audit's first entry when older entries were folded into it (see {@link AuditCompaction}). */
   compaction?: AuditCompaction;
+  /**
+   * Set only by the server, on the first entry of an audit it started again from the stored record (`upsert(..., { resetAudit:
+   * true })`, or a repair of an audit that no longer replays): the history before it was cleared on purpose, so no client
+   * entry from before it may change the record (sc-4321). A client never sets it; the receiver drops one a client sends.
+   */
+  reset?: true;
 }
 
 /** The newest entry that wrote a path (or replaced it whole), among the entries a compaction folded away. */

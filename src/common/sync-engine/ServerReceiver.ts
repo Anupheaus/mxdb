@@ -83,6 +83,13 @@ interface ServerReceiverProps {
  */
 let srIdCounter = 0;
 
+/** A client's entry without the server-only `reset` mark (see `AuditCreatedEntry.reset`). */
+function withoutResetMark(entry: AuditEntry): AuditEntry {
+  if (entry.type !== AuditEntryType.Created || !('reset' in entry)) return entry;
+  const { reset: _reset, ...rest } = entry as AuditCreatedEntry;
+  return rest as AuditEntry;
+}
+
 /** An edit (not a create, not a delete) to a record the server holds no state for. */
 interface UnheldWrite {
   collectionName: string;
@@ -229,15 +236,17 @@ export class ServerReceiver {
           }
 
           const serverStateForEntries = colServerMap.get(recordId);
+          // Only the server marks a history reset: a client's mark is dropped, so it can never be stored (sc-4321).
+          const clientEntries = rec.entries.map(withoutResetMark);
           // sc-4321: a create made before another device's create of the same record reached the server.
-          const lateCreateEntries = this.#entriesWithLateSecondCreate(recordId, rec.entries, serverStateForEntries);
+          const lateCreateEntries = this.#entriesWithLateSecondCreate(recordId, clientEntries, serverStateForEntries);
           const lateCreateRecord = lateCreateEntries != null ? replayHistoryEndState(lateCreateEntries, undefined, this.#logger).live : undefined;
           if (lateCreateEntries != null && lateCreateRecord != null) {
             pendingPersist.push({ collectionName: colName, recordId, mergedEntries: lateCreateEntries, liveRecord: lateCreateRecord, clientHash: rec.hash, serverState: serverStateForEntries });
             continue;
           }
           const strippedEntries = this.#entriesSinceHistoryStart(
-            rec.entries.filter(e => e.type !== AuditEntryType.Branched),
+            clientEntries.filter(e => e.type !== AuditEntryType.Branched),
             serverStateForEntries,
           );
 
@@ -716,7 +725,9 @@ export class ServerReceiver {
     if (serverState == null || !isActiveRecordState(serverState)) return undefined;
     const serverEntries = serverState.audit as AuditEntry[];
     const first = serverEntries[0];
-    if (first == null || first.type !== AuditEntryType.Created) return undefined;
+    // Whitelist: only a history that began with a create. One the server cleared on purpose (`reset`) keeps every older
+    // client entry out, a device's own create included: a pre-reset edit must never come back onto the cleared record.
+    if (first == null || first.type !== AuditEntryType.Created || (first as AuditCreatedEntry).reset === true) return undefined;
     const historyStart = first.compaction?.historyStart ?? first.id;
     const entries = clientEntries.filter(entry => entry.type !== AuditEntryType.Branched);
     const clientCreate = entries.find(entry => entry.type === AuditEntryType.Created);

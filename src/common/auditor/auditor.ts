@@ -6,6 +6,7 @@ import {
   collapseToAnchor,
   createAuditFrom,
   createBranchFrom,
+  createResetAuditFrom,
   createRecordFrom,
   deleteRecord,
   entriesOf,
@@ -33,6 +34,9 @@ export { setClockDrift, hashRecord };
 export const auditor = {
   createAuditFrom: <T extends MXDBRecord>(record: T) =>
     createAuditFrom(record, ulidGenerator),
+  /** A fresh audit whose `Created` marks a history the server cleared on purpose (see `AuditCreatedEntry.reset`). */
+  createResetAuditFrom: <T extends MXDBRecord>(record: T) =>
+    createResetAuditFrom(record, ulidGenerator),
   updateAuditWith: <T extends MXDBRecord>(
     currentRecord: T | undefined,
     audit: AuditOf<T>,

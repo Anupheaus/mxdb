@@ -204,6 +204,12 @@ export function createAuditFrom<T extends MXDBRecord>(record: T, generateUlid: U
   };
 }
 
+/** {@link createAuditFrom}, with its `Created` marked as the start of a history the server cleared on purpose (`reset`, sc-4321). */
+export function createResetAuditFrom<T extends MXDBRecord>(record: T, generateUlid: UlidGenerator): AuditOf<T> {
+  const audit = createAuditFrom(record, generateUlid);
+  return { ...audit, entries: audit.entries.map(entry => ({ ...entry, reset: true }) as AuditCreatedEntry<T>) };
+}
+
 export function updateAuditWith<T extends MXDBRecord>(
   currentRecord: T | undefined,
   audit: AnyAuditOf<T>,

@@ -104,6 +104,9 @@ export function compactAuditEntries<RecordType extends MXDBRecord>(
   if (record == null) return;
   const starting = startingCompactionOf(first);
   const compaction: AuditCompaction = { ...starting, clocks: clocksAfter(starting.clocks, folded.slice(1), record) };
-  const snapshot: AuditCreatedEntry<RecordType> = { type: AuditEntryType.Created, id: folded[folded.length - 1]!.id, record, compaction };
+  // A reset start stays one when it is folded (sc-4321): the receiver reads it to keep pre-reset entries out.
+  const snapshot: AuditCreatedEntry<RecordType> = {
+    type: AuditEntryType.Created, id: folded[folded.length - 1]!.id, record, compaction, ...(first.reset === true ? { reset: true as const } : {}),
+  };
   return { entries: [snapshot, ...sorted.slice(foldEnd)], folded };
 }

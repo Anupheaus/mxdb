@@ -712,7 +712,7 @@ export class ServerDbCollection<RecordType extends Record = Record> {
     const recordIds = records.ids();
     const existingAuditRecords = await this.#getAuditRecords(recordIds);
     const newAuditRecords = records.mapWithoutNull(record => {
-      if (resetAudit) return auditor.createAuditFrom(record);
+      if (resetAudit) return auditor.createResetAuditFrom(record);
 
       let existingAuditRecord: AnyAuditOf<RecordType> | undefined = existingAuditRecords.findById(record.id);
       const existingRecord = existingRecords.findById(record.id);
@@ -732,7 +732,8 @@ export class ServerDbCollection<RecordType extends Record = Record> {
           });
           // Instead of skipping the audit entirely, reset to a fresh audit based
           // on the current record so subsequent updates can be tracked correctly.
-          existingAuditRecord = auditor.createAuditFrom(existingRecord);
+          // A history started again: no client entry from before it may change the record (sc-4321).
+          existingAuditRecord = auditor.createResetAuditFrom(existingRecord);
         } else if (!is.deepEqual(existingRecordFromAudit, existingRecord)) {
           existingAuditRecord = auditor.updateAuditWith(
             existingRecord,
