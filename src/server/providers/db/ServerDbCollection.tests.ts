@@ -1033,6 +1033,29 @@ describe('ServerDbCollection', () => {
         expect([await col.getAudit(item.id), results.every(result => (result as { isUnchanged?: boolean }).isUnchanged === true)]).toEqual([before, true]);
       }, 60_000);
 
+      it('keeps a device\'s late change in the history even when newer changes already overwrote it', async () => {
+        const col = await makeAudited();
+        const item = makeItem({ id: 'au-late', name: 'Fitted' });
+        await col.sync({ updated: [item], updatedAudits: [auditor.createAuditFrom(item)], removedIds: [] });
+        await syncChanges(col, item.id, 1);
+        // A device changes the record offline, before the two changes below reach the server...
+        const seen = (await col.get(item.id))!;
+        const offline = auditor.updateAuditWith(makeItem({ id: item.id, name: 'Offline edit', value: 99 }), (await col.getAudit(item.id))!, seen);
+        const lateEntry = offline.entries.at(-1)!;
+        await new Promise(resolve => setTimeout(resolve, 2));
+        await syncChanges(col, item.id, 2, 1);
+        // ...and its change arrives last. Both fields it set were overwritten since, so the record stays as it is.
+        const stored = (await col.get(item.id))!;
+        const before = (await col.getAudit(item.id))!;
+        const merged = { id: item.id, entries: [...before.entries, lateEntry].sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0)) };
+
+        const [result] = await col.sync({ updated: [{ ...stored }], updatedAudits: [merged as never], removedIds: [] });
+
+        const after = (await col.getAudit(item.id))!;
+        expect([after.entries.map(entry => entry.id), (result as { isUnchanged?: boolean }).isUnchanged, await col.get(item.id)])
+          .toEqual([merged.entries.map(entry => entry.id), undefined, stored]);
+      }, 60_000);
+
       it('attributes the folded history to the last person who changed the record', async () => {
         const col = await makeAudited();
         const item = makeItem({ id: 'au-person', name: 'Fitted' });

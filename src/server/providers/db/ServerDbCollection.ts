@@ -445,8 +445,8 @@ export class ServerDbCollection<RecordType extends Record = Record> {
           await session.withTransaction(async () => {
             txnAttempts += 1;
             // A write that changes nothing the server holds (the same value sent again, or a change a hook put back) is
-            // not stored: its entries would only grow the record's history.
-            isUnchanged = await this.#isStoredAsIs(record, session);
+            // not stored: its entries would only grow the record's history. A late change already overwritten is stored.
+            isUnchanged = await this.#isStoredAsIs(record, audit, session);
             if (isUnchanged) return;
             const writeRecT0 = performance.now();
             await this.#writeRecords([record], session, new Map([[record.id, audit ? auditor.getLastEntryId(audit) : undefined]]));
@@ -858,13 +858,25 @@ export class ServerDbCollection<RecordType extends Record = Record> {
     return MXDB_SYSTEM_USER_ID;
   }
 
-  /** Whether the live record is stored exactly as `record` already, judged by the stored content hash (`_meta.hash`). */
-  async #isStoredAsIs(record: RecordType, session: ClientSession): Promise<boolean> {
+  /**
+   * Whether the write changes nothing the server holds: the live record is stored exactly as `record` already (judged by the
+   * stored content hash, `_meta.hash`) and `audit` brings no change made BEFORE the server's newest entry. Such a late change
+   * (a device's offline edit, already overwritten by newer ones) is real history, so it is stored even though the record
+   * stays as it is; only a change sorting after everything the server holds (the same value sent again, or a change a hook
+   * put back) is dropped.
+   */
+  async #isStoredAsIs(record: RecordType, audit: AnyAuditOf<RecordType> | undefined, session: ClientSession): Promise<boolean> {
     const collection = await this.#getCollection();
     const stored = await collection.findOne({ _id: record.id as any }, { projection: { _meta: 1 }, session });
-    const storedHash = (stored as { _meta?: { hash?: string } } | null)?._meta?.hash;
-    if (storedHash == null) return false;
-    return storedHash === await hashRecord(dbUtils.deserialize(dbUtils.serialize(record)) as Record);
+    const storedMeta = (stored as { _meta?: { hash?: string; lastAuditEntryId?: string } } | null)?._meta;
+    if (storedMeta?.hash == null) return false;
+    if (storedMeta.hash !== await hashRecord(dbUtils.deserialize(dbUtils.serialize(record)) as Record)) return false;
+    if (audit == null) return true;
+    const auditCollection = await this.#getAuditCollection();
+    const storedAudit = await auditCollection.findOne({ _id: record.id as any }, { projection: { 'entries.id': 1 }, session });
+    const storedEntryIds = new Set(((storedAudit as { entries?: { id: string }[] } | null)?.entries ?? []).map(({ id }) => id));
+    const storedLastId = storedMeta.lastAuditEntryId ?? [...storedEntryIds].reduce((last, id) => (id > last ? id : last), '');
+    return !auditor.entriesOf(audit).some(({ id }) => !storedEntryIds.has(id) && id < storedLastId);
   }
 
   async #writeRecords(records: RecordType[], session?: ClientSession, lastAuditEntryIds?: Map<string, string | undefined>) {
