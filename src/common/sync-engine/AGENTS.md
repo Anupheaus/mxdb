@@ -22,6 +22,7 @@ One SR + SD pair per connected client on the server. One CD + CR pair per client
 - `ClientDispatcher.ts` / `.tests.ts`
 - `dispatchBatches.ts` — splits a C2S dispatch into socket-sized emits (sc-623, see below)
 - `ServerReceiver.ts` / `.tests.ts`
+- `asClientEntry.ts` / `.tests.ts` — what the receiver keeps of a client's entry (its content only; see rule 5)
 - `ServerDispatcher.ts` / `.tests.ts`
 - `ClientReceiver.ts` / `.tests.ts` (delete-is-final; diagnostic logging only in hot path)
 - `syncEngine.stress.tests.ts` — 12-client convergence stress test (run 5+ times when touching race-sensitive code)
