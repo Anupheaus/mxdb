@@ -778,6 +778,8 @@ describe('useCollection live requests', () => {
       const onResponse = vi.fn();
       const onSameResponse = vi.fn();
       await act(async () => { await api().query({}, { onResponse, onSameResponse }); });
+      // The initial run may confirm the answer's result once more (sc-5221); only the rebuild is under test here.
+      onSameResponse.mockClear();
 
       await rebuildLocally(withDate('2026-09-29T10:00:00.000Z'));
 
