@@ -4,6 +4,7 @@ import { replayHistoryEndState } from '../auditor/replay';
 import { hashRecord } from '../auditor/hash';
 import { generateAnchorUlid } from '../auditor/time';
 import { updateAuditWith } from '../auditor/api';
+import { asClientEntry } from './asClientEntry';
 import type { AuditCreatedEntry, AuditEntry, AuditOf } from '../auditor';
 import {
   type ClientDispatcherRequest,
@@ -82,13 +83,6 @@ interface ServerReceiverProps {
  * 6. Resume the SD.
  */
 let srIdCounter = 0;
-
-/** A client's entry without the server-only `reset` mark (see `AuditCreatedEntry.reset`). */
-function withoutResetMark(entry: AuditEntry): AuditEntry {
-  if (entry.type !== AuditEntryType.Created || !('reset' in entry)) return entry;
-  const { reset: _reset, ...rest } = entry as AuditCreatedEntry;
-  return rest as AuditEntry;
-}
 
 /** An edit (not a create, not a delete) to a record the server holds no state for. */
 interface UnheldWrite {
@@ -237,7 +231,8 @@ export class ServerReceiver {
 
           const serverStateForEntries = colServerMap.get(recordId);
           // Only the server marks a history reset: a client's mark is dropped, so it can never be stored (sc-4321).
-          const clientEntries = rec.entries.map(withoutResetMark);
+          // A client sets only its entries' content: attribution, a reset mark and the like are the server's (sc-4321, sc-5449).
+          const clientEntries = rec.entries.map(asClientEntry);
           // sc-4321: a create made before another device's create of the same record reached the server.
           const lateCreateEntries = this.#entriesWithLateSecondCreate(recordId, clientEntries, serverStateForEntries);
           const lateCreateRecord = lateCreateEntries != null ? replayHistoryEndState(lateCreateEntries, undefined, this.#logger).live : undefined;

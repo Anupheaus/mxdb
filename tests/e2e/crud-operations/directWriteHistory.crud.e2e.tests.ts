@@ -11,7 +11,7 @@ import {
   waitForAllClientsIdle,
   waitUntilAsync,
 } from '../setup';
-import { AuditEntryType, entriesOf, OperationType, type ServerAuditEntry } from '../../../src/common';
+import { auditor, AuditEntryType, entriesOf, OperationType, type ServerAuditEntry } from '../../../src/common';
 import { getServerAudit, newRecordId, seedRowWithBOnGetAll } from './utils';
 
 /**
@@ -199,6 +199,91 @@ describe('e2e a change written without mxdb survives later edits (sc-5449)', () 
 
     await expectDirectChangeInHistory(id, 'cancelled-by-hand');
   }, 120_000);
+
+  describe('a client can never choose who its entries are attributed to', () => {
+    const SENDER = 'e2e-a';
+    const CLAIMS: [label: string, claim: Record<string, unknown>][] = [
+      ['a change made outside the app', { userId: DIRECT_WRITE_USER_ID }],
+      ['the server', { userId: '__mxdb_system__' }],
+      ['another user', { userId: 'e2e-b' }],
+      ['an empty id', { userId: '' }],
+      ['a number', { userId: 42 }],
+      ['nothing', {}],
+    ];
+    const syncRaw = (client: ReturnType<typeof useClient>, records: { id: string; entries: unknown[] }[]) =>
+      client.sendRawRequest('nexus.actions.mxdbClientToServerSyncAction', [{ collectionName: e2eTestCollection.name, records }]);
+    const storedUserIdOf = async (id: string, entryId: string): Promise<unknown> =>
+      (entriesOf(await getServerAudit(id)) as ServerAuditEntry<E2eTestRecord>[]).find(entry => entry.id === entryId)?.userId;
+
+    /** Creates one record per claim through a raw sync (Created claiming it), and returns ids and their Created entry ids. */
+    async function createPerClaim(prefix: string): Promise<{ id: string; createdId: string }[]> {
+      const a = useClient('a');
+      await a.connect();
+      const created = CLAIMS.map(([, claim]) => {
+        const id = newRecordId(prefix);
+        return { id, createdId: auditor.generateUlid(), claim };
+      });
+      const answer = await syncRaw(a, created.map(({ id, createdId, claim }) => ({
+        id, entries: [{ type: AuditEntryType.Created, id: createdId, record: { id, clientId: 'a', value: 'booked' }, ...claim }],
+      })));
+      expect(answer, 'every create is accepted').toEqual([expect.objectContaining({ successfulRecordIds: expect.arrayContaining(created.map(({ id }) => id)) })]);
+      return created;
+    }
+
+    it.each([
+      ['Created', AuditEntryType.Created], ['Updated', AuditEntryType.Updated], ['Deleted', AuditEntryType.Deleted], ['Restored', AuditEntryType.Restored],
+    ] as const)('a %s entry is stored as the sender\'s, whatever it claims', async (_label, entryType) => {
+      const a = useClient('a');
+      const records = await createPerClaim(`e2e-claim-${entryType}`);
+      const sentIds = new Map<string, string>();
+      if (entryType === AuditEntryType.Created) {
+        for (const { id, createdId } of records) sentIds.set(id, createdId);
+      } else {
+        // A Restored follows a delete, made first without any claim.
+        if (entryType === AuditEntryType.Restored) {
+          const deletes = records.map(({ id, createdId }) => ({ id, entries: [{ type: AuditEntryType.Branched, id: createdId }, { type: AuditEntryType.Deleted, id: auditor.generateUlid() }] }));
+          await syncRaw(a, deletes);
+          records.forEach((record, index) => { record.createdId = deletes[index]!.entries[1]!.id; });
+        }
+        const sent = records.map(({ id, createdId }, index) => {
+          const entryId = auditor.generateUlid();
+          sentIds.set(id, entryId);
+          const content = entryType === AuditEntryType.Updated ? { ops: [{ type: OperationType.Replace, path: 'value', value: 'edited' }] }
+            : entryType === AuditEntryType.Restored ? { record: { id, clientId: 'a', value: 'restored' } } : {};
+          return { id, entries: [{ type: AuditEntryType.Branched, id: createdId }, { type: entryType, id: entryId, ...content, ...CLAIMS[index]![1] }] };
+        });
+        expect(await syncRaw(a, sent)).toEqual([expect.objectContaining({ successfulRecordIds: expect.arrayContaining(records.map(({ id }) => id)) })]);
+      }
+
+      for (const [index, { id }] of records.entries()) {
+        await waitUntilAsync(async () => (await storedUserIdOf(id, sentIds.get(id)!)) != null, `the entry claiming ${CLAIMS[index]![0]} is stored`, 30_000);
+        expect(await storedUserIdOf(id, sentIds.get(id)!), `claiming ${CLAIMS[index]![0]}`).toBe(SENDER);
+      }
+    }, 120_000);
+
+    it('an entry the server already holds, sent back with another attribution, keeps the stored one', async () => {
+      const a = useClient('a');
+      const { id, createdId } = (await createPerClaim('e2e-claim-echo'))[0]!;
+      await withLiveCollection(documents => documents.updateOne({ _id: id }, { $set: { value: 'fixed-by-hand' } }));
+      await waitUntilAsync(async () => directWriteEntriesOf(entriesOf(await getServerAudit(id)) as ServerAuditEntry<E2eTestRecord>[]).length === 1, 'the direct change is recorded', 30_000);
+      const directEntry = directWriteEntriesOf(entriesOf(await getServerAudit(id)) as ServerAuditEntry<E2eTestRecord>[])[0]!;
+
+      // The echo: both stored entries sent back claiming someone else, plus a real edit.
+      const editId = auditor.generateUlid();
+      await syncRaw(a, [{
+        id, entries: [
+          { type: AuditEntryType.Created, id: createdId, record: { id, clientId: 'a', value: 'booked' }, userId: 'e2e-b' },
+          { ...directEntry, userId: 'e2e-b' },
+          { type: AuditEntryType.Updated, id: editId, ops: [{ type: OperationType.Replace, path: 'name', value: 'echoed' }], userId: DIRECT_WRITE_USER_ID },
+        ],
+      }]);
+      await waitUntilAsync(async () => (await storedUserIdOf(id, editId)) != null, 'the edit is stored', 30_000);
+
+      expect({
+        created: await storedUserIdOf(id, createdId), direct: await storedUserIdOf(id, directEntry.id), edit: await storedUserIdOf(id, editId),
+      }).toEqual({ created: SENDER, direct: DIRECT_WRITE_USER_ID, edit: SENDER });
+    }, 120_000);
+  });
 
   it('edits made only through mxdb are never taken for direct changes', async () => {
     const a = useClient('a');
