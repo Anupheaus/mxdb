@@ -358,22 +358,25 @@ describe('ServerDbCollection under failure', () => {
       await expect(col.upsert([makeItem('r1'), makeItem('r2')])).rejects.toThrow('Upsert failed - expected 2, got 1');
     });
 
-    it('still resolves, logging the failure, when the follow-up audit write fails', async () => {
-      const { col, audit, logger } = setup();
+    it('rejects when its history cannot be written (sc-5480)', async () => {
+      const { col, audit } = setup();
       audit.bulkWrite.mockRejectedValue(new Error('audit collection unavailable'));
 
-      await col.upsert(makeItem('r1'));
+      await expect(settle(col.upsert(makeItem('r1')))).rejects.toThrow('audit collection unavailable');
+    });
 
-      // Both un-awaited audit writes now log through one handler, so the meta carries the collection and the
-      // structured error (an InternalError from the write retry wrapper) rather than a bare message string.
-      await vi.waitFor(() => {
-        const [[message, meta]] = logger.error.mock.calls as unknown as [[string, { collectionName: string; error: Error }]];
-        expect({ message, collectionName: meta.collectionName, errorMessage: meta.error.message }).toEqual({
-          message: 'Audit upsert failed',
-          collectionName: COLLECTION_NAME,
-          errorMessage: 'audit collection unavailable',
-        });
-      });
+    it('writes the record and its history in the same transaction (sc-5480)', async () => {
+      const { col, live, audit, sessions } = setup();
+
+      await settle(col.upsert(makeItem('r1')));
+
+      const [session] = sessions;
+      expect({
+        transactions: sessions.map(({ withTransaction }) => withTransaction.mock.calls.length),
+        recordSession: live.bulkWrite.mock.calls[0]?.[1],
+        historySession: audit.bulkWrite.mock.calls[0]?.[1],
+        ended: session?.endSession.mock.calls.length,
+      }).toEqual({ transactions: [1], recordSession: { session }, historySession: { session }, ended: 1 });
     });
   });
 
@@ -382,7 +385,34 @@ describe('ServerDbCollection under failure', () => {
       const { col, live } = setup();
       live.deleteMany.mockResolvedValueOnce({ acknowledged: false, deletedCount: 0 });
 
-      await expect(col.remove('r1')).rejects.toThrow('Delete failed');
+      await expect(settle(col.remove('r1'))).rejects.toThrow('Delete failed');
+    });
+
+    it('rejects when its Deleted history entry cannot be written (sc-5480)', async () => {
+      const { col, live, audit } = setup();
+      const created = auditor.createAuditFrom(makeItem('r1'));
+      audit.find.mockReturnValue({ toArray: async () => [{ _id: 'r1', entries: created.entries }] });
+      live.find.mockReturnValue({ toArray: async () => [{ _id: 'r1', name: 'name-r1' }] });
+      audit.bulkWrite.mockRejectedValue(new Error('audit collection unavailable'));
+
+      await expect(settle(col.remove('r1'))).rejects.toThrow('audit collection unavailable');
+    });
+
+    it('deletes the record and writes its Deleted entry in the same transaction (sc-5480)', async () => {
+      const { col, live, audit, sessions } = setup();
+      const created = auditor.createAuditFrom(makeItem('r1'));
+      audit.find.mockReturnValue({ toArray: async () => [{ _id: 'r1', entries: created.entries }] });
+      live.find.mockReturnValue({ toArray: async () => [{ _id: 'r1', name: 'name-r1' }] });
+
+      await settle(col.remove('r1'));
+
+      const [session] = sessions;
+      expect({
+        transactions: sessions.map(({ withTransaction }) => withTransaction.mock.calls.length),
+        deleteSession: live.deleteMany.mock.calls[0]?.[1],
+        historySession: audit.bulkWrite.mock.calls[0]?.[1],
+        ended: session?.endSession.mock.calls.length,
+      }).toEqual({ transactions: [1], deleteSession: { session }, historySession: { session }, ended: 1 });
     });
   });
 
@@ -432,61 +462,31 @@ describe('ServerDbCollection under failure', () => {
     });
   });
 
-  // ── un-awaited audit writes ───────────────────────────────
+  // ── history writes are awaited ──────────────────────────────────────────────
 
   /**
-   * `upsert`/`remove` deliberately do not await their audit bookkeeping, so each must handle its own rejection.
-   * When one escapes, it becomes an *unhandled* rejection, which fails a whole vitest run even though every test
-   * passed — exactly how one code-215 killed Vision's integration job at 1322/1322 green. The teardown codes are
-   * logged at debug because a database dropping mid-write is normal teardown, not a fault.
+   * `upsert`/`remove` await their history (sc-5480), so a failure reaches the caller and nothing is left running in the
+   * background to escape as an *unhandled* rejection — which fails a whole vitest run even though every test passed, as
+   * one code-215 once did to Vision's integration job at 1322/1322 green.
    */
-  describe('audit writes that are not awaited', () => {
+  describe('history writes', () => {
     const droppingError = () => mongoError(
       `Cannot create collection testdb.${AUDIT_COLLECTION_NAME} - database is in the process of being dropped.`,
       { code: 215, codeName: 'DatabaseDropPending' },
     );
 
-    it('handles a delete audit that fails because the database is dropping, leaving no unhandled rejection', async () => {
+    it.each([
+      ['remove', (col: ServerDbCollection<Item>) => col.remove('r1')],
+      ['upsert', (col: ServerDbCollection<Item>) => col.upsert(makeItem('r1'))],
+    ] as const)('rejects a %s whose history cannot be read because the database is dropping, leaving no unhandled rejection', async (_label, write) => {
       const captured = captureUnhandledRejections();
       try {
-        const { col, audit, logger } = setup();
+        const { col, audit, live } = setup();
         audit.find = vi.fn(() => ({ toArray: async () => { throw droppingError(); } })) as typeof audit.find;
 
-        await settle(col.remove('r1'));
-        await settleUntil(() => logger.debug.mock.calls.some(([message]) => message === 'Audit delete failed'));
+        await expect(settle(write(col))).rejects.toThrow('database is in the process of being dropped');
 
-        expect({ errors: logger.error.mock.calls, rejections: captured.rejections }).toEqual({ errors: [], rejections: [] });
-      } finally {
-        captured.stop();
-      }
-    });
-
-    it('handles an upsert audit that fails the same way', async () => {
-      const captured = captureUnhandledRejections();
-      try {
-        const { col, audit, logger } = setup();
-        audit.find = vi.fn(() => ({ toArray: async () => { throw droppingError(); } })) as typeof audit.find;
-
-        await settle(col.upsert(makeItem('r1')));
-        await settleUntil(() => logger.debug.mock.calls.some(([message]) => message === 'Audit upsert failed'));
-
-        expect({ errors: logger.error.mock.calls, rejections: captured.rejections }).toEqual({ errors: [], rejections: [] });
-      } finally {
-        captured.stop();
-      }
-    });
-
-    it('still reports a genuine audit failure as an error, not swallowed at debug', async () => {
-      const captured = captureUnhandledRejections();
-      try {
-        const { col, audit, logger } = setup();
-        const unauthorized = mongoError('not authorized on testdb to execute command', { code: 13, codeName: 'Unauthorized' });
-        audit.find = vi.fn(() => ({ toArray: async () => { throw unauthorized; } })) as typeof audit.find;
-
-        await settle(col.remove('r1'));
-        await settleUntil(() => logger.error.mock.calls.some(([message]) => message === 'Audit delete failed'));
-
-        expect(captured.rejections).toEqual([]);
+        expect({ deletes: live.deleteMany.mock.calls.length, writes: live.bulkWrite.mock.calls.length, rejections: captured.rejections }).toEqual({ deletes: 0, writes: 0, rejections: [] });
       } finally {
         captured.stop();
       }

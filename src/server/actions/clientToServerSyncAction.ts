@@ -264,7 +264,10 @@ export async function handleClientToServerSync(request: ClientDispatcherRequest)
           const failedIds = new Set<string>();
           for (const wr of writeResults) {
             if (wr.error != null) {
-              if (isTransientMongoCloseError(wr.error)) {
+              if (wr.isMergedBeforeDelete === true) {
+                // Not a fault: a delete landed while this change was merged. Unacknowledged, the client sends it again (sc-5480).
+                logger.warn(`C2S change to "${wr.id}" was merged before its delete — the client will send it again`);
+              } else if (isTransientMongoCloseError(wr.error)) {
                 logger.warn(`C2S transient close failure for record "${wr.id}" (shutdown race)`, { error: wr.error });
               } else {
                 logger.error(`C2S permanent I/O failure for record "${wr.id}"`, { error: wr.error });
