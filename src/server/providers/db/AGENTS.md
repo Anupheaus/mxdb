@@ -15,6 +15,7 @@ MongoDB persistence layer: connection, collection CRUD with audit, change stream
 - `clearStaleStoredHashes.ts` — after a change, removes a stored `_meta.hash` that no longer describes the document (left by a write that bypassed mxdb), conditional on it still being stored; see "Writes that bypass mxdb" below
 - `isStoredMetaOnlyChange.ts` — whether a change-stream `update` touched only `_meta` (such a change is not reported to hooks or clients)
 - `directWriteEntry.ts` — `directWriteEntryFor`: the `Updated` entry a record's history is missing when the stored record was changed without mxdb (attributed to `MXDB_DIRECT_WRITE_USER_ID`, `__mxdb_direct_write__`), or nothing when the history already ends in it; see "Writes that bypass mxdb" below
+- `carriesChange.ts` — whether an audit entry changes anything when replayed (not a `Branched`, not an empty `Updated`); what `sync()` asks of a late entry (sc-5471)
 - `recordDirectWrites.ts` — after a change-stream batch, has `ServerDbCollection.recordDirectWrites` record the documents written without mxdb (`dbUtils.isWrittenWithoutMxdb`); a failure is logged, never thrown
 
 ### Context
@@ -46,7 +47,7 @@ Change stream lifecycle:
    b. Notifies registered callbacks (which trigger `ServerDispatcher.push` for each connected client).
 4. This two-step ensures clients are notified only after cascade effects have been applied.
 
-`ServerDbCollection.sync()` is the write path for `clientToServerSyncAction`. It performs a per-record exponential-backoff retry loop (base 100ms, max 2s, up to 20 retries) for transient MongoDB errors. A record already stored exactly as given (same `_meta.hash`) is not written at all — neither the record nor its audit — and comes back `isUnchanged` (sc-4409).
+`ServerDbCollection.sync()` is the write path for `clientToServerSyncAction`. It performs a per-record exponential-backoff retry loop (base 100ms, max 2s, up to 20 retries) for transient MongoDB errors. A record already stored exactly as given (same `_meta.hash`) is not written at all — neither the record nor its audit — and comes back `isUnchanged` (sc-4409). The exception is a late change: an entry the server does not hold, dated before its newest one, that changes something (`carriesChange`), is kept in the history even though the record stays as it is. Entry ids carry the device's clock, so an empty entry (the same value sent again) from a device whose clock runs behind also sorts "late"; it changes nothing and is not written (sc-5471). A non-empty entry from such a device whose change a before-write hook put back IS written on purpose: it cannot be told from a real late change by its id, and it records what the device tried. Compaction keeps that history bounded.
 
 Every `_sync` audit is written by `#writeAuditRecords`, which compacts it first (`server/audit/compactServerAudit.ts`): a record's oldest audit entries are folded into one `Created` snapshot once the audit passes 40 entries or 512 KB, so a record written any number of times keeps a bounded audit (sc-4409; see `../../../common/auditor/AGENTS.md`). An application reading a server audit sees at most ~40 entries; the first may be such a snapshot (its `compaction` field set), attributed to the last person among the entries it replaced.
 

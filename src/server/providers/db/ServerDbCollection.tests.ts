@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeAll, afterAll, beforeEach } from 'vitest';
 import { MongoClient } from 'mongodb';
 import { MongoMemoryReplSet } from 'mongodb-memory-server';
+import { monotonicFactory } from 'ulidx';
 import type { Logger, Record } from '@anupheaus/common';
 import { defineCollection } from '../../../common/defineCollection';
 import { ServerDbCollection } from './ServerDbCollection';
@@ -1153,6 +1154,31 @@ describe('ServerDbCollection', () => {
 
         expect([await col.getAudit(item.id), results.every(result => (result as { isUnchanged?: boolean }).isUnchanged === true)]).toEqual([before, true]);
       }, 60_000);
+
+      // sc-5471: a device whose clock runs behind dates its entries before the server's newest one, so every no-change
+      // sync looked like a late change and was written.
+      it.each([
+        ['20 ms', 20],
+        ['an hour', 3_600_000],
+      ])('stores nothing for the same value sent again from a device whose clock runs %s behind', async (_label, behindMs) => {
+        const col = await makeAudited();
+        const item = makeItem({ id: `au-behind-${behindMs}`, name: 'Fitted' });
+        await col.sync({ updated: [item], updatedAudits: [auditor.createAuditFrom(item)], removedIds: [] });
+        await syncChanges(col, item.id, 3);
+        const stored = (await col.get(item.id))!;
+        const before = (await col.getAudit(item.id))!;
+        const deviceUlid = monotonicFactory();
+
+        const results: unknown[] = [];
+        for (let resend = 0; resend < 120; resend += 1) {
+          // The device's empty entry, stamped by its own slow clock, merged into the server's history as the receiver does.
+          const deviceAudit = { id: item.id, entries: [{ type: AuditEntryType.Updated, id: deviceUlid(Date.now() - behindMs), ops: [] }] };
+          const merged = auditor.merge(before, deviceAudit as never);
+          results.push(...await col.sync({ updated: [{ ...stored }], updatedAudits: [merged as never], removedIds: [] }));
+        }
+
+        expect([await col.getAudit(item.id), results.every(result => (result as { isUnchanged?: boolean }).isUnchanged === true)]).toEqual([before, true]);
+      }, 120_000);
 
       it('keeps a device\'s late change in the history even when newer changes already overwrote it', async () => {
         const col = await makeAudited();

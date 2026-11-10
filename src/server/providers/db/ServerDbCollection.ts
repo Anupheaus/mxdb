@@ -20,6 +20,7 @@ import { runInWriteLock } from '../../collections/runInWriteLock';
 import { getSlowQueryThresholdMs } from './slowQueryThreshold';
 import { redactMongoErrorMessage } from './redactMongoErrorMessage';
 import { directWriteEntryFor } from './directWriteEntry';
+import { carriesChange } from './carriesChange';
 
 const slowFilterParseThreshold = 1000;
 
@@ -929,7 +930,9 @@ export class ServerDbCollection<RecordType extends Record = Record> {
     const storedAudit = await auditCollection.findOne({ _id: record.id as any }, { projection: { 'entries.id': 1 }, session });
     const storedEntryIds = new Set(((storedAudit as { entries?: { id: string }[] } | null)?.entries ?? []).map(({ id }) => id));
     const storedLastId = storedMeta.lastAuditEntryId ?? [...storedEntryIds].reduce((last, id) => (id > last ? id : last), '');
-    return !auditor.entriesOf(audit).some(({ id }) => !storedEntryIds.has(id) && id < storedLastId);
+    // Only an entry that changes something can be a late change: an empty one from a device whose clock runs behind also
+    // sorts before the server's newest entry (sc-5471).
+    return !auditor.entriesOf(audit).some(entry => !storedEntryIds.has(entry.id) && entry.id < storedLastId && carriesChange(entry));
   }
 
   async #writeRecords(records: RecordType[], session?: ClientSession, lastAuditEntryIds?: Map<string, string | undefined>) {
