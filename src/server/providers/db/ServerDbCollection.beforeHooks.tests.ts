@@ -27,7 +27,7 @@ interface Place extends Record {
 const hookedCollection = defineCollection<Place>({ name: 'before_hooks_places', indexes: [] });
 const AUDIT_COLLECTION_NAME = `${hookedCollection.name}_sync`;
 
-/** Audit writes on upsert are fire-and-forget, so poll (condition-based, no fixed sleep) until they land. */
+/** For checks that poll (condition-based, no fixed sleep). Upsert stores its audit before resolving (sc-5480). */
 const AUDIT_WAIT = { timeout: 10_000, interval: 20 };
 
 // The registry cannot be cleared, so the collection's hooks delegate to per-test implementations.

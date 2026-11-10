@@ -8,6 +8,7 @@ import { useAuthentication } from '@anupheaus/nexus/server';
 import { DateTime } from 'luxon';
 import { auditor } from '../../../common';
 import type { AnyAuditOf, ServerAuditOf } from '../../../common';
+import { AuditEntryType } from '../../../common/auditor';
 import { normaliseFilterConditions } from '../../../common/filters';
 import { toServerAuditOf } from '../../audit/toServerAuditOf';
 import { compactServerAudit } from '../../audit/compactServerAudit';
@@ -94,7 +95,15 @@ export interface SyncWriteResult {
   error?: string;
   /** Set when the record was already stored exactly as given, so nothing was written (neither the record nor its audit). */
   isUnchanged?: boolean;
+  /**
+   * Set (with `error`) when an upsert was merged against a history read before the record was deleted, so it does not
+   * hold the stored Deleted entry and was not written (sc-5480). The client sends it again and is merged with the delete.
+   */
+  isMergedBeforeDelete?: boolean;
 }
+
+/** The `error` of a {@link SyncWriteResult} whose upsert was merged before a delete it does not know of. */
+export const MERGED_BEFORE_DELETE_ERROR = 'The record was deleted while this change was being merged.';
 
 export interface DbCollectionSyncProps<RecordType extends Record> {
   updated: RecordType[];
@@ -336,8 +345,8 @@ export class ServerDbCollection<RecordType extends Record = Record> {
     const collection = await this.#getCollection();
     const incoming = Array.isArray(records) ? records : [records];
     if (incoming.length === 0) return;
-    // The stored records, the hook's judgement and the save happen under the collection's write lock (sc-2402).
-    const written = await runInWriteLock(this.#collection, async () => {
+    // The stored records, the hook's judgement, the save and its history happen under the collection's write lock (sc-2402).
+    await runInWriteLock(this.#collection, async () => {
       const existingRecords = await this.get(incoming.ids());
       const changing = resetAudit ? incoming : incoming.filter(record => {
         const existing = existingRecords.findById(record.id);
@@ -348,14 +357,24 @@ export class ServerDbCollection<RecordType extends Record = Record> {
       // A server-side write has no client to tell, so the hook's amendment notes are not used here.
       const { records: toWrite } = await runBeforeUpsertHook({ collection: this.#collection, records: changing, existingRecords });
       const docs = await Promise.all(toWrite.map(record => dbUtils.serializeWithMeta(record)));
-      const result = await collection.bulkWrite(toWrite.map((record, index) => ({ replaceOne: { replacement: docs[index]!, filter: { _id: record.id as any }, upsert: true } })));
-      if (!result.isOk()) throw new InternalError('Bulk write failed - result is not as expected');
-      const upsertedCount = result.matchedCount + result.upsertedCount;
-      if (upsertedCount !== toWrite.length) throw new InternalError(`Upsert failed - expected ${toWrite.length}, got ${upsertedCount}`);
-      return { existingRecords, toWrite };
+      const writeRecords = async (session?: ClientSession) => {
+        const result = await collection.bulkWrite(
+          toWrite.map((record, index) => ({ replaceOne: { replacement: docs[index]!, filter: { _id: record.id as any }, upsert: true } })),
+          session ? { session } : undefined,
+        );
+        if (!result.isOk()) throw new InternalError('Bulk write failed - result is not as expected');
+        const upsertedCount = result.matchedCount + result.upsertedCount;
+        if (upsertedCount !== toWrite.length) throw new InternalError(`Upsert failed - expected ${toWrite.length}, got ${upsertedCount}`);
+      };
+      if (this.#config.disableAudit === true) return writeRecords();
+      // The history is part of the write (sc-5480): stored with the records in one transaction, before the lock is
+      // released and before upsert resolves, so the sync never judges a record by a history that is not there yet.
+      const audits = await this.#createUpsertAudits(existingRecords, toWrite, { resetAudit });
+      await this.#inTransaction(async session => {
+        await writeRecords(session);
+        await this.#writeAuditRecords(audits, session);
+      });
     });
-    if (written == null || this.#config.disableAudit === true) return;
-    void this.#upsertAudit(written.existingRecords, written.toWrite, { resetAudit }).catch(this.#onAuditWriteFailed('Audit upsert failed'));
   }
 
   public async remove(id: string, props?: DeleteProps<RecordType>): Promise<void>;
@@ -364,22 +383,33 @@ export class ServerDbCollection<RecordType extends Record = Record> {
   public async remove(ids: string | string[], { clearAudit = false, deleteSnapshots: passedSnapshots }: DeleteProps<RecordType> = {}): Promise<void> {
     const collection = await this.#getCollection();
     const recordIds = Array.isArray(ids) ? ids : [ids];
-    // The hook's judgement and the delete happen under the collection's write lock (sc-2402).
-    const deleteSnapshots = await runInWriteLock(this.#collection, async () => {
+    // The hook's judgement, the delete and its Deleted history entry happen under the collection's write lock (sc-2402).
+    await runInWriteLock(this.#collection, async () => {
       // Runs while the records are still stored, so the hook can read what is about to be deleted.
       await runBeforeDeleteHook({ collection: this.#collection, recordIds, getStoredIds: async idsToCheck => (await this.get(idsToCheck)).ids() });
-      let snapshots: { [recordId: string]: RecordType } | undefined = passedSnapshots;
-      if (this.#config.disableAudit !== true && !clearAudit && snapshots == null) {
+      const deleteRecords = async (session?: ClientSession) => {
+        const result = await collection.deleteMany({ _id: { $in: recordIds as any[] } }, session ? { session } : undefined);
+        if (!result.acknowledged) throw new InternalError('Delete failed');
+      };
+      if (this.#config.disableAudit === true) return deleteRecords();
+      let deleteSnapshots: { [recordId: string]: RecordType } | undefined = passedSnapshots;
+      if (!clearAudit && deleteSnapshots == null) {
         const fetched = await this.get(recordIds);
-        snapshots = Object.fromEntries(fetched.map(r => [r.id, r] as const));
+        deleteSnapshots = Object.fromEntries(fetched.map(r => [r.id, r] as const));
       }
-      const result = await collection.deleteMany({ _id: { $in: recordIds as any[] } });
-      if (!result.acknowledged) throw new InternalError('Delete failed');
-      return snapshots;
+      // A remove is not finished until its Deleted entry is stored (sc-5480): the sync refuses a resent old copy by that
+      // entry, so it is written with the delete in one transaction — both or neither — before the lock is released.
+      const existingAuditRecords = await this.#getAuditRecords(recordIds);
+      const auditCollection = await this.#getAuditCollection();
+      await this.#inTransaction(async session => {
+        await deleteRecords(session);
+        if (clearAudit) {
+          await auditCollection.deleteMany({ _id: { $in: recordIds } }, { session });
+        } else {
+          await this.#writeAuditRecords(existingAuditRecords.map(auditRecord => auditor.delete(auditRecord)), session, { deleteSnapshots });
+        }
+      });
     });
-    if (this.#config.disableAudit !== true) {
-      void this.#deleteAudit(recordIds, { clearAudit, deleteSnapshots }).catch(this.#onAuditWriteFailed('Audit delete failed'));
-    }
   }
 
   @bind
@@ -439,11 +469,15 @@ export class ServerDbCollection<RecordType extends Record = Record> {
       let lastWriteRecordsMs = 0;
       let lastWriteAuditMs = 0;
       let isUnchanged = false;
+      let isMergedBeforeDelete = false;
       try {
         await this.#withRecordRetry(record.id, async () => {
           const wtT0 = performance.now();
           await session.withTransaction(async () => {
             txnAttempts += 1;
+            // Merged with a history read before the record was deleted (sc-5480): storing it would bring the record back.
+            isMergedBeforeDelete = audit != null && await this.#missesAStoredDelete(record.id, audit, session);
+            if (isMergedBeforeDelete) return;
             // A write that changes nothing the server holds (the same value sent again, or a change a hook put back) is
             // not stored: its entries would only grow the record's history. A late change already overwritten is stored.
             isUnchanged = await this.#isStoredAsIs(record, audit, session);
@@ -465,6 +499,10 @@ export class ServerDbCollection<RecordType extends Record = Record> {
         const recordSyncMs = Math.round(performance.now() - recordSyncT0);
         if (recordSyncMs >= 2_000) {
           this.#logger.warn('[sync] slow upsert', { collection: this.#collection.name, recordId: record.id, durationMs: recordSyncMs, txnAttempts });
+        }
+        if (isMergedBeforeDelete) {
+          this.#logger.warn('[sync] upsert merged before a delete — not stored; the client sends it again and is told of the delete', { collection: this.#collection.name, recordId: record.id });
+          return { id: record.id, error: MERGED_BEFORE_DELETE_ERROR, isMergedBeforeDelete };
         }
         return isUnchanged ? { id: record.id, isUnchanged } : { id: record.id };
       } catch (err) {
@@ -708,7 +746,24 @@ export class ServerDbCollection<RecordType extends Record = Record> {
     return nest();
   }
 
-  async #upsertAudit(existingRecords: RecordType[], records: RecordType[], { resetAudit = false }: UpsertProps = {}) {
+  /**
+   * Runs `write` in one transaction, so a record change and its history are stored together or not at all. The session is
+   * registered with the owning ServerDb so shutdown can abort it, like the sync's.
+   */
+  async #inTransaction(write: (session: ClientSession) => Promise<void>): Promise<void> {
+    const db = await this.#getDb();
+    const session = db.client.startSession();
+    const unregister = this.#registerSession?.(session);
+    try {
+      await session.withTransaction(() => write(session));
+    } finally {
+      unregister?.();
+      await session.endSession();
+    }
+  }
+
+  /** The history each written record's audit becomes; records whose history does not change are left out. */
+  async #createUpsertAudits(existingRecords: RecordType[], records: RecordType[], { resetAudit = false }: UpsertProps = {}): Promise<AnyAuditOf<RecordType>[]> {
     const recordIds = records.ids();
     const existingAuditRecords = await this.#getAuditRecords(recordIds);
     const newAuditRecords = records.mapWithoutNull(record => {
@@ -759,32 +814,7 @@ export class ServerDbCollection<RecordType extends Record = Record> {
         this.#auditLogger(record.id, 'audit update'),
       );
     });
-    await this.#writeAuditRecords(newAuditRecords);
-  }
-
-  /**
-   * The rejection handler for an audit write that is deliberately NOT awaited, so the caller's upsert/delete is
-   * not held up by audit bookkeeping. Such a write must handle its own failure: an unawaited rejection escapes as
-   * an *unhandled* rejection, which fails an entire vitest run even when every test passed — one code-215 here
-   * killed Vision's integration job at 1322/1322 green. A drop landing mid-write is normal teardown rather than a
-   * fault, so it is logged at debug; see `isTeardownError`.
-   */
-  #onAuditWriteFailed(message: string): (error: unknown) => void {
-    return error => {
-      const level = isTeardownError(error) ? 'debug' : 'error';
-      this.#logger[level](message, { collectionName: this.#collection.name, error: toLoggableError(error) });
-    };
-  }
-
-  async #deleteAudit(ids: string[], { clearAudit = false, deleteSnapshots }: DeleteProps<RecordType> = {}) {
-    const existingAuditRecords = await this.#getAuditRecords(ids);
-    if (clearAudit) {
-      const collection = await this.#getAuditCollection();
-      await collection.deleteMany({ _id: { $in: ids } });
-    } else {
-      const newAuditRecords = existingAuditRecords.map(auditRecord => auditor.delete(auditRecord));
-      await this.#writeAuditRecords(newAuditRecords, undefined, { deleteSnapshots });
-    }
+    return newAuditRecords;
   }
 
   async #clearAudit() {
@@ -879,6 +909,22 @@ export class ServerDbCollection<RecordType extends Record = Record> {
     return !auditor.entriesOf(audit).some(({ id }) => !storedEntryIds.has(id) && id < storedLastId);
   }
 
+  /**
+   * Whether the stored history holds a Deleted entry that `audit` lacks: the change was merged against a history read before
+   * that delete was stored, so writing it would store the old record again and replace the history that says it was deleted.
+   * A change merged after the delete holds the entry (and any Restored entry after it is the merge's decision, not a race).
+   */
+  async #missesAStoredDelete(recordId: string, audit: AnyAuditOf<RecordType>, session: ClientSession): Promise<boolean> {
+    if (this.#config.disableAudit === true) return false;
+    const auditCollection = await this.#getAuditCollection();
+    const stored = await auditCollection.findOne({ _id: recordId as any }, { projection: { 'entries.id': 1, 'entries.type': 1 }, session });
+    const storedEntries = (stored as { entries?: { id: string; type: AuditEntryType }[] } | null)?.entries ?? [];
+    const storedDeleteIds = storedEntries.filter(({ type }) => type === AuditEntryType.Deleted).map(({ id }) => id);
+    if (storedDeleteIds.length === 0) return false;
+    const mergedIds = new Set(auditor.entriesOf(audit).map(({ id }) => id));
+    return storedDeleteIds.some(id => !mergedIds.has(id));
+  }
+
   async #writeRecords(records: RecordType[], session?: ClientSession, lastAuditEntryIds?: Map<string, string | undefined>) {
     if (records.length === 0) return;
     const getColT0 = performance.now();
@@ -936,6 +982,9 @@ export class ServerDbCollection<RecordType extends Record = Record> {
         codeName: (error as any)?.codeName,
         errorLabels: (error as any)?.errorLabels,
       });
+      // Inside a transaction the driver's own error is kept: its labels (TransientTransactionError, e.g. a collection's
+      // catalog changing under a first write) are what lets `withTransaction` retry it.
+      if (session != null) throw error;
       throw new InternalError({ error, message: `Failed to write audit records for "${this.#collection.name}".` });
     }
   }
