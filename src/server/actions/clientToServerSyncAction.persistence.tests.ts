@@ -565,8 +565,11 @@ describe('handleClientToServerSync — two devices create the same record offlin
           accepts: { judged: [[A_OVER_B]], rejected: [], stored: A_OVER_B, written: true },
           refuses: { judged: [[A_OVER_B]], rejected: [{ id: 'i1', reason: SOMEONE_ELSE, kind: 'validation' }], stored: STORED_B, written: true },
         },
-        // The split two-sync case: the server cannot tell it from a pre-reset edit, so it is dropped (a follow-up story).
-        'edits only, after an acknowledged create': { accepts: NOTHING, refuses: NOTHING },
+        // The split two-sync case (sc-5408): the history is not a reset, so A's edits on its own earlier create are judged.
+        'edits only, after an acknowledged create': {
+          accepts: { judged: [[A_OVER_B]], rejected: [], stored: A_OVER_B, written: true },
+          refuses: { judged: [[A_OVER_B]], rejected: [{ id: 'i1', reason: SOMEONE_ELSE, kind: 'validation' }], stored: STORED_B, written: true },
+        },
         'bare create only': { accepts: NOTHING, refuses: NOTHING },
       },
       reset: {
@@ -587,6 +590,48 @@ describe('handleClientToServerSync — two devices create the same record offlin
 
       expect({ ...outcome, written: harness.collection.sync.mock.calls.length > 0 }).toEqual(expected[start][what][hook]);
       if (start === 'reset') expect(harness.collection.audits.get('i1')!.entries.map(({ id }) => id), 'the reset audit is untouched').toEqual([entryId(3)]);
+    });
+
+    // sc-5408: A syncs its bare create alone (after B's reached the server), then, in a later sync, the change it made on top.
+    describe('the split two-sync case (sc-5408)', () => {
+      const splitSync = async () => {
+        await syncA([createdEntry({ id: 'i1' }, 1)]);
+        return syncA([branchedEntry(1), replaceEntry(2, 'name', 'a')]);
+      };
+
+      it('the change A made on its own create reaches the hook, and its refusal reaches A', async () => {
+        refuse();
+
+        expect(await splitSync()).toEqual({ judged: [[A_OVER_B]], rejected: [{ id: 'i1', reason: SOMEONE_ELSE, kind: 'validation' }], stored: STORED_B });
+      });
+
+      it('when the hook lets it through, A\'s change lands on B\'s record, as one entry dated after the history', async () => {
+        expect(await splitSync()).toEqual({ judged: [[A_OVER_B]], rejected: [], stored: A_OVER_B });
+        const ids = harness.collection.audits.get('i1')!.entries.map(({ id }) => id);
+        expect([ids[0], ids.length, ids.at(-1)! > entryId(3)]).toEqual([entryId(3), 2, true]);
+        expect(auditor.createRecordFrom(harness.collection.audits.get('i1')!), 'the audit replays to what is stored').toEqual(A_OVER_B);
+      });
+
+      it('a history reset before the mark existed (a Created with no `reset`) is read as a plain create, so the change is judged', async () => {
+        // Such an audit looks exactly like another device's create: the server can no longer tell, and judging is the safe side.
+        harness.seed(STORED_B, [createdEntry(STORED_B, 3)]);
+
+        expect(await splitSync()).toEqual({ judged: [[A_OVER_B]], rejected: [], stored: A_OVER_B });
+      });
+
+      it('against a reset history the same split sync changes nothing', async () => {
+        harness.seed(STORED_B, [{ ...createdEntry(STORED_B, 3), reset: true } as AuditEntry]);
+        refuse();
+
+        expect(await splitSync()).toEqual({ judged: [], rejected: [], stored: STORED_B });
+        expect(harness.collection.audits.get('i1')!.entries.map(({ id }) => id)).toEqual([entryId(3)]);
+      });
+
+      it('edits that only delete A\'s own earlier copy leave B\'s record as it is', async () => {
+        await syncA([createdEntry({ id: 'i1' }, 1)]);
+
+        expect(await syncA([branchedEntry(1), deletedEntry(2)])).toEqual({ judged: [], rejected: [], stored: STORED_B });
+      });
     });
 
     it('a reset mark a device sends is dropped, so a device can never make its own create look like a reset', async () => {
