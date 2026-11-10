@@ -33,3 +33,12 @@ export function generateUlidAfter(latestId: string | undefined): string {
   if (latestId == null || candidate > latestId) return candidate;
   return ulid(decodeTime(latestId) + 1);
 }
+
+/**
+ * A ULID dated one millisecond after `latestId`, whatever the time now: for an entry that belongs right after the history it
+ * is added to (a change made to the record outside that history, found only later), so every change made after the history
+ * still sorts after it.
+ */
+export function generateUlidJustAfter(latestId: string): string {
+  return ulid(decodeTime(latestId) + 1);
+}

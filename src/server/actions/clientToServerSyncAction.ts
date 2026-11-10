@@ -17,6 +17,8 @@ import { auditor, AuditEntryType } from '../../common';
 import type { AnyAuditOf, AuditOf } from '../../common';
 import { isActiveRecordState } from '../../common/sync-engine';
 import { isTransientMongoCloseError } from '../utils/isTransientMongoCloseError';
+import { directWriteEntryFor } from '../providers/db/directWriteEntry';
+import { generateUlidJustAfter } from '../../common/auditor/time';
 import { runBeforeWriteHooksOnSyncStates } from './runBeforeWriteHooksOnSyncStates';
 import { runInWriteLock } from '../collections/runInWriteLock';
 import { readReadableRecords } from './readReadableRecords';
@@ -79,7 +81,11 @@ export function buildServerRecordStates(
         // Audit exists but no live record — treat as deleted (split-brain guard).
         records.push({ recordId, audit: entries });
       } else {
-        records.push({ record: liveRecord, audit: entries });
+        // A change written to the record without mxdb that the history has not recorded yet (the server was stopped, or
+        // the change stream has not reached it) is recorded now, dated right after the history, so the edit merged over
+        // it keeps it (sc-5449).
+        const directWriteEntry = directWriteEntryFor({ entries, storedRecord: liveRecord, generateEntryId: generateUlidJustAfter });
+        records.push({ record: liveRecord, audit: directWriteEntry == null ? entries : [...entries, directWriteEntry] });
       }
     }
   }

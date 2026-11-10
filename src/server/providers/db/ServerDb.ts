@@ -12,6 +12,7 @@ import { AsyncLocalStorage } from 'async_hooks';
 import { createMongoCommandLogging } from './mongoCommandLogging';
 import { classifyMongoFailure, type MongoFailureLike } from './classifyMongoError';
 import { clearStaleStoredHashes } from './clearStaleStoredHashes';
+import { recordDirectWrites } from './recordDirectWrites';
 import { isStoredMetaOnlyChange } from './isStoredMetaOnlyChange';
 
 interface Props {
@@ -383,7 +384,10 @@ export class ServerDb {
         operationType: validOperationType,
         debounceMs: this.#changeStreamDebounceMs,
         onAfterDispatch: event => this.#runExtensionHooksAfterChange(event),
-        onStoredDocuments: documents => clearStaleStoredHashes({ collection: db.collection(collectionName), documents, logger: this.#logger }),
+        onStoredDocuments: async documents => {
+          await clearStaleStoredHashes({ collection: db.collection(collectionName), documents, logger: this.#logger });
+          await recordDirectWrites({ collection, documents, logger: this.#logger });
+        },
       }));
       events.process(change as ChangeStreamDocument<MongoDocOf<Record>>);
     });

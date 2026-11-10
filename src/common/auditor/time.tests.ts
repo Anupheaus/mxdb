@@ -1,6 +1,6 @@
 import { describe, it, expect, afterEach } from 'vitest';
 import { decodeTime, isValid as isValidUlid, monotonicFactory } from 'ulidx';
-import { generateUlid, generateUlidAfter, setClockDrift } from './time';
+import { generateUlid, generateUlidAfter, generateUlidJustAfter, setClockDrift } from './time';
 
 // Reset clock drift after each test so tests don't interfere with each other
 afterEach(() => {
@@ -132,5 +132,30 @@ describe('generateUlidAfter', () => {
     const ts = decodeTime(generateUlidAfter(ulidAt(before - HOUR_MS)));
 
     expect(ts).toBeGreaterThanOrEqual(before);
+  });
+});
+
+describe('generateUlidJustAfter', () => {
+  const HOUR_MS = 3_600_000;
+  const ulidAt = (timeMs: number): string => monotonicFactory()(timeMs);
+
+  it.each([
+    ['an hour ago', -HOUR_MS],
+    ['now', 0],
+    ['an hour ahead', HOUR_MS],
+  ])('is a valid ULID dated one millisecond after a latest id from %s, so it sorts after it', (_label, offsetMs) => {
+    const latestTime = Date.now() + offsetMs;
+    const latest = ulidAt(latestTime);
+
+    const id = generateUlidJustAfter(latest);
+
+    expect([isValidUlid(id), decodeTime(id), id > latest]).toEqual([true, latestTime + 1, true]);
+  });
+
+  it('sorts before anything written after the history it follows', () => {
+    const latest = ulidAt(Date.now() - HOUR_MS);
+    const later = ulidAt(Date.now() - HOUR_MS + 2);
+
+    expect(generateUlidJustAfter(latest) < later).toBe(true);
   });
 });
