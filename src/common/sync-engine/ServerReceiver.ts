@@ -4,6 +4,7 @@ import { replayHistoryEndState } from '../auditor/replay';
 import { hashRecord } from '../auditor/hash';
 import { generateAnchorUlid } from '../auditor/time';
 import { updateAuditWith } from '../auditor/api';
+import { asClientEntry } from './asClientEntry';
 import type { AuditCreatedEntry, AuditEntry, AuditOf } from '../auditor';
 import {
   type ClientDispatcherRequest,
@@ -83,14 +84,13 @@ interface ServerReceiverProps {
  */
 let srIdCounter = 0;
 
-/** A client's entry without the server-only `reset` mark (see `AuditCreatedEntry.reset`). */
-function withoutResetMark(entry: AuditEntry): AuditEntry {
-  if (entry.type !== AuditEntryType.Created || !('reset' in entry)) return entry;
-  const { reset: _reset, ...rest } = entry as AuditCreatedEntry;
-  return rest as AuditEntry;
+/** An edit (not a create, not a delete) to a record the server holds no state for. */
+/** What a late write from a device is judged against: where the stored history starts, and the record it holds. */
+interface LateWriteContext {
+  historyStart: string;
+  storedRecord: MXDBRecord;
 }
 
-/** An edit (not a create, not a delete) to a record the server holds no state for. */
 interface UnheldWrite {
   collectionName: string;
   recordId: string;
@@ -237,7 +237,8 @@ export class ServerReceiver {
 
           const serverStateForEntries = colServerMap.get(recordId);
           // Only the server marks a history reset: a client's mark is dropped, so it can never be stored (sc-4321).
-          const clientEntries = rec.entries.map(withoutResetMark);
+          // A client sets only its entries' content: attribution, a reset mark and the like are the server's (sc-4321, sc-5449).
+          const clientEntries = rec.entries.map(asClientEntry);
           // sc-4321: a create made before another device's create of the same record reached the server.
           const lateCreateEntries = this.#entriesWithLateSecondCreate(recordId, clientEntries, serverStateForEntries);
           const lateCreateRecord = lateCreateEntries != null ? replayHistoryEndState(lateCreateEntries, undefined, this.#logger).live : undefined;
@@ -719,7 +720,9 @@ export class ServerReceiver {
    * record as ONE `Updated` entry, dated after every entry the server and the device hold. The result is exactly what the
    * same entries give when the create sorts after the stored one, and the before-write hooks judge it like any other write,
    * so an app can refuse a change made without seeing the other device's. A device that created and then deleted the record,
-   * a stored record that is deleted, and a change the stored record already has leave the record as it is.
+   * a stored record that is deleted, and a change the stored record already has leave the record as it is. The same holds
+   * when the device synced its create alone earlier and now sends only its edits on top of it (sc-5408,
+   * {@link #editsOnEarlierOwnCreate}).
    */
   #entriesWithLateSecondCreate(recordId: string, clientEntries: AuditEntry[], serverState: MXDBActiveRecordState | MXDBDeletedRecordState | undefined): AuditEntry[] | undefined {
     if (serverState == null || !isActiveRecordState(serverState)) return undefined;
@@ -731,15 +734,38 @@ export class ServerReceiver {
     const historyStart = first.compaction?.historyStart ?? first.id;
     const entries = clientEntries.filter(entry => entry.type !== AuditEntryType.Branched);
     const clientCreate = entries.find(entry => entry.type === AuditEntryType.Created);
-    if (clientCreate == null || clientCreate.id >= historyStart) return undefined;
-    const clientRecord = replayHistoryEndState(entries, undefined, this.#logger).live;
     const storedRecord = replayHistoryEndState(serverEntries, undefined, this.#logger).live;
-    if (clientRecord == null || storedRecord == null) return undefined;
-    const changed = auditor.rebaseRecord((clientCreate as AuditCreatedEntry).record, clientRecord, storedRecord);
+    if (storedRecord == null) return undefined;
+    const changed = clientCreate != null
+      ? this.#changeSinceOwnCreate(clientCreate as AuditCreatedEntry, entries, { historyStart, storedRecord })
+      : this.#editsOnEarlierOwnCreate(entries, { historyStart, storedRecord });
+    if (changed == null) return undefined;
     const latestId = this.#getLastAuditEntryId([...serverEntries, ...entries]);
     const audit = updateAuditWith(changed, { id: recordId, entries: serverEntries } as AuditOf<MXDBRecord>, () => auditor.generateUlidAfter(latestId), storedRecord, this.#logger);
     const mergedEntries = auditor.entriesOf(audit) as AuditEntry[];
     return mergedEntries.length > serverEntries.length ? mergedEntries : undefined;
+  }
+
+  /** A device's record as it ends, rebased from its own create onto the stored record; undefined unless its create is late. */
+  #changeSinceOwnCreate(clientCreate: AuditCreatedEntry, entries: AuditEntry[], { historyStart, storedRecord }: LateWriteContext): MXDBRecord | undefined {
+    if (clientCreate.id >= historyStart) return undefined;
+    const clientRecord = replayHistoryEndState(entries, undefined, this.#logger).live;
+    if (clientRecord == null) return undefined;
+    return auditor.rebaseRecord(clientCreate.record, clientRecord, storedRecord);
+  }
+
+  /**
+   * sc-5408 — the split two-sync case: the device synced its bare create alone (older than the stored history, so it changed
+   * nothing), and now sends only the edits it made on top of it, anchored on that create. Those edits are older than the
+   * stored start too, and would be dropped like a pre-reset edit. On a history that is not a reset they are the device's
+   * late change: laid over the stored record. Undefined when no edit is that old, or when they end with the record deleted
+   * (the device's own copy; the stored record stays). A history reset before the `reset` mark existed looks like a plain
+   * create here and is judged the same way.
+   */
+  #editsOnEarlierOwnCreate(entries: AuditEntry[], { historyStart, storedRecord }: LateWriteContext): MXDBRecord | undefined {
+    if (!entries.some(entry => entry.id < historyStart)) return undefined;
+    const anchor = { type: AuditEntryType.Created, id: generateAnchorUlid(), record: Object.clone(storedRecord) } as AuditEntry;
+    return replayHistoryEndState([anchor, ...entries], undefined, this.#logger).live;
   }
 
   #getLastAuditEntryId(entries: AuditEntry[]): string {

@@ -59,7 +59,6 @@ export function useSubscriptionWrapper<RecordType extends Record, Request extend
   // live lists spent.
   const lastResultRef = useRef<Response | typeof NoResultDelivered>(NoResultDelivered);
   const executeValidateAndUpdateRef = useRef(() => Promise.resolve());
-  const remoteQueryCalledRef = useRef(false);
 
   // Re-run the query when the client collection changes, debounced (via @anupheaus/common's `debounce`) so a burst
   // of changes collapses into one re-execution instead of one per change. Cleanup cancels any pending re-run and
@@ -145,19 +144,27 @@ export function useSubscriptionWrapper<RecordType extends Record, Request extend
       onResponse?.(response);
     };
 
-    remoteQueryCalledRef.current = await withTimeout(
+    // Set the moment the server's answer reaches this request — not when the answer's own run finishes. That run, a
+    // replay of the answer and the initial run below can all be reading the collection at once, and only the newest
+    // read is delivered (older ones come back as RequestCancelled). Once the answer has arrived, the initial run must
+    // therefore deliver its result whenever it is the newest: standing down until the answer's run had FINISHED left
+    // nothing delivered at all when the answer's run was the one cancelled, and a live query stayed loading for ever
+    // (Vision sc-5221: a device reload stuck on "Authenticating, please wait...").
+    let hasServerAnswered = false;
+
+    const isSubscribedOnServer = await withTimeout(
       remoteInvoke({
         request: (onRequestTransform?.(request) ?? request) as RemoteRequest,
         disable: disable || isActionRequired,
         onEmptyUpdate: onRemoteDefaultResponse,
         onUpdate: async response => {
+          hasServerAnswered = true;
           try {
             await onRemoteResponse?.(response);
             await executeValidateAndUpdate();
           } catch (error) {
             reportRerunError(error);
           }
-          remoteQueryCalledRef.current = false;
         },
       }),
       ACTION_TIMEOUT_MS,
@@ -173,13 +180,14 @@ export function useSubscriptionWrapper<RecordType extends Record, Request extend
       await onRemoteResponse?.(result);
     }
 
-    let result = await execute();
-    if (result === RequestCancelled) result = freezeInDevelopment(onDefaultResponse());
-    if (!remoteQueryCalledRef.current) {
-      validateAndUpdate(result);
-    }
+    const result = await execute();
+    // A cancelled run is not delivered: the newer run that cancelled it delivers. While the server's answer is still to
+    // come, the local result is not delivered either (it may predate the records the server is pushing): the answer's
+    // own run delivers.
+    const isAwaitingServerAnswer = isSubscribedOnServer && !hasServerAnswered;
+    if (result !== RequestCancelled && !isAwaitingServerAnswer) validateAndUpdate(result);
 
-    return result;
+    return result === RequestCancelled ? freezeInDevelopment(onDefaultResponse()) : result;
   }
 
   return invoke;

@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeAll, afterAll, beforeEach } from 'vitest';
 import { MongoClient } from 'mongodb';
 import { MongoMemoryReplSet } from 'mongodb-memory-server';
+import { monotonicFactory } from 'ulidx';
 import type { Logger, Record } from '@anupheaus/common';
 import { defineCollection } from '../../../common/defineCollection';
 import { MERGED_BEFORE_DELETE_ERROR, ServerDbCollection } from './ServerDbCollection';
@@ -882,6 +883,127 @@ describe('ServerDbCollection', () => {
       }, AUDIT_WAIT);
     });
 
+    it('records a drift from the audit as its own entry, made outside the app, before the upsert\'s own change (sc-5449)', async () => {
+      const col = await makeAudited();
+      await col.upsert(makeItem({ id: 'au-6b', name: 'Audited' }));
+      await waitForAuditTypes(col, 'au-6b', [AuditEntryType.Created]);
+      await client.db('testdb').collection(auditedCollection.name).updateOne({ _id: 'au-6b' as any }, { $set: { name: 'Drifted' } });
+      mockAuthenticatedUser.mockReturnValue({ id: 'office-1' });
+
+      await col.upsert(makeItem({ id: 'au-6b', name: 'Drifted', value: 5 }));
+
+      await vi.waitFor(async () => {
+        const entries = (await col.getAudit('au-6b'))!.entries;
+        expect(entries.map(({ type, userId }) => [type, userId])).toEqual([
+          [AuditEntryType.Created, '__mxdb_system__'],
+          [AuditEntryType.Updated, '__mxdb_direct_write__'],
+          [AuditEntryType.Updated, 'office-1'],
+        ]);
+        expect((entries[1] as { ops: unknown[] }).ops).toEqual([{ type: 1, path: 'name', value: 'Drifted' }]);
+      }, AUDIT_WAIT);
+    });
+
+    describe('recordDirectWrites (sc-5449)', () => {
+      const directEntriesOf = async (col: ServerDbCollection<TestItem>, id: string) =>
+        (await col.getAudit(id))!.entries.filter(({ userId }) => userId === '__mxdb_direct_write__');
+
+      async function storedWithHistory(col: ServerDbCollection<TestItem>, id: string): Promise<void> {
+        await col.upsert(makeItem({ id, name: 'Booked' }));
+        await waitForAuditTypes(col, id, [AuditEntryType.Created]);
+        await col.upsert(makeItem({ id, name: 'Booked', value: 1 }));
+        await waitForAuditTypes(col, id, [AuditEntryType.Created, AuditEntryType.Updated]);
+      }
+
+      it('records a change written without mxdb as one entry made outside the app, which replays to the stored record', async () => {
+        const col = await makeAudited();
+        await storedWithHistory(col, 'dw-1');
+        await client.db('testdb').collection(auditedCollection.name).updateOne({ _id: 'dw-1' as any }, { $set: { name: 'Cancelled' } });
+
+        await col.recordDirectWrites(['dw-1']);
+
+        const audit = (await col.getAudit('dw-1'))!;
+        expect(audit.entries.map(({ type }) => type)).toEqual([AuditEntryType.Created, AuditEntryType.Updated, AuditEntryType.Updated]);
+        expect(audit.entries[2]).toMatchObject({ userId: '__mxdb_direct_write__', ops: [{ type: 1, path: 'name', value: 'Cancelled' }] });
+        expect(audit.entries[2]!.id > audit.entries[1]!.id).toBe(true);
+        expect(auditor.createRecordFrom(audit)).toEqual(await col.get('dw-1'));
+      });
+
+      it('records nothing for a record mxdb wrote, nor twice for the same change', async () => {
+        const col = await makeAudited();
+        await storedWithHistory(col, 'dw-2');
+        await col.recordDirectWrites(['dw-2']);
+        expect(await directEntriesOf(col, 'dw-2')).toEqual([]);
+
+        await client.db('testdb').collection(auditedCollection.name).updateOne({ _id: 'dw-2' as any }, { $set: { name: 'Cancelled' } });
+        await col.recordDirectWrites(['dw-2']);
+        await col.recordDirectWrites(['dw-2']);
+        expect(await directEntriesOf(col, 'dw-2')).toHaveLength(1);
+      });
+
+      it('records nothing for a record mxdb stored with undefined fields and dates (how it reads back is not a change)', async () => {
+        const col = await makeAudited();
+        const createdAt = DateTime.fromISO('2026-11-10T09:00:00.123Z');
+        await col.upsert({ id: 'dw-u', name: 'Booked', category: undefined, createdAt } as TestItem);
+        await waitForAuditTypes(col, 'dw-u', [AuditEntryType.Created]);
+        await col.upsert({ id: 'dw-u', name: 'Booked', value: undefined, category: undefined, createdAt: createdAt.plus({ days: 1 }) } as TestItem);
+        await waitForAuditTypes(col, 'dw-u', [AuditEntryType.Created, AuditEntryType.Updated]);
+
+        await col.recordDirectWrites(['dw-u']);
+
+        expect(await directEntriesOf(col, 'dw-u')).toEqual([]);
+      });
+
+      it('leaves a record with no history, a deleted history, an unknown id and an unaudited collection alone', async () => {
+        const col = await makeAudited();
+        const db = client.db('testdb');
+        await db.collection(auditedCollection.name).insertOne({ _id: 'dw-3' as any, name: 'Inserted by a script', value: 0 });
+        await storedWithHistory(col, 'dw-4');
+        await col.remove('dw-4');
+        await waitForAuditTypes(col, 'dw-4', [AuditEntryType.Created, AuditEntryType.Updated, AuditEntryType.Deleted]);
+        await db.collection(auditedCollection.name).insertOne({ _id: 'dw-4' as any, name: 'Put back by hand', value: 0 });
+
+        await col.recordDirectWrites(['dw-3', 'dw-4', 'dw-missing']);
+        const unaudited = await makeCol();
+        await unaudited.upsert(makeItem({ id: 'dw-5', name: 'Plain' }));
+        await expect(unaudited.recordDirectWrites(['dw-5'])).resolves.toBeUndefined();
+
+        expect(await col.getAudit('dw-3')).toBeUndefined();
+        expect((await col.getAudit('dw-4'))!.entries.map(({ type }) => type)).toEqual([AuditEntryType.Created, AuditEntryType.Updated, AuditEntryType.Deleted]);
+        expect(await db.collection(`${testCollection.name}_sync`).countDocuments({ _id: 'dw-5' as any })).toBe(0);
+      });
+
+      it('never overwrites an entry written while it was recording: it reads the history again and keeps both', async () => {
+        const col = await makeAudited();
+        await storedWithHistory(col, 'dw-6');
+        const db = client.db('testdb');
+        await db.collection(auditedCollection.name).updateOne({ _id: 'dw-6' as any }, { $set: { name: 'Cancelled' } });
+        // Another write lands on the history between the read and the write (as a device's sync could).
+        const concurrentEntry = { type: AuditEntryType.Updated, id: auditor.generateUlid(), ops: [{ type: 1, path: 'value', value: 2 }], userId: 'fitter-1' };
+        const auditCollection = db.collection(AUDIT_COLLECTION_NAME);
+        const realReplaceOne = auditCollection.constructor.prototype.replaceOne;
+        let isFirstWrite = true;
+        const spy = vi.spyOn(auditCollection.constructor.prototype, 'replaceOne').mockImplementation(async function (this: typeof auditCollection, ...args: unknown[]) {
+          if (isFirstWrite && this.collectionName === AUDIT_COLLECTION_NAME) {
+            isFirstWrite = false;
+            await db.collection(AUDIT_COLLECTION_NAME).updateOne({ _id: 'dw-6' as any }, { $push: { entries: concurrentEntry } } as never);
+            await db.collection(auditedCollection.name).updateOne({ _id: 'dw-6' as any }, { $set: { value: 2 } });
+          }
+          return realReplaceOne.apply(this, args);
+        });
+        try {
+          await col.recordDirectWrites(['dw-6']);
+        } finally {
+          spy.mockRestore();
+        }
+
+        expect(isFirstWrite, 'the concurrent write landed').toBe(false);
+        const audit = (await col.getAudit('dw-6'))!;
+        expect(audit.entries.map(({ id }) => id)).toContain(concurrentEntry.id);
+        expect(audit.entries.filter(({ userId }) => userId === '__mxdb_direct_write__')).toHaveLength(1);
+        expect(auditor.createRecordFrom(audit)).toEqual(await col.get('dw-6'));
+      });
+    });
+
     it('resets a corrupt audit so it replays to the newly upserted record', async () => {
       const col = await makeAudited();
       const db = client.db('testdb');
@@ -1123,6 +1245,31 @@ describe('ServerDbCollection', () => {
 
         expect([await col.getAudit(item.id), results.every(result => (result as { isUnchanged?: boolean }).isUnchanged === true)]).toEqual([before, true]);
       }, 60_000);
+
+      // sc-5471: a device whose clock runs behind dates its entries before the server's newest one, so every no-change
+      // sync looked like a late change and was written.
+      it.each([
+        ['20 ms', 20],
+        ['an hour', 3_600_000],
+      ])('stores nothing for the same value sent again from a device whose clock runs %s behind', async (_label, behindMs) => {
+        const col = await makeAudited();
+        const item = makeItem({ id: `au-behind-${behindMs}`, name: 'Fitted' });
+        await col.sync({ updated: [item], updatedAudits: [auditor.createAuditFrom(item)], removedIds: [] });
+        await syncChanges(col, item.id, 3);
+        const stored = (await col.get(item.id))!;
+        const before = (await col.getAudit(item.id))!;
+        const deviceUlid = monotonicFactory();
+
+        const results: unknown[] = [];
+        for (let resend = 0; resend < 120; resend += 1) {
+          // The device's empty entry, stamped by its own slow clock, merged into the server's history as the receiver does.
+          const deviceAudit = { id: item.id, entries: [{ type: AuditEntryType.Updated, id: deviceUlid(Date.now() - behindMs), ops: [] }] };
+          const merged = auditor.merge(before, deviceAudit as never);
+          results.push(...await col.sync({ updated: [{ ...stored }], updatedAudits: [merged as never], removedIds: [] }));
+        }
+
+        expect([await col.getAudit(item.id), results.every(result => (result as { isUnchanged?: boolean }).isUnchanged === true)]).toEqual([before, true]);
+      }, 120_000);
 
       it('keeps a device\'s late change in the history even when newer changes already overwrote it', async () => {
         const col = await makeAudited();

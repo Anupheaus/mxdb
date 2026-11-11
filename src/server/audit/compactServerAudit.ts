@@ -2,13 +2,17 @@ import type { Logger, Record as MXDBRecord } from '@anupheaus/common';
 import { compactAuditEntries } from '../../common/auditor/compaction';
 import type { ServerAuditCreatedEntry, ServerAuditEntry, ServerAuditOf } from '../../common';
 import { MXDB_SYSTEM_USER_ID } from './systemUserId';
+import { MXDB_DIRECT_WRITE_USER_ID } from './directWriteUserId';
+
+/** Attributions that are not a person: the server's own writes, and changes written to the database without mxdb. */
+const NOT_A_PERSON = new Set([MXDB_SYSTEM_USER_ID, MXDB_DIRECT_WRITE_USER_ID]);
 
 /**
  * Who a snapshot of folded entries is attributed to: the last person among them (so an application can still tell a record
  * a person changed from one only the server wrote), else whoever wrote the newest of them.
  */
 function attributionOf(folded: ServerAuditEntry[]): string {
-  const people = folded.filter(({ userId }) => userId !== MXDB_SYSTEM_USER_ID);
+  const people = folded.filter(({ userId }) => !NOT_A_PERSON.has(userId));
   const source = people[people.length - 1] ?? folded[folded.length - 1];
   return source?.userId ?? MXDB_SYSTEM_USER_ID;
 }

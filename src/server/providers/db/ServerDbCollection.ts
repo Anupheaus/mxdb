@@ -20,8 +20,13 @@ import { getCollectionExtensions } from '../../collections/extendCollection';
 import { runInWriteLock } from '../../collections/runInWriteLock';
 import { getSlowQueryThresholdMs } from './slowQueryThreshold';
 import { redactMongoErrorMessage } from './redactMongoErrorMessage';
+import { directWriteEntryFor } from './directWriteEntry';
+import { carriesChange } from './carriesChange';
 
 const slowFilterParseThreshold = 1000;
+
+/** How many times a change written without mxdb is read and recorded again when its history keeps changing meanwhile. */
+const DIRECT_WRITE_RECORD_ATTEMPTS = 3;
 
 const SORT_ASCENDING = 1;
 const SORT_DESCENDING = -1;
@@ -412,6 +417,50 @@ export class ServerDbCollection<RecordType extends Record = Record> {
     });
   }
 
+  /**
+   * Records in the history of each of `ids` a change written to the stored record without mxdb (a fix by hand, a
+   * migration) that its history has not seen, as one entry attributed to `MXDB_DIRECT_WRITE_USER_ID` and dated now
+   * (sc-5449). A later edit is laid over the record its history rebuilds, so without this the next edit made in the app or
+   * on a device would undo the change. Records whose history already ends in the stored record are left alone, so calling
+   * it for a record mxdb wrote changes nothing.
+   *
+   * Runs under the collection's write lock, and each history is written only if it is still the one read (no write
+   * landed in between); one that changed is read again. A failure is logged and left: the next edit records the change
+   * itself (`clientToServerSyncAction`, `upsert`).
+   */
+  @bind
+  public async recordDirectWrites(ids: string[]): Promise<void> {
+    if (this.#config.disableAudit === true || ids.length === 0) return;
+    let pendingIds = ids;
+    for (let attempt = 1; attempt <= DIRECT_WRITE_RECORD_ATTEMPTS && pendingIds.length > 0; attempt++) {
+      pendingIds = await runInWriteLock(this.#collection, () => this.#recordDirectWritesOf(pendingIds));
+    }
+    if (pendingIds.length > 0) this.#logger.warn('[ServerDb] could not record a change written without mxdb: its history kept changing', { collectionName: this.name, recordIds: pendingIds });
+  }
+
+  /** One pass of {@link recordDirectWrites}; returns the ids whose history changed while it was being written. */
+  async #recordDirectWritesOf(ids: string[]): Promise<string[]> {
+    const [storedRecords, audits, auditCollection] = await Promise.all([this.get(ids), this.#getAuditRecords(ids), this.#getAuditCollection()]);
+    const changedIds = await audits.mapAsync(async audit => {
+      const storedRecord = storedRecords.findById(audit.id);
+      if (storedRecord == null) return;
+      const entries = auditor.entriesOf(audit);
+      const directWriteEntry = directWriteEntryFor({ entries, storedRecord, generateEntryId: auditor.generateUlidAfter, logger: this.#auditLogger(audit.id, 'direct write') });
+      if (directWriteEntry == null) return;
+      const updatedAudit = compactServerAudit({ id: audit.id, entries: [...audit.entries, directWriteEntry] }, this.#logger);
+      const lastEntryId = auditor.getLastEntryId(audit) ?? '';
+      // Written only over the history that was read: same number of entries, same newest one.
+      const unchanged = { $expr: { $and: [{ $eq: [{ $size: '$entries' }, entries.length] }, { $eq: [{ $max: '$entries.id' }, lastEntryId] }] } };
+      const { matchedCount } = await auditCollection.replaceOne(
+        { _id: audit.id as any, ...unchanged },
+        dbUtils.serialize(updatedAudit as unknown as RecordType) as MongoDocOf<ServerAuditOf<RecordType>>,
+      );
+      if (matchedCount === 0) return audit.id;
+      this.#logger.info('[ServerDb] recorded a change written without mxdb in the record\'s history', { collectionName: this.name, recordId: audit.id, entryId: directWriteEntry.id });
+    });
+    return changedIds.removeNull();
+  }
+
   @bind
   public async distinct({ field, filters, sorts }: DistinctProps<RecordType>): Promise<RecordType[]> {
     const collection = await this.#getCollection();
@@ -789,13 +838,18 @@ export class ServerDbCollection<RecordType extends Record = Record> {
           // on the current record so subsequent updates can be tracked correctly.
           // A history started again: no client entry from before it may change the record (sc-4321).
           existingAuditRecord = auditor.createResetAuditFrom(existingRecord);
+        } else if (existingRecordFromAudit == null) {
+          // A history that ends deleted under a stored record: the record is brought back to life in its history.
+          existingAuditRecord = auditor.updateAuditWith(existingRecord, existingAuditRecord, undefined, this.#auditLogger(record.id, 'audit reconcile'));
         } else if (!is.deepEqual(existingRecordFromAudit, existingRecord)) {
-          existingAuditRecord = auditor.updateAuditWith(
-            existingRecord,
-            existingAuditRecord,
-            existingRecordFromAudit ?? undefined,
-            this.#auditLogger(record.id, 'audit reconcile'),
-          );
+          // The stored record was changed without mxdb: that change is recorded as made outside the app (sc-5449).
+          const directWriteEntry = directWriteEntryFor({
+            entries: auditor.entriesOf(existingAuditRecord),
+            storedRecord: existingRecord,
+            generateEntryId: auditor.generateUlidAfter,
+            logger: this.#auditLogger(record.id, 'audit reconcile'),
+          });
+          if (directWriteEntry != null) existingAuditRecord = { id: record.id, entries: [...auditor.entriesOf(existingAuditRecord), directWriteEntry] };
         }
 
         if (is.deepEqual(existingRecord, record)) return;
@@ -906,7 +960,9 @@ export class ServerDbCollection<RecordType extends Record = Record> {
     const storedAudit = await auditCollection.findOne({ _id: record.id as any }, { projection: { 'entries.id': 1 }, session });
     const storedEntryIds = new Set(((storedAudit as { entries?: { id: string }[] } | null)?.entries ?? []).map(({ id }) => id));
     const storedLastId = storedMeta.lastAuditEntryId ?? [...storedEntryIds].reduce((last, id) => (id > last ? id : last), '');
-    return !auditor.entriesOf(audit).some(({ id }) => !storedEntryIds.has(id) && id < storedLastId);
+    // Only an entry that changes something can be a late change: an empty one from a device whose clock runs behind also
+    // sorts before the server's newest entry (sc-5471).
+    return !auditor.entriesOf(audit).some(entry => !storedEntryIds.has(entry.id) && entry.id < storedLastId && carriesChange(entry));
   }
 
   /**

@@ -132,4 +132,29 @@ describe('dbUtils', () => {
       expect(result.nested).toEqual({ x: 42 });
     });
   });
+
+  // sc-5449: how the change stream tells a document written without mxdb from one mxdb wrote.
+  describe('isWrittenWithoutMxdb', () => {
+    const record = { id: 'fit-1', status: 'booked', notes: 'gate code' } as Record;
+
+    it.each([
+      ['written by mxdb (a hash that describes it)', async () => dbUtils.serializeWithMeta(record), false],
+      ['changed by hand after mxdb wrote it (a stale hash)', async () => ({ ...await dbUtils.serializeWithMeta(record), status: 'cancelled' }), true],
+      ['with its _meta removed (the documented route while the server is stopped)', async () => dbUtils.serialize(record), true],
+      ['with _meta but no hash', async () => ({ ...dbUtils.serialize(record), _meta: { lastAuditEntryId: '01JX0000000000000000000000' } }), true],
+    ] as const)('a document %s → %s', async (_label, makeDocument, expected) => {
+      expect(await dbUtils.isWrittenWithoutMxdb(await makeDocument() as MongoDocOf<Record>)).toBe(expected);
+    });
+  });
+
+  describe('asStored', () => {
+    it('reads a record back as the database returns it: undefined becomes null, dates stay DateTimes, nothing else changes', () => {
+      const startsAt = DateTime.fromISO('2026-11-10T09:00:00.000Z', { zone: 'utc' });
+      const record = { id: 'fit-1', notes: undefined, startsAt, tags: ['a'], nested: { count: 2, missing: undefined } } as unknown as Record;
+
+      const stored = dbUtils.asStored(record) as Record & { notes: unknown; startsAt: DateTime; tags: string[]; nested: { count: number; missing: unknown } };
+
+      expect({ ...stored, startsAt: stored.startsAt.toMillis() }).toEqual({ id: 'fit-1', notes: null, startsAt: startsAt.toMillis(), tags: ['a'], nested: { count: 2, missing: null } });
+    });
+  });
 });

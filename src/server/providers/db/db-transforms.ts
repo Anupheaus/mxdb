@@ -3,7 +3,7 @@ import '@anupheaus/common';
 import type { Record } from '@anupheaus/common';
 import { DateTime } from 'luxon';
 import type { MongoDocOf } from '../../../common';
-import type { WithId } from 'mongodb';
+import { BSON, type WithId } from 'mongodb';
 import { hashRecord } from '../../../common/auditor/hash';
 
 // Stored MongoDB documents represent Luxon `DateTime` values as native BSON `Date`s (absolute
@@ -67,8 +67,30 @@ async function staleStoredHashOf(storedDocument: MongoDocOf<Record>): Promise<st
   return contentHash === storedHash ? undefined : storedHash;
 }
 
+/**
+ * Whether a stored document was written without mxdb: every mxdb write stores a `_meta.hash` describing the content, so a
+ * document with none, or with one that no longer describes it, was written by something else (a fix by hand, a migration,
+ * a script that removed `_meta` as the documented route for a server that is stopped).
+ */
+async function isWrittenWithoutMxdb(storedDocument: MongoDocOf<Record>): Promise<boolean> {
+  if ((storedDocument as { _meta?: Partial<MXDBStoredMeta> })._meta?.hash == null) return true;
+  return await staleStoredHashOf(storedDocument) != null;
+}
+
+/**
+ * `record` exactly as it reads back once stored: the same BSON round trip the driver makes (an `undefined` field comes back
+ * as `null`, for example). Lets a record rebuilt from its history be compared with a stored one by what storing it would
+ * change, not by how each was made.
+ */
+function asStored<RecordType extends Record>(record: RecordType): RecordType {
+  // `ignoreUndefined: false` is the driver's own default (BSON's is the opposite).
+  return deserialize(BSON.deserialize(BSON.serialize(serialize(record), { ignoreUndefined: false })) as MongoDocOf<RecordType>) as RecordType;
+}
+
 export const dbUtils = {
+  asStored,
   deserialize,
+  isWrittenWithoutMxdb,
   serialize,
   serializeWithMeta,
   staleStoredHashOf,

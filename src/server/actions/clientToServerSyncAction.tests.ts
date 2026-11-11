@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { AuditEntryType } from '../../common';
+import { decodeTime } from 'ulidx';
+import { AuditEntryType, OperationType } from '../../common';
 import type { ClientDispatcherRequest } from '../../common/sync-engine';
 
 const mockProcess = vi.fn();
@@ -41,9 +42,42 @@ describe('buildServerRecordStates', () => {
   });
 
   it('attaches the live record to an existing active audit', () => {
-    const audit = { id: 'a1', entries: [{ type: AuditEntryType.Created, id: 'e1', record: { id: 'a1' } }] } as any;
+    const audit = { id: 'a1', entries: [{ type: AuditEntryType.Created, id: 'e1', record: { id: 'a1', name: 'x' } }] } as any;
     const result = buildServerRecordStates([audit], [{ id: 'a1', name: 'x' } as any]);
     expect(result).toEqual([{ record: { id: 'a1', name: 'x' }, audit: audit.entries }]);
+  });
+
+  describe('a live record changed without mxdb (sc-5449)', () => {
+    const CREATED_ID = '01JX0000000000000000000000';
+    const EDITED_ID = '01JX0000010000000000000000';
+    const history = [
+      { type: AuditEntryType.Created, id: CREATED_ID, record: { id: 'f1', status: 'booked', notes: '' }, userId: 'office' },
+      { type: AuditEntryType.Updated, id: EDITED_ID, ops: [{ type: OperationType.Replace, path: 'notes', value: 'gate code 1234' }], userId: 'office' },
+    ];
+
+    it('adds the change its history is missing, as made outside the app, dated right after the history', () => {
+      const [state] = buildServerRecordStates([{ id: 'f1', entries: history } as any], [{ id: 'f1', status: 'cancelled', notes: 'gate code 1234' } as any]);
+      const entries = (state as { audit: { id: string }[] }).audit;
+      expect(entries.slice(0, 2)).toEqual(history);
+      expect(entries[2]).toEqual({
+        type: AuditEntryType.Updated,
+        id: expect.any(String),
+        ops: [{ type: OperationType.Replace, path: 'status', value: 'cancelled' }],
+        userId: '__mxdb_direct_write__',
+      });
+      expect(decodeTime(entries[2]!.id)).toBe(decodeTime(EDITED_ID) + 1);
+    });
+
+    it('adds nothing when the history already ends in the live record', () => {
+      const [state] = buildServerRecordStates([{ id: 'f1', entries: history } as any], [{ id: 'f1', status: 'booked', notes: 'gate code 1234' } as any]);
+      expect((state as { audit: unknown[] }).audit).toEqual(history);
+    });
+
+    it('adds nothing to a deleted history, nor to a live record with no history', () => {
+      const deleted = [...history, { type: AuditEntryType.Deleted, id: '01JX0000020000000000000000', userId: 'office' }];
+      const result = buildServerRecordStates([{ id: 'f1', entries: deleted } as any], [{ id: 'f1', status: 'cancelled' } as any, { id: 'f2', status: 'cancelled' } as any]);
+      expect(result).toEqual([{ recordId: 'f1', audit: deleted }, { record: { id: 'f2', status: 'cancelled' }, audit: [] }]);
+    });
   });
 
   it('reports a deleted audit as a deleted state', () => {
@@ -53,7 +87,7 @@ describe('buildServerRecordStates', () => {
   });
 
   it('skips null audit entries and does not duplicate an audited live record', () => {
-    const audit = { id: 'a1', entries: [{ type: AuditEntryType.Created, id: 'e1', record: { id: 'a1' } }] } as any;
+    const audit = { id: 'a1', entries: [{ type: AuditEntryType.Created, id: 'e1', record: { id: 'a1', name: 'x' } }] } as any;
     const result = buildServerRecordStates([undefined as any, audit], [{ id: 'a1', name: 'x' } as any]);
     expect(result).toEqual([{ record: { id: 'a1', name: 'x' }, audit: audit.entries }]);
   });
