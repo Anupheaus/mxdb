@@ -4,7 +4,7 @@ import { MongoMemoryReplSet } from 'mongodb-memory-server';
 import { monotonicFactory } from 'ulidx';
 import type { Logger, Record } from '@anupheaus/common';
 import { defineCollection } from '../../../common/defineCollection';
-import { ServerDbCollection } from './ServerDbCollection';
+import { MERGED_BEFORE_DELETE_ERROR, ServerDbCollection } from './ServerDbCollection';
 import { hashRecord } from '../../../common/auditor/hash';
 import { auditor } from '../../../common/auditor';
 import { AuditEntryType } from '../../../common/auditor/auditor-models';
@@ -55,7 +55,7 @@ const indexedCollection = defineCollection<TestItem>({
   disableAudit: true,
 });
 
-/** Audit writes on upsert/remove are fire-and-forget, so poll (condition-based, no fixed sleep) until they land. */
+/** For checks that poll (condition-based, no fixed sleep). Upsert/remove store their audit before resolving (sc-5480). */
 const AUDIT_WAIT = { timeout: 10_000, interval: 20 };
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -1072,6 +1072,97 @@ describe('ServerDbCollection', () => {
       await col.remove('au-14', { clearAudit: true });
 
       await waitForAuditTypes(col, 'au-14', undefined);
+    });
+
+    // sc-5480: the sync refuses a resent old copy of a deleted record by its Deleted entry, so the history is part of the
+    // write — stored before upsert/remove resolve, and with the record change or not at all.
+    describe('the history is part of the write (sc-5480)', () => {
+      /** Makes every write to the audit collection fail (a validator no document passes), for the duration of `run`. */
+      async function withHistoryWritesFailing(run: () => Promise<void>): Promise<void> {
+        const db = client.db('testdb');
+        await db.command({ collMod: AUDIT_COLLECTION_NAME, validator: { mustNeverExist: { $exists: true } }, validationAction: 'error' });
+        try {
+          await run();
+        } finally {
+          await db.command({ collMod: AUDIT_COLLECTION_NAME, validator: {} });
+        }
+      }
+
+      it('has stored the Deleted entry by the time remove resolves', async () => {
+        const col = await makeAudited();
+        await col.upsert(makeItem({ id: 'au-h1', name: 'Doomed' }));
+
+        await col.remove('au-h1');
+
+        expect(await auditEntryTypes(col, 'au-h1')).toEqual([AuditEntryType.Created, AuditEntryType.Deleted]);
+      });
+
+      it('has stored the history by the time upsert resolves', async () => {
+        const col = await makeAudited();
+
+        await col.upsert(makeItem({ id: 'au-h2', name: 'First' }));
+        const afterCreate = await auditEntryTypes(col, 'au-h2');
+        await col.upsert(makeItem({ id: 'au-h2', name: 'Second' }));
+
+        expect({ afterCreate, afterUpdate: await auditEntryTypes(col, 'au-h2') }).toEqual({
+          afterCreate: [AuditEntryType.Created],
+          afterUpdate: [AuditEntryType.Created, AuditEntryType.Updated],
+        });
+      });
+
+      it('fails a remove whose Deleted entry cannot be stored, and keeps the record and its history as they were', async () => {
+        const col = await makeAudited();
+        const item = makeItem({ id: 'au-h3', name: 'Kept' });
+        await col.upsert(item);
+
+        await withHistoryWritesFailing(async () => {
+          await expect(col.remove('au-h3')).rejects.toThrow('Document failed validation');
+        });
+
+        expect({ record: await col.get('au-h3'), history: await auditEntryTypes(col, 'au-h3') }).toEqual({ record: item, history: [AuditEntryType.Created] });
+      });
+
+      it('fails an upsert whose history cannot be stored, and stores nothing', async () => {
+        const col = await makeAudited();
+        const item = makeItem({ id: 'au-h4', name: 'First' });
+        await col.upsert(item);
+
+        await withHistoryWritesFailing(async () => {
+          await expect(col.upsert([makeItem({ id: 'au-h4', name: 'Second' }), makeItem({ id: 'au-h5', name: 'New' })])).rejects.toThrow('Document failed validation');
+        });
+
+        expect({ records: await col.get(['au-h4', 'au-h5']), history: await auditEntryTypes(col, 'au-h4') }).toEqual({ records: [item], history: [AuditEntryType.Created] });
+      });
+
+      it('does not store a synced change merged before a delete it does not hold, and says so', async () => {
+        const col = await makeAudited();
+        const item = makeItem({ id: 'au-h6', name: 'Old copy' });
+        await col.upsert(item);
+        // What a sync merged from the history it read before the delete: the old record under a history with no Deleted entry.
+        const mergedBeforeDelete = await col.getAudit('au-h6');
+        await col.remove('au-h6');
+
+        const results = await col.sync({ updated: [item], updatedAudits: [mergedBeforeDelete!], removedIds: [] });
+
+        expect({ results, record: await col.get('au-h6'), history: await auditEntryTypes(col, 'au-h6') }).toEqual({
+          results: [{ id: 'au-h6', error: MERGED_BEFORE_DELETE_ERROR, isMergedBeforeDelete: true }],
+          record: undefined,
+          history: [AuditEntryType.Created, AuditEntryType.Deleted],
+        });
+      });
+
+      it('stores a synced change merged after the delete, such as a restore', async () => {
+        const col = await makeAudited();
+        const item = makeItem({ id: 'au-h7', name: 'Restored' });
+        await col.upsert(item);
+        await col.remove('au-h7');
+        const tombstone = await col.getAudit('au-h7');
+        const restored = { id: 'au-h7', entries: [...tombstone!.entries, { type: AuditEntryType.Restored, id: auditor.generateUlid() }] };
+
+        const results = await col.sync({ updated: [item], updatedAudits: [restored as never], removedIds: [] });
+
+        expect({ results, record: await col.get('au-h7') }).toEqual({ results: [{ id: 'au-h7' }], record: item });
+      });
     });
 
     it('clears every audit when the collection is cleared', async () => {

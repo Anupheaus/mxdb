@@ -7,7 +7,7 @@ import type { DistinctRequest, MXDBOnChangeEvent, QueryProps } from '../common';
 import { extendCollection } from './collections/extendCollection';
 import { ServerDbCollection } from './providers/db/ServerDbCollection';
 import { ServerDispatcher, type ClientDispatcherRequest, type MXDBRecordCursors } from '../common/sync-engine';
-import { auditor, AuditEntryType, type AnyAuditOf, type AuditEntry } from '../common/auditor';
+import { auditor, AuditEntryType, hashRecord, type AnyAuditOf, type AuditEntry } from '../common/auditor';
 import { OUTSIDE_READ_GATE_REASON } from '../common/sync-engine';
 
 /**
@@ -476,7 +476,7 @@ describe('client-to-server sync', () => {
     return ctx.dispatched.flatMap(payload => payload.flatMap(({ records }) => records.flatMap(cursor => (!('record' in cursor) && cursor.isEviction === true ? [cursor.recordId] : [])))).sort();
   }
 
-  /** Audits are written after the record (fire-and-forget); the sync path merges against them, so wait for them. */
+  /** The sync path merges against the stored audits; a safeguard that they are all there. */
   async function auditsWritten(collectionName: string): Promise<void> {
     await vi.waitFor(async () => expect(await client.db('readgatedb').collection(`${collectionName}_sync`).countDocuments()).toBe(ALL_NOTES.length), WAIT_FOR_PUSH);
   }
@@ -569,8 +569,6 @@ describe('client-to-server sync', () => {
       await auditsWritten(gatedNotes.name);
       await auditsWritten(openNotes.name);
       await notesIn(gatedNotes.name).remove(bobGreen.id);
-      // The delete's audit entry is written after the record goes (fire-and-forget); the tombstone is what counts.
-      await vi.waitFor(async () => expect((await auditOf(bobGreen.id)).entries.some(({ type }) => type === AuditEntryType.Deleted)).toBe(true), WAIT_FOR_PUSH);
 
       // Restore the tombstone (replay copies the server's last content back to live), then hand the note to Alice.
       const tombstone = await auditOf(bobGreen.id);
@@ -727,6 +725,57 @@ describe('an $or gate', () => {
     await notesIn(eitherNotes.name).upsert({ id: 'bob-yellow', ownerId: BOB, colour: 'yellow' });
     await handleDistinct({ collectionName: eitherNotes.name, field: 'colour', filters: { $or: [{ ownerId: BOB }, { ownerId: ALICE }] } as DataFilters<Note> });
     expect(pushedIds(eitherNotes.name)).not.toContain('bob-yellow');
+  });
+});
+
+// ─── A delete and a resent old copy at the same moment (sc-5480) ────────────────────────────────────────
+
+/**
+ * A record is deleted (on the server, or by its owner's device) at the moment a phone sends its old copy again: a
+ * create of the same record under a new history, as a phone that never heard of the delete sends it. Whichever lands
+ * first, and however the two interleave, the record stays deleted and its history says so. Run with and without a gate,
+ * in both orders, several times over, as the interleaving differs from run to run.
+ */
+describe('a delete and a resent old copy at the same moment (sc-5480)', () => {
+  const REPEATS = 8;
+  const deleteKinds = ['a server-side remove', 'a device-synced delete'] as const;
+  const orders = ['delete first', 'resend first'] as const;
+  const collections = [['without a gate', openNotes], ['with a gate', gatedNotes]] as const;
+  let sequence = 0;
+
+  /** What the server holds afterwards: whether the record is live, and whether its history ends deleted. */
+  async function outcomeFor(collectionName: string, id: string): Promise<{ isLive: boolean; isDeleted: boolean }> {
+    const collection = notesIn(collectionName);
+    const audit = await collection.getAudit(id) as unknown as AnyAuditOf<Note> | undefined;
+    return { isLive: (await collection.get(id)) != null, isDeleted: audit != null && auditor.isDeleted(audit) };
+  }
+
+  describe.each(collections)('%s', (_label, definition) => {
+    describe.each(deleteKinds)('%s', deleteKind => {
+      it.each(orders)('keeps the record deleted, %s', async order => {
+        ctx.userId = ALICE;
+        for (let repeat = 0; repeat < REPEATS; repeat++) {
+          const note: Note = { id: `resend-${++sequence}`, ownerId: ALICE, colour: 'red' };
+          const collection = notesIn(definition.name);
+          await collection.upsert(note);
+          const deleteNote = deleteKind === 'a server-side remove'
+            ? () => collection.remove(note.id)
+            : async () => {
+              const entries = auditor.entriesOf(auditor.deleteAfterLatest(await collection.getAudit(note.id) as unknown as AnyAuditOf<Note>));
+              await handleClientToServerSync([{ collectionName: definition.name, records: [{ id: note.id, entries }] }]);
+            };
+          const resendOldCopy = async () => {
+            await handleClientToServerSync([{ collectionName: definition.name, records: [{ id: note.id, hash: await hashRecord(note), entries: auditor.createAuditFrom(note).entries }] }]);
+          };
+
+          await Promise.all(order === 'delete first' ? [deleteNote(), resendOldCopy()] : [resendOldCopy(), deleteNote()]);
+          // A resend that crossed the delete is not stored and not acknowledged: the phone sends it again, as it would.
+          await resendOldCopy();
+
+          expect({ repeat, ...await outcomeFor(definition.name, note.id) }).toEqual({ repeat, isLive: false, isDeleted: true });
+        }
+      });
+    });
   });
 });
 

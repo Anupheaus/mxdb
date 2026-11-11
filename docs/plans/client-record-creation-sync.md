@@ -84,7 +84,7 @@ Handler: `src/server/actions/upsertAction.ts` → `handleUpsert`.
 3. Runs optional **`onBeforeUpsert`** from collection extensions with `{ records, insertedIds, updatedIds }`.
 4. Calls **`dbCollection.upsert(records)`** on the server.
 
-`ServerDbCollection.upsert` (`src/server/providers/db/ServerDbCollection.ts`) performs a Mongo **`replaceOne` … `upsert: true`** for each record. If auditing is enabled for the collection, server-side audit maintenance runs (**fire-and-forget** with error logging — a failure there does not roll back the live document write).
+`ServerDbCollection.upsert` (`src/server/providers/db/ServerDbCollection.ts`) performs a Mongo **`replaceOne` … `upsert: true`** for each record. If auditing is enabled for the collection, the audit is written in the **same transaction** as the records, before `upsert` resolves — a failure there rejects the upsert and nothing is written (sc-5480).
 
 **Edge cases**
 
