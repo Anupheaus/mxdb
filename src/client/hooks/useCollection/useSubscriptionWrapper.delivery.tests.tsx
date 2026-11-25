@@ -25,8 +25,11 @@ import type { QueryResults } from '../../../common/models';
 import type { UseSubscription, UseSubscriptionExecuteProps } from './createUseSubscription';
 import { createQuery, type QueryResponse } from './createQuery';
 
+/** Whether the socket is connected, as `useNexus().getIsConnected` answers it; online unless a test says otherwise. */
+const connection = vi.hoisted(() => ({ isConnected: true }));
+
 vi.mock('@anupheaus/nexus/client', () => ({
-  useNexus: () => ({ getIsConnected: () => true }),
+  useNexus: () => ({ getIsConnected: () => connection.isConnected }),
   useAction: () => ({}),
 }));
 
@@ -169,6 +172,7 @@ describe('useSubscriptionWrapper delivers a live query result whatever order thi
   afterEach(() => {
     act(() => root?.unmount());
     root = undefined;
+    connection.isConnected = true;
   });
 
   async function mount(props: ProbeProps): Promise<void> {
@@ -216,4 +220,43 @@ describe('useSubscriptionWrapper delivers a live query result whatever order thi
       });
     }
   }
+
+  // Offline, nexus queues the subscription until the socket connects and reports it subscribed, so no answer comes until
+  // then: holding the local result back for it left a list first opened offline loading for ever, although the device
+  // held its records.
+  describe('subscribed for the first time while offline', () => {
+    it('delivers the stored records at once', async () => {
+      connection.isConnected = false;
+      const collection = new ControlledCollection();
+      collection.store(STORED);
+      const subscription = scriptSubscription('answer-after-resolve', STORED.length);
+      const delivered: QueryResponse<Widget>[] = [];
+
+      await mount({ collection, useSubscription: subscription.useSubscription, delivered });
+      await releaseReads(collection, 'same-tick');
+
+      expectStoredRecordDelivered(delivered);
+    });
+
+    it('delivers the server answer in place of the stored records once the connection is back', async () => {
+      connection.isConnected = false;
+      const collection = new ControlledCollection();
+      collection.store(STORED);
+      const subscription = scriptSubscription('answer-after-resolve', STORED.length + 1);
+      const delivered: QueryResponse<Widget>[] = [];
+
+      await mount({ collection, useSubscription: subscription.useSubscription, delivered });
+      await releaseReads(collection, 'same-tick');
+      expectStoredRecordDelivered(delivered);
+
+      // Back online: the queued subscription reaches the server, whose records land before its answer does.
+      connection.isConnected = true;
+      collection.store([{ id: 'w2', name: 'Pushed by the server' }]);
+      await act(async () => subscription.answerNow());
+      await settle();
+      await releaseReads(collection, []);
+
+      expect(delivered.at(-1)!.records.map(({ id }) => id)).toEqual(['w1', 'w2']);
+    });
+  });
 });

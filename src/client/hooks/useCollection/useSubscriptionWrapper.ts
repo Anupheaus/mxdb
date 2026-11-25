@@ -183,8 +183,10 @@ export function useSubscriptionWrapper<RecordType extends Record, Request extend
     const result = await execute();
     // A cancelled run is not delivered: the newer run that cancelled it delivers. While the server's answer is still to
     // come, the local result is not delivered either (it may predate the records the server is pushing): the answer's
-    // own run delivers.
-    const isAwaitingServerAnswer = isSubscribedOnServer && !hasServerAnswered;
+    // own run delivers. Offline there is no answer to wait for: nexus only queues the subscription (and reports it
+    // subscribed) until the socket connects, so the local result is delivered now, and the answer's run replaces it
+    // once the connection is back.
+    const isAwaitingServerAnswer = isSubscribedOnServer && !hasServerAnswered && getIsConnected();
     if (result !== RequestCancelled && !isAwaitingServerAnswer) validateAndUpdate(result);
 
     return result === RequestCancelled ? freezeInDevelopment(onDefaultResponse()) : result;
