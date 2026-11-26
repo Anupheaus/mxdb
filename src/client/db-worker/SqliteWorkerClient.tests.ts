@@ -193,21 +193,44 @@ describe('SqliteWorkerClient (dedicated worker mode)', () => {
     return worker;
   }
 
+  /** Answer the start-up ping the client sends a new worker before any request. */
+  async function answerPing(): Promise<void> {
+    await drainMicrotasks();
+    currentWorker().reply('ping');
+    await drainMicrotasks();
+  }
+
+  /** The requests posted after the start-up ping. */
+  function requestsPosted(): WorkerRequest[] {
+    return currentWorker().posted.filter(({ type }) => type !== 'ping');
+  }
+
+  it('pings a new worker and sends nothing else until it answers', async () => {
+    const client = createClient();
+
+    void client.query('SELECT 1');
+    await drainMicrotasks();
+
+    expect(currentWorker().typesPosted()).toEqual(['ping']);
+  });
+
   it('sends an open request carrying the database name, DDL and encryption key', async () => {
     const encryptionKey = new Uint8Array([1, 2, 3]);
     const client = createClient(encryptionKey);
 
     const opening = client.open('db-1', ['CREATE TABLE t (id TEXT)']);
+    await answerPing();
     currentWorker().reply('open');
     await opening;
 
-    expect(currentWorker().posted[0]).toMatchObject({ type: 'open', dbName: 'db-1', statements: ['CREATE TABLE t (id TEXT)'], encryptionKey });
+    expect(requestsPosted()[0]).toMatchObject({ type: 'open', dbName: 'db-1', statements: ['CREATE TABLE t (id TEXT)'], encryptionKey });
   });
 
   it('resolves a query with the rows the worker returns', async () => {
     const client = createClient();
 
     const querying = client.query('SELECT * FROM t', [1]);
+    await answerPing();
     currentWorker().reply('query', { result: [{ id: 'a' }] });
 
     expect(await querying).toEqual([{ id: 'a' }]);
@@ -220,9 +243,9 @@ describe('SqliteWorkerClient (dedicated worker mode)', () => {
     void client.execBatch([{ sql: 'DELETE FROM t' }], 'things');
     void client.query('SELECT 1', [2]);
     void client.queryMulti([{ sql: 'SELECT 2' }]);
-    await drainMicrotasks();
+    await answerPing();
 
-    expect(currentWorker().posted.map(({ correlationId: _correlationId, ...request }: WorkerRequest & { correlationId?: string }) => request)).toEqual([
+    expect(requestsPosted().map(({ correlationId: _correlationId, ...request }: WorkerRequest & { correlationId?: string }) => request)).toEqual([
       { type: 'exec', sql: 'UPDATE t SET x = ?', params: [1], collectionHint: 'things' },
       { type: 'exec-batch', statements: [{ sql: 'DELETE FROM t' }], collectionHint: 'things' },
       { type: 'query', sql: 'SELECT 1', params: [2] },
@@ -235,9 +258,9 @@ describe('SqliteWorkerClient (dedicated worker mode)', () => {
 
     void client.query('SELECT 1');
     void client.query('SELECT 2');
-    await drainMicrotasks();
+    await answerPing();
 
-    const [first, second] = currentWorker().posted as Array<{ correlationId: string }>;
+    const [first, second] = requestsPosted() as Array<{ correlationId: string }>;
     expect(first?.correlationId).not.toBe(second?.correlationId);
   });
 
@@ -245,7 +268,8 @@ describe('SqliteWorkerClient (dedicated worker mode)', () => {
     const client = createClient();
     const first = client.query('SELECT 1');
     const second = client.query('SELECT 2');
-    const [firstRequest, secondRequest] = currentWorker().posted as Array<{ correlationId: string }>;
+    await answerPing();
+    const [firstRequest, secondRequest] = requestsPosted() as Array<{ correlationId: string }>;
 
     currentWorker().emit({ correlationId: secondRequest!.correlationId, result: ['second'] });
     currentWorker().emit({ correlationId: firstRequest!.correlationId, result: ['first'] });
@@ -257,6 +281,7 @@ describe('SqliteWorkerClient (dedicated worker mode)', () => {
     const client = createClient();
 
     const querying = client.query('SELECT nonsense');
+    await answerPing();
     currentWorker().reply('query', { error: 'no such column: nonsense' });
 
     await expect(querying).rejects.toThrow('no such column: nonsense');
@@ -265,6 +290,7 @@ describe('SqliteWorkerClient (dedicated worker mode)', () => {
   it('ignores responses whose correlation id matches no pending request', async () => {
     const client = createClient();
     const querying = client.query('SELECT 1');
+    await answerPing();
 
     currentWorker().emit({ correlationId: 'unknown', result: ['wrong'] });
     currentWorker().reply('query', { result: ['right'] });
@@ -279,6 +305,7 @@ describe('SqliteWorkerClient (dedicated worker mode)', () => {
     const client = createClient();
     const first = client.query('SELECT 1');
     const second = client.exec('SELECT 2');
+    await answerPing();
 
     currentWorker().onerror?.(errorEvent);
 
@@ -293,25 +320,39 @@ describe('SqliteWorkerClient (dedicated worker mode)', () => {
 
     void client.query('SELECT 1');
     void client.query('SELECT 2');
-    await drainMicrotasks();
+    await answerPing();
 
     expect(FakeDedicatedWorker.instances).toHaveLength(1);
   });
 
   it('sends a close request and terminates the worker on close', async () => {
     const client = createClient();
+    void client.query('SELECT 1');
+    await answerPing();
 
     const closing = client.close();
+    await drainMicrotasks();
     const worker = currentWorker();
     worker.reply('close');
     await closing;
 
-    expect([worker.typesPosted(), worker.terminate.mock.calls.length]).toEqual([['close'], 1]);
+    expect([worker.typesPosted(), worker.terminate.mock.calls.length]).toEqual([['ping', 'query', 'close'], 1]);
+  });
+
+  it('starts no worker to close a client that never started one', async () => {
+    const client = createClient();
+
+    await client.close();
+
+    expect(FakeDedicatedWorker.instances).toHaveLength(0);
   });
 
   it('starts a new worker for requests made after close', async () => {
     const client = createClient();
+    void client.query('SELECT 1');
+    await answerPing();
     const closing = client.close();
+    await drainMicrotasks();
     currentWorker().reply('close');
     await closing;
 
@@ -339,6 +380,146 @@ describe('SqliteWorkerClient (dedicated worker mode)', () => {
     void client.query('SELECT 1');
 
     expect(() => currentWorker().emit({ type: 'change-notification', collectionName: 'things' })).not.toThrow();
+  });
+});
+
+// ─── Start-up timeout and retry ───────────────────────────────────────────────
+
+describe('SqliteWorkerClient start-up', () => {
+  const START_TIMEOUT_MS = 1_000;
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  interface StartFixture {
+    client: SqliteWorkerClient;
+    logger: { warn: ReturnType<typeof vi.fn> };
+  }
+
+  function createClient(mode: 'dedicated' | 'shared'): StartFixture {
+    vi.useFakeTimers();
+    vi.stubGlobal('Worker', FakeDedicatedWorker);
+    vi.stubGlobal('SharedWorker', mode === 'shared' ? FakeSharedWorker : undefined);
+    vi.stubGlobal('addEventListener', vi.fn());
+    const logger = { warn: vi.fn() };
+    return { client: new SqliteWorkerClient({ startTimeoutMs: START_TIMEOUT_MS, logger: logger as never }), logger };
+  }
+
+  /** The channel the client talks to the worker of the given attempt on (1 = the first worker). */
+  function channelOf(mode: 'dedicated' | 'shared', attempt: number): FakeChannel {
+    const channel = mode === 'shared' ? FakeSharedWorker.instances[attempt - 1]?.port : FakeDedicatedWorker.instances[attempt - 1];
+    if (channel == null) throw new Error(`No worker for attempt ${attempt}`);
+    return channel;
+  }
+
+  function handshakeOf(mode: 'dedicated' | 'shared'): WorkerRequest['type'] {
+    return mode === 'shared' ? 'connect' : 'ping';
+  }
+
+  describe.each(['dedicated', 'shared'] as const)('in %s mode', mode => {
+    it('starts a fresh worker when the first does not answer in time, and carries on with it', async () => {
+      const { client, logger } = createClient(mode);
+      const querying = client.query('SELECT 1');
+      await drainMicrotasks();
+
+      await vi.advanceTimersByTimeAsync(START_TIMEOUT_MS);
+      channelOf(mode, 2).reply(handshakeOf(mode), { result: 'port-2' });
+      await drainMicrotasks();
+      channelOf(mode, 2).reply('query', { result: [{ one: 1 }] });
+
+      expect([await querying, channelOf(mode, 1).typesPosted(), logger.warn.mock.calls.length]).toEqual([[{ one: 1 }], [handshakeOf(mode)], 1]);
+    });
+
+    it('fails every request with a clear error when the fresh worker does not answer either', async () => {
+      const { client } = createClient(mode);
+      const opening = client.open('db', []);
+      const querying = client.query('SELECT 1');
+      const settled = Promise.allSettled([opening, querying]);
+      await drainMicrotasks();
+
+      await vi.advanceTimersByTimeAsync(START_TIMEOUT_MS * 2);
+      const outcomes = await settled;
+
+      expect(outcomes.map(outcome => (outcome.status === 'rejected' ? (outcome.reason as Error).name : outcome.status)))
+        .toEqual(['SqliteWorkerStartError', 'SqliteWorkerStartError']);
+      expect((outcomes[0] as PromiseRejectedResult).reason.message).toMatch(/did not answer \(attempt 1: no answer within 1000 ms; attempt 2: no answer within 1000 ms\)\. Reload the app to try again\./);
+    });
+
+    it('waits no longer than one timeout per worker before failing', async () => {
+      const { client } = createClient(mode);
+      let hasSettled = false;
+      void client.query('SELECT 1').catch(() => undefined).finally(() => { hasSettled = true; });
+      await drainMicrotasks();
+
+      await vi.advanceTimersByTimeAsync(START_TIMEOUT_MS * 2 - 1);
+      const beforeSecondTimeout = hasSettled;
+      await vi.advanceTimersByTimeAsync(1);
+
+      expect([beforeSecondTimeout, hasSettled]).toEqual([false, true]);
+    });
+
+    it('drops the worker that did not start', async () => {
+      createClient(mode).client.query('SELECT 1').catch(() => undefined);
+      await drainMicrotasks();
+
+      await vi.advanceTimersByTimeAsync(START_TIMEOUT_MS);
+
+      if (mode === 'shared') expect(FakeSharedWorker.instances[0]!.port.close).toHaveBeenCalled();
+      else expect(FakeDedicatedWorker.instances[0]!.terminate).toHaveBeenCalled();
+    });
+
+    it('lets a client that could not start close without error', async () => {
+      const { client } = createClient(mode);
+      void client.query('SELECT 1').catch(() => undefined);
+      await drainMicrotasks();
+      await vi.advanceTimersByTimeAsync(START_TIMEOUT_MS * 2);
+
+      await expect(client.close()).resolves.toBeUndefined();
+    });
+  });
+
+  it('joins a differently named SharedWorker on the retry, as the same name would join the stuck one', async () => {
+    const names: string[] = [];
+    createClient('shared');
+    vi.stubGlobal('SharedWorker', class extends FakeSharedWorker {
+      constructor(_url: URL, { name }: { name: string }) {
+        super();
+        names.push(name);
+      }
+    });
+    const client = new SqliteWorkerClient({ startTimeoutMs: START_TIMEOUT_MS });
+    void client.query('SELECT 1').catch(() => undefined);
+    await drainMicrotasks();
+
+    await vi.advanceTimersByTimeAsync(START_TIMEOUT_MS);
+
+    expect(names).toEqual(['mxdb-sqlite', 'mxdb-sqlite-retry-1']);
+  });
+
+  it('starts a fresh dedicated worker straight away when the first one\'s script fails', async () => {
+    const { client } = createClient('dedicated');
+    const querying = client.query('SELECT 1');
+    await drainMicrotasks();
+
+    FakeDedicatedWorker.instances[0]!.onerror?.({ message: 'Failed to fetch dynamically imported module' });
+    await drainMicrotasks();
+    channelOf('dedicated', 2).reply('ping');
+    await drainMicrotasks();
+    channelOf('dedicated', 2).reply('query', { result: ['ok'] });
+
+    expect(await querying).toEqual(['ok']);
+  });
+
+  it('does not retry a worker that answered its handshake with an error', async () => {
+    const { client } = createClient('shared');
+    const opening = client.open('db', []);
+    await drainMicrotasks();
+
+    channelOf('shared', 1).reply('connect', { error: 'too many tabs' });
+
+    await expect(opening).rejects.toThrow('too many tabs');
+    expect(FakeSharedWorker.instances).toHaveLength(1);
   });
 });
 

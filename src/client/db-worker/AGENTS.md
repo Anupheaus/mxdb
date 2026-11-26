@@ -15,6 +15,7 @@ Re-exports `SqliteWorkerClient`, `buildTableDDL`, `sortsToSql`, and table-suffix
 
 ### Worker client (`SqliteWorkerClient.ts`)
 - `SqliteWorkerClient` — facade picking between `SharedWorker` and `InlineRunner`. Sends typed `WorkerRequest` messages and resolves `WorkerResponse` promises via ULID correlation ids.
+- **Start-up timeout.** The first request starts the worker and waits for its handshake (`connect` to the SharedWorker, `ping` to a dedicated Worker), which needs only the worker's script to have loaded. No answer within `WORKER_START_TIMEOUT_MS` (8 s), or a script error, drops that worker and starts ONE fresh one (a SharedWorker under a new name, `mxdb-sqlite-retry-1`, as the same name would join the stuck instance). If that fails too, every request rejects with `SqliteWorkerStartError` ("… did not answer (attempt 1: …; attempt 2: …). Reload the app to try again."), and `DbsProvider` reports it to the app as `DB_NOT_OPEN`. A handshake answered with an error is not retried. Seen once in ~745 Vision E2E starts: the worker's script was fetched, its own imports never were, and the app waited on "Signing in is taking longer than expected" for ever.
 - `InlineRunner` — co-located class; in-memory SQLite backed by `@sqlite.org/sqlite-wasm`. No OPFS, no cross-tab sharing. Used in tests and SSR.
 - `setOnExternalChange(cb)` — fires when another browser tab writes to the shared SQLite; used by `Db` to reload the affected collection.
 

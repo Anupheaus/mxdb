@@ -183,7 +183,7 @@ export const MXDBSyncInner = createComponent('MXDBSyncInner', ({
 
   return (
     <MxdbReadyContext.Provider value={mxdbReadyContext}>
-      <DbsProvider name={dbName} encryptionKey={encryptionKey} collections={collections} logger={logger}>
+      <DbsProvider name={dbName} encryptionKey={encryptionKey} collections={collections} logger={logger} onError={onError}>
         <ClientToServerSyncProvider collections={collections} onError={onError} onUnauthorized={signOut} onSyncRejected={onSyncRejected} onSyncAmended={onSyncAmended}>
           <RemoteAssistanceContext.Provider value={remoteAssistance}>
             <ClientToServerProvider />

@@ -339,7 +339,7 @@ These are used at runtime or in the test harness. None are required by the packa
 |------|----------|---------|------------|
 | `SYNC_FAILED` | error | A C2S sync batch was rejected by the server (e.g. network error, timeout, or server returned an error for one or more records). | The sync engine will retry on the next tick. Log for visibility; surface to the user only if it persists. |
 | `TIMEOUT` | error | A socket action (get, upsert, etc.) did not receive a response within 5 000 ms. | Typically a transient network issue. The client will retry the action on reconnect. |
-| `DB_NOT_OPEN` | fatal | A collection operation was attempted before the SQLite database finished opening, or after it was closed. | Check that `useCollection` is only called inside the `MXDBSync` provider tree. |
+| `DB_NOT_OPEN` | fatal | A collection operation was attempted before the SQLite database finished opening, or after it was closed; or the database could not be opened at all (reported once by `DbsProvider`), e.g. its SQLite worker did not start even after a fresh one was tried (`SqliteWorkerStartError`). | For the first, check that `useCollection` is only called inside the `MXDBSync` provider tree. For a failed open, nothing on the device can be read: say so and offer a reload, which starts a new worker. |
 | `ENCRYPTION_FAILED` | fatal | The WebAuthn PRF key derivation failed (e.g. the platform rejected the ceremony). | The local database cannot be decrypted. The user must re-register the device via the invite-link flow. |
 
 ## Development

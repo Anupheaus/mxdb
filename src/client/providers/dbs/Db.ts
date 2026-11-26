@@ -21,7 +21,7 @@ export class Db {
     afterPreviousClose?: Promise<void>,
   ) {
     this.#name = name;
-    this.#worker = new SqliteWorkerClient({ encryptionKey });
+    this.#worker = new SqliteWorkerClient({ encryptionKey, logger: auditorLogger });
     // Open the database and ensure all tables exist, then construct collections. A failed previous
     // close must not block this open — the worker re-checks its own handle/lock state on open.
     const previousClose = afterPreviousClose?.catch(() => { /* surfaced by the closer */ }) ?? Promise.resolve();
@@ -44,6 +44,12 @@ export class Db {
   #collections: Map<string, DbCollection>;
 
   public get name() { return this.#name; }
+
+  /**
+   * Resolves once the database is open and its tables exist; rejects if it could not be opened (for example a SQLite
+   * worker that never started: `SqliteWorkerStartError`). `DbsProvider` reports that rejection as `DB_NOT_OPEN`.
+   */
+  public whenOpen(): Promise<void> { return this.#ready; }
 
   public use<RecordType extends Record>(collectionName: string): DbCollection<RecordType> {
     const collection = this.#collections.get(collectionName) as DbCollection<RecordType> | undefined;

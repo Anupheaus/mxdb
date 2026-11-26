@@ -57,6 +57,15 @@ export interface CloseRequest {
   correlationId: string;
 }
 
+/**
+ * Sent to a dedicated Worker as soon as it is created; it answers once its script has loaded. The client's start-up
+ * timeout waits on this answer (the SharedWorker's equivalent is `connect`).
+ */
+export interface PingRequest {
+  type: 'ping';
+  correlationId: string;
+}
+
 /** Sent by a tab on connect so the SharedWorker can assign it a portId. */
 export interface ConnectRequest {
   type: 'connect';
@@ -77,6 +86,7 @@ export type WorkerRequest =
   | QueryMultiRequest
   | CloseRequest
   | FlushRequest
+  | PingRequest
   | ConnectRequest
   | DisconnectRequest;
 

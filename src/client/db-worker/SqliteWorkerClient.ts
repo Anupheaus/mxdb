@@ -1,5 +1,6 @@
 /* eslint-disable max-classes-per-file -- InlineRunner is co-located with SqliteWorkerClient for a single worker entry point. */
 import { ulid } from 'ulidx';
+import type { Logger } from '@anupheaus/common';
 import type { WorkerRequestWithCorrelationId, WorkerResponse } from './worker-messages';
 
 // ─── Inline (no-Worker) SQLite runner for Node.js / test environments ─────────
@@ -79,6 +80,32 @@ function detectMode(): ClientMode {
 
 // ─── SqliteWorkerClient ────────────────────────────────────────────────────────
 
+/**
+ * How long a new worker has to answer its first message (the SharedWorker's `connect`, a dedicated Worker's `ping`)
+ * before it is given up on. Answering needs only the worker's script to have loaded, not SQLite or the database, so
+ * this is generous; a worker whose script is fetched but never fetches its own imports (seen once in ~745 Vision E2E
+ * starts) never answers at all.
+ */
+export const WORKER_START_TIMEOUT_MS = 8_000;
+/** Workers started before the client gives up: the first, and one fresh one. */
+const WORKER_START_ATTEMPTS = 2;
+/** The SharedWorker every tab joins. A retry uses a new name, as the same name would join the same stuck instance. */
+const SHARED_WORKER_NAME = 'mxdb-sqlite';
+
+/**
+ * The SQLite worker did not start, even after a fresh one was tried: every request of the client rejects with this.
+ * The app should say so and offer a reload; nothing in this page will start it.
+ */
+export class SqliteWorkerStartError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'SqliteWorkerStartError';
+  }
+}
+
+/** One worker did not start (no answer in time, or its script failed): a fresh one is tried. */
+class WorkerDidNotStart extends Error { }
+
 export interface SqliteWorkerClientOptions {
   /**
    * Raw 256-bit AES-GCM key bytes derived from WebAuthn PRF.
@@ -86,6 +113,10 @@ export interface SqliteWorkerClientOptions {
    * Omit for an unencrypted database (test / non-WebAuthn environments).
    */
   encryptionKey?: Uint8Array;
+  /** Overrides {@link WORKER_START_TIMEOUT_MS} (milliseconds). */
+  startTimeoutMs?: number;
+  /** Told when a worker did not start and a fresh one is tried. */
+  logger?: Logger;
 }
 
 /**
@@ -96,6 +127,10 @@ export interface SqliteWorkerClientOptions {
  *  - **dedicated** Dedicated Worker — one SQLite instance per tab (fallback for Cordova)
  *  - **inline**   No worker — runs SQLite in-process for Node.js / tests
  *
+ * Start-up: the first request starts the worker and waits for it to answer a handshake, for at most
+ * {@link WORKER_START_TIMEOUT_MS}. A worker that does not answer (or whose script fails) is dropped and ONE fresh worker
+ * is tried; if that fails too, every request rejects with {@link SqliteWorkerStartError} instead of waiting for ever.
+ *
  * Cross-tab reactivity: after any write, the SharedWorker broadcasts a
  * 'change-notification' to all other tabs. Register a handler via
  * `setOnExternalChange()` to be notified.
@@ -103,6 +138,8 @@ export interface SqliteWorkerClientOptions {
 export class SqliteWorkerClient {
   constructor(options?: SqliteWorkerClientOptions) {
     this.#encryptionKey = options?.encryptionKey;
+    this.#startTimeoutMs = options?.startTimeoutMs ?? WORKER_START_TIMEOUT_MS;
+    this.#logger = options?.logger;
     this.#mode = detectMode();
     if (this.#mode === 'inline') {
       this.#inlineRunner = new InlineRunner();
@@ -110,12 +147,18 @@ export class SqliteWorkerClient {
   }
 
   #encryptionKey: Uint8Array | undefined;
+  #startTimeoutMs: number;
+  #logger: Logger | undefined;
   #mode: ClientMode;
   #worker: Worker | null = null;
   #sharedWorker: SharedWorker | null = null;
   #port: MessagePort | null = null;
   #portId = '';
-  #portIdReady: Promise<void> | null = null;
+  /** The start-up of the current worker: resolves once it has answered, rejects once every attempt has failed. */
+  #started: Promise<void> | null = null;
+  /** Fails the start-up attempt in progress (set only while one is). */
+  #failStartAttempt: ((reason: string) => void) | null = null;
+  #isUnloadDisconnectWired = false;
   #pending = new Map<string, { resolve(v: unknown): void; reject(e: unknown): void }>();
   #inlineRunner: InlineRunner | undefined;
   #onExternalChange: ((collectionName: string) => void) | null = null;
@@ -145,60 +188,118 @@ export class SqliteWorkerClient {
   };
 
   #handleError = (ev: ErrorEvent) => {
+    this.#failStartAttempt?.(`its script failed (${ev.message ?? 'no detail'})`);
     for (const [id, pending] of this.#pending) {
       pending.reject(new Error(ev.message ?? 'Worker error'));
       this.#pending.delete(id);
     }
   };
 
-  #ensureSharedPort(): Promise<void> {
-    if (this.#portIdReady != null) return this.#portIdReady;
+  /** Starts the worker once per client (until close), retrying once with a fresh worker. */
+  #ensureStarted(): Promise<void> {
+    this.#started ??= this.#start();
+    return this.#started;
+  }
 
-    this.#sharedWorker = new SharedWorker(
-      new URL('./sqlite-shared-worker.ts', import.meta.url),
-      { type: 'module', name: 'mxdb-sqlite' },
+  async #start(): Promise<void> {
+    const problems: string[] = [];
+    for (let attempt = 1; attempt <= WORKER_START_ATTEMPTS; attempt++) {
+      try {
+        await this.#startAttempt(attempt);
+        return;
+      } catch (error) {
+        // A worker that answered with an error has started: that answer is the outcome, not a reason to retry.
+        if (!(error instanceof WorkerDidNotStart)) throw error;
+        problems.push(error.message);
+        this.#discardWorker();
+        if (attempt < WORKER_START_ATTEMPTS) {
+          this.#logger?.warn('The SQLite worker did not start; starting a fresh one', { mode: this.#mode, attempt, problem: error.message });
+        }
+      }
+    }
+    throw new SqliteWorkerStartError(
+      `The device's local database did not start: its SQLite ${this.#mode === 'shared' ? 'SharedWorker' : 'Worker'} `
+      + `did not answer (${problems.map((problem, index) => `attempt ${index + 1}: ${problem}`).join('; ')}). `
+      + 'Reload the app to try again.',
     );
-    this.#port = this.#sharedWorker.port;
-    this.#port.addEventListener('message', this.#handleMessage as EventListener);
-    this.#port.start();
+  }
 
-    // Wire disconnect on tab unload
+  /** Creates one worker and waits for its handshake: `connect` for the SharedWorker (it assigns the port id), `ping` otherwise. */
+  #startAttempt(attempt: number): Promise<void> {
+    return new Promise<void>((resolve, reject) => {
+      const correlationId = ulid();
+      const settle = (outcome: () => void) => {
+        clearTimeout(timer);
+        this.#failStartAttempt = null;
+        this.#pending.delete(correlationId);
+        outcome();
+      };
+      const timer = setTimeout(() => settle(() => reject(new WorkerDidNotStart(`no answer within ${this.#startTimeoutMs} ms`))), this.#startTimeoutMs);
+      this.#failStartAttempt = reason => settle(() => reject(new WorkerDidNotStart(reason)));
+      this.#pending.set(correlationId, {
+        resolve: result => settle(() => {
+          if (this.#mode === 'shared') this.#portId = result as string;
+          resolve();
+        }),
+        reject: error => settle(() => reject(error)),
+      });
+
+      if (this.#mode === 'shared') {
+        const port = this.#createSharedPort(attempt);
+        port.postMessage({ type: 'connect', correlationId });
+      } else {
+        this.#createDedicatedWorker().postMessage({ type: 'ping', correlationId });
+      }
+    });
+  }
+
+  #createSharedPort(attempt: number): MessagePort {
+    const name = attempt === 1 ? SHARED_WORKER_NAME : `${SHARED_WORKER_NAME}-retry-${attempt - 1}`;
+    this.#sharedWorker = new SharedWorker(new URL('./sqlite-shared-worker.ts', import.meta.url), { type: 'module', name });
+    this.#sharedWorker.onerror = () => this.#failStartAttempt?.('its script failed to load');
+    const port = this.#sharedWorker.port;
+    this.#port = port;
+    port.addEventListener('message', this.#handleMessage as EventListener);
+    port.start();
+    this.#wireUnloadDisconnect();
+    return port;
+  }
+
+  #createDedicatedWorker(): Worker {
+    this.#worker = new Worker(new URL('./sqlite-worker.ts', import.meta.url), { type: 'module' });
+    this.#worker.addEventListener('message', this.#handleMessage as EventListener);
+    this.#worker.onerror = this.#handleError;
+    return this.#worker;
+  }
+
+  /** Tell the SharedWorker to drop this tab's port when the page unloads (once per client). */
+  #wireUnloadDisconnect(): void {
+    if (this.#isUnloadDisconnectWired) return;
+    this.#isUnloadDisconnectWired = true;
     globalThis.addEventListener?.('beforeunload', () => {
       if (this.#portId) {
         this.#port?.postMessage({ type: 'disconnect', portId: this.#portId });
       }
     }, { once: true });
-
-    this.#portIdReady = new Promise<void>((resolve, reject) => {
-      const correlationId = ulid();
-      this.#pending.set(correlationId, {
-        resolve: portId => {
-          this.#portId = portId as string;
-          resolve();
-        },
-        reject,
-      });
-      this.#port!.postMessage({ type: 'connect', correlationId });
-    });
-
-    return this.#portIdReady;
   }
 
-  #ensureWorker(): Worker {
-    if (this.#worker == null) {
-      this.#worker = new Worker(new URL('./sqlite-worker.ts', import.meta.url), { type: 'module' });
-      this.#worker.addEventListener('message', this.#handleMessage as EventListener);
-      this.#worker.onerror = this.#handleError;
+  /** Drops a worker that did not start, so the next attempt cannot receive its late answers. */
+  #discardWorker(): void {
+    if (this.#port != null) {
+      this.#port.removeEventListener?.('message', this.#handleMessage as EventListener);
+      this.#port.close?.();
     }
-    return this.#worker;
+    this.#port = null;
+    this.#sharedWorker = null;
+    this.#portId = '';
+    this.#worker?.terminate();
+    this.#worker = null;
   }
 
   async #send<T = unknown>(request: WorkerRequestWithCorrelationId): Promise<T> {
-    // In shared mode the port is created lazily by open() → #ensureSharedPort(). Ensure it here
-    // too so a send that races ahead of open() can't dereference a null #port — mirroring the
-    // dedicated branch, which already self-heals via #ensureWorker(). #ensureSharedPort is
-    // idempotent (returns the cached connect handshake).
-    if (this.#mode === 'shared') await this.#ensureSharedPort();
+    // Every request waits for the worker to have started (and rejects if it never does). In shared mode this is also
+    // what creates the port, so a send that races ahead of open() can't dereference a null #port.
+    await this.#ensureStarted();
     return new Promise<T>((resolve, reject) => {
       this.#pending.set(request.correlationId, {
         resolve: v => resolve(v as T),
@@ -207,7 +308,7 @@ export class SqliteWorkerClient {
       if (this.#mode === 'shared') {
         this.#port!.postMessage(request);
       } else {
-        this.#ensureWorker().postMessage(request);
+        this.#worker!.postMessage(request);
       }
     });
   }
@@ -217,9 +318,6 @@ export class SqliteWorkerClient {
   async open(dbName: string, statements: string[]): Promise<void> {
     if (this.#mode === 'inline') {
       return this.#inlineRunner!.open(dbName, statements);
-    }
-    if (this.#mode === 'shared') {
-      await this.#ensureSharedPort();
     }
     await this.#send({ type: 'open', correlationId: ulid(), dbName, statements, encryptionKey: this.#encryptionKey });
     this.#flushWhenHidden();
@@ -294,6 +392,14 @@ export class SqliteWorkerClient {
       this.#inlineRunner!.close();
       return;
     }
+    // A worker never started has no database open; one that could not start has nothing to close either.
+    if (this.#started == null) return;
+    try {
+      await this.#started;
+    } catch {
+      this.#started = null;
+      return;
+    }
     if (this.#mode === 'shared') {
       await this.#send({ type: 'close', correlationId: ulid() });
       if (this.#portId) {
@@ -303,11 +409,12 @@ export class SqliteWorkerClient {
       this.#port = null;
       this.#sharedWorker = null;
       this.#portId = '';
-      this.#portIdReady = null;
+      this.#started = null;
       return;
     }
     await this.#send({ type: 'close', correlationId: ulid() });
     this.#worker?.terminate();
     this.#worker = null;
+    this.#started = null;
   }
 }

@@ -379,6 +379,10 @@ function dispatchMessage(port: MessagePort, senderPortId: string, data: WorkerRe
     case 'flush':
       void handleFlush(port, data.correlationId);
       break;
+    case 'ping':
+      // Answered like any request once the script has loaded (the client's start-up handshake is 'connect').
+      replyOn(port, data.correlationId, null);
+      break;
     default:
       replyErrorOn(port, (data as any).correlationId ?? '', `Unknown message type: ${(data as any).type}`);
   }

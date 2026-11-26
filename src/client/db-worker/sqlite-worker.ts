@@ -304,6 +304,10 @@ self.addEventListener('message', ({ data }: MessageEvent<WorkerRequestWithCorrel
     case 'flush':
       void handleFlush(correlationId);
       break;
+    case 'ping':
+      // The script has loaded: SqliteWorkerClient's start-up timeout waits for this answer.
+      reply(correlationId, null);
+      break;
     default:
       replyError((data as any).correlationId ?? '', `Unknown message type: ${(data as any).type}`);
   }
