@@ -14,7 +14,7 @@ The `dbs` provider creates and holds the `Db` instance which in turn owns a `Sql
 
 ### Database classes
 - `Db.ts` — per-device database; wraps `SqliteWorkerClient`, creates `DbCollection` per config, wires `setOnExternalChange` for cross-tab reload
-- `DbCollection.ts` — per-collection API: `get`, `getAll`, `find`, `query`, `upsert`, `remove`, `onChange`, `reloadFromWorker`; sync-engine write methods: `applyServerWriteSync` (one record), `batchApplyServerWriteSync` (many records — preferred during reconciliation), `applyServerDeleteSync`, `collapseAuditSync`
+- `DbCollection.ts` — per-collection API: `get`, `getAll`, `find`, `query`, `upsert`, `remove`, `onChange`, `reloadFromWorker`; sync-engine write methods: `applyServerWriteSync` (one record), `batchApplyServerWriteSync` (many records — preferred during reconciliation), `applyServerDeleteSync`, `collapseAuditSync`. `upsert` and `delete` show the change at once (memory + `onChange`) but resolve only once the worker has stored it, which is durable (the worker's write-ahead log, `db-worker/encryptedWriteAheadLog.ts`); they reject if it could not be stored. The sync-engine methods still persist in the background
 
 ### Models and utilities
 - `models.ts` — `MXDBCollectionEvent` (change notification shape)

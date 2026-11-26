@@ -8,7 +8,8 @@
  *
  * Encryption: when `encryptionKey` is supplied in the `open` request the
  * database is kept in memory and persisted as an AES-GCM blob (`*.enc`) in
- * OPFS by a coalesced flush shortly after writes (never per write — sc-680). All tabs share the same in-memory instance, so the
+ * OPFS by a coalesced flush shortly after writes (never per write — sc-680); every write is first logged to an encrypted
+ * write-ahead log (`encryptedWriteAheadLog`) before it is answered, so a reload cannot lose it. All tabs share the same in-memory instance, so the
  * key only needs to be correct on the first open; subsequent tabs that trigger
  * a re-open will pass the same key (derived from the same WebAuthn credential).
  */
@@ -26,6 +27,8 @@ import {
   acquireDbLock, releaseDbLock,
 } from './sqlite-worker-shared';
 import { createEncryptedFlushScheduler } from './encryptedFlushScheduler';
+import { getWriteAheadLogDirectory, openWriteAheadLog } from './encryptedWriteAheadLog';
+import type { EncryptedWriteAheadLog } from './encryptedWriteAheadLog';
 import type { Sqlite3, OO1Db, LockRef } from './sqlite-worker-shared';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -51,6 +54,8 @@ console.warn('[LOCK-DIAG] SharedWorker instance booted', { t: Date.now(), worker
 // Per-database encryption state
 let cryptoKey: CryptoKey | null = null;
 let encryptedFileName = '';
+// Logs each write of the encrypted database before it is answered, so the debounced snapshot cannot lose it on a reload.
+let wal: EncryptedWriteAheadLog | null = null;
 // Name of the database currently open. Used to make `open` idempotent: a second context
 // opening the SAME database must not close+reopen the shared instance (which would briefly
 // null `db` and make in-flight queries from other tabs throw "Database not open").
@@ -66,7 +71,10 @@ const lockRef: LockRef = { release: null };
 const flushScheduler = createEncryptedFlushScheduler({
   flush: async () => {
     if (db == null || sqlite3 == null || cryptoKey == null) return;
-    await flushEncrypted(sqlite3, db, cryptoKey, encryptedFileName);
+    const [s3, database, key, fileName] = [sqlite3, db, cryptoKey, encryptedFileName];
+    const writeSnapshot = () => flushEncrypted(s3, database, key, fileName);
+    if (wal == null) { await writeSnapshot(); return; }
+    await wal.snapshot(writeSnapshot);
   },
   onFlushFailed: error => {
     // The in-memory DB is intact and the flush is retried; only the OPFS copy is behind.
@@ -78,6 +86,15 @@ const flushScheduler = createEncryptedFlushScheduler({
 });
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
+
+function logWalProblem(message: string, meta: Record<string, unknown>): void {
+  // eslint-disable-next-line no-console -- the worker has no Logger (it cannot reach the app's); the worker console is its log
+  console.error(`[mxdb-worker] ${message}`, meta);
+}
+
+// Opens run one at a time: an open awaits OPFS and the log replay before it installs the database, and a second open
+// interleaved with it would install a second copy whose log sequence numbers collide with the first's.
+let openQueue: Promise<void> = Promise.resolve();
 
 function replyOn(port: MessagePort, correlationId: string, result: unknown) {
   const response: WorkerResponse = { correlationId, result };
@@ -102,7 +119,18 @@ function broadcastChange(senderPortId: string, collectionName: string) {
 
 // ─── Operation handlers ───────────────────────────────────────────────────────
 
-async function handleOpen(
+function handleOpen(
+  port: MessagePort,
+  dbName: string,
+  statements: string[],
+  encryptionKey: Uint8Array | undefined,
+  correlationId: string,
+): Promise<void> {
+  openQueue = openQueue.then(() => openDatabase(port, dbName, statements, encryptionKey, correlationId));
+  return openQueue;
+}
+
+async function openDatabase(
   port: MessagePort,
   dbName: string,
   statements: string[],
@@ -145,28 +173,44 @@ async function handleOpen(
       db = null;
       cryptoKey = null;
       encryptedFileName = '';
+      wal = null;
       openDbName = '';
     }
 
+    // Built on locals and installed only once complete, so no request runs against a half-opened database.
+    let nextDb: OO1Db;
+    let nextKey: CryptoKey | null = null;
+    let nextFileName = '';
     if (encryptionKey != null && encryptionKey.byteLength > 0) {
       const opened = await openEncrypted(sqlite3!, dbName, encryptionKey);
-      db = opened.db;
-      cryptoKey = opened.cryptoKey;
-      encryptedFileName = opened.encryptedFileName;
+      nextDb = opened.db;
+      nextKey = opened.cryptoKey;
+      nextFileName = opened.encryptedFileName;
     } else if (isOpfsAvailable() && sqlite3!.oo1.OpfsDb != null) {
-      db = new sqlite3!.oo1.OpfsDb(`${dbName}.sqlite3`, 'ct');
+      nextDb = new sqlite3!.oo1.OpfsDb(`${dbName}.sqlite3`, 'ct');
     } else {
-      db = new sqlite3!.oo1.DB(':memory:', 'ct');
+      nextDb = new sqlite3!.oo1.DB(':memory:', 'ct');
     }
 
-    registerRegexp(sqlite3!, db);
+    registerRegexp(sqlite3!, nextDb);
 
-    (db as any).transaction((tx: any) => {
+    (nextDb as any).transaction((tx: any) => {
       for (const sql of statements) {
         tx.exec(sql);
       }
     });
 
+    // After the DDL, so a logged write to a table the snapshot never held still finds it.
+    const nextWal = nextKey == null ? null : await openWriteAheadLog({
+      db: nextDb, cryptoKey: nextKey, directory: await getWriteAheadLogDirectory(dbName), onProblem: logWalProblem,
+    });
+
+    db = nextDb;
+    cryptoKey = nextKey;
+    encryptedFileName = nextFileName;
+    wal = nextWal;
+
+    // Persist the schema (and any replayed writes) soon.
     if (cryptoKey) flushScheduler.markDirty();
 
     openDbName = dbName;
@@ -187,7 +231,10 @@ async function handleExec(
   try {
     if (!db || !sqlite3) throw new Error('Database not open');
     db.exec({ sql, bind: (params ?? []) as any });
+    // Logged in the same synchronous step as the write, and answered only once it is durable.
+    const durable = wal?.append([{ sql, params }]);
     if (cryptoKey) flushScheduler.markDirty();
+    await durable;
     replyOn(port, correlationId, null);
     if (collectionHint) broadcastChange(senderPortId, collectionHint);
   } catch (err) {
@@ -209,7 +256,10 @@ async function handleExecBatch(
         tx.exec({ sql, bind: (params ?? []) as any });
       }
     });
+    // Logged in the same synchronous step as the write, and answered only once it is durable.
+    const durable = wal?.append(statements);
     if (cryptoKey) flushScheduler.markDirty();
+    await durable;
     replyOn(port, correlationId, null);
     if (collectionHint) broadcastChange(senderPortId, collectionHint);
   } catch (err) {
@@ -279,6 +329,7 @@ async function handleClose(port: MessagePort, correlationId: string) {
     db = null;
     cryptoKey = null;
     encryptedFileName = '';
+    wal = null;
     openDbName = '';
     releaseDbLock(lockRef);
     replyOn(port, correlationId, null);

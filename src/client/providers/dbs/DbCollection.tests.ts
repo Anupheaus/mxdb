@@ -802,3 +802,55 @@ describe('DbCollection.reloadFromWorker', () => {
       .toEqual([undefined, [], { orphanIds: ['orphan'] }]);
   });
 });
+
+// ─── Writes resolve once stored ───────────────────────────────────────────────
+
+describe('DbCollection writes, as reported to the caller', () => {
+  /** Holds every write to the worker until `release` is called, as a busy worker would. */
+  function holdWorkerWrites(worker: SqliteWorkerClient): { release(): void } {
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const execBatch = worker.execBatch.bind(worker);
+    vi.spyOn(worker, 'execBatch').mockImplementation(async (statements, hint) => {
+      await gate;
+      return execBatch(statements, hint);
+    });
+    return { release };
+  }
+
+  it('shows an upserted record at once, but resolves the upsert only once the worker has stored it', async () => {
+    const { collection, worker } = await createCollection();
+    const { release } = holdWorkerWrites(worker);
+    let isDone = false;
+
+    const upserting = collection.upsert(makeRecord()).then(() => { isDone = true; });
+    await drainMicrotasks();
+    const whileHeld = [isDone, (await collection.get('r1'))?.name];
+    release();
+    await upserting;
+
+    expect([whileHeld, await worker.query(`SELECT id FROM ${LIVE_TABLE}`)]).toEqual([[false, 'Alice'], [{ id: 'r1' }]]);
+  });
+
+  it('resolves a delete only once the worker has stored it', async () => {
+    const { collection, worker } = await createCollection();
+    await collection.upsert(makeRecord());
+    const { release } = holdWorkerWrites(worker);
+    let isDone = false;
+
+    const deleting = collection.delete('r1').then(() => { isDone = true; });
+    await drainMicrotasks();
+    const whileHeld = isDone;
+    release();
+    await deleting;
+
+    expect([whileHeld, await worker.query(`SELECT id FROM ${LIVE_TABLE}`)]).toEqual([false, []]);
+  });
+
+  it('rejects the upsert when the worker cannot store it, rather than reporting it saved', async () => {
+    const { collection, worker } = await createCollection();
+    vi.spyOn(worker, 'execBatch').mockRejectedValue(new Error('The device\'s local database did not start'));
+
+    await expect(collection.upsert(makeRecord())).rejects.toThrow('The device\'s local database did not start');
+  });
+});

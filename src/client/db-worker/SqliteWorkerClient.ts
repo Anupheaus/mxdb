@@ -226,8 +226,9 @@ export class SqliteWorkerClient {
   }
 
   /**
-   * Persist the encrypted database now if it has unflushed writes. The worker coalesces flushes (sc-680), so the
-   * latest writes can live only in memory for a few seconds; this is called when the tab is hidden or unloads.
+   * Persist the encrypted database's snapshot now if it has unflushed writes. The worker coalesces snapshots (sc-680);
+   * every write is already in its write-ahead log before it is answered, so this only saves replaying that log on the
+   * next open. It is called when the tab is hidden or unloads.
    */
   async flush(): Promise<void> {
     if (this.#mode === 'inline') return;

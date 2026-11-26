@@ -312,7 +312,7 @@ describe('openEncrypted and flushEncrypted', () => {
     vi.stubGlobal('navigator', {});
     const { db, cryptoKey, encryptedFileName } = await openEncrypted(sqlite3, DB_NAME, KEY_BYTES);
 
-    await expect(flushEncrypted(sqlite3, db, cryptoKey, encryptedFileName)).resolves.toBeUndefined();
+    await expect(flushEncrypted(sqlite3, db, cryptoKey, encryptedFileName)).resolves.toBe(false);
   });
 
   describe('when an orphaned swap file blocks the write', () => {

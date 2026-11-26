@@ -368,8 +368,11 @@ export class DbCollection<RecordType extends Record = Record> {
     this.#auditRecords.set(record.id, newAuditRecord);
     this.#setPendingId(record.id, newAuditRecord);
 
-    void this.#persist([record], [newAuditRecord]);
+    // The change shows at once (memory + onChange); the upsert resolves only once the worker has stored it, which is
+    // durable: the worker logs every write before answering. A reload after the await can no longer lose it.
+    const persisted = this.#persist([record], [newAuditRecord]);
     this.#invokeOnChange({ type: 'upsert', records: [record], auditAction });
+    await persisted;
   }
 
   // ─── Collapse audit ───────────────────────────────────────────────────────
@@ -421,8 +424,8 @@ export class DbCollection<RecordType extends Record = Record> {
       if (this.#records.has(id)) this.#records.delete(id);
       idsToDelete.push(id);
     }
-    await this.#deleteLiveRowsOnly(idsToDelete);
-    if (auditsToPersist.length > 0) void this.#persistAudits(auditsToPersist);
+    // Both writes are posted together and the delete resolves once the worker has stored them (see upsert).
+    await Promise.all([this.#deleteLiveRowsOnly(idsToDelete), this.#persistAudits(auditsToPersist)]);
     return true;
   }
 

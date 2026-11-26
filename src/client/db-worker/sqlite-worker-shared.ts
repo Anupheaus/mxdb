@@ -56,11 +56,15 @@ export async function readAndDecryptOpfs(key: CryptoKey, fileName: string): Prom
  *
  * If createWritable fails with a swap-file error, attempts to rename any
  * orphaned .crswap file out of the way and retries once. On a second failure,
- * logs an error and returns without throwing so the caller's SQL result is
+ * logs an error and resolves false without throwing so the caller's SQL result is
  * unaffected.
+ *
+ * Resolves true once the snapshot is written, false when nothing was written (no OPFS, or the swap-file give-up): the
+ * write-ahead log is pruned only after a true. The database is exported before the first `await`, which the log's
+ * `snapshot` relies on (it records the sequence number in the same synchronous step).
  */
-export async function flushEncrypted(s3: Sqlite3, database: OO1Db, cryptoKey: CryptoKey, encryptedFileName: string): Promise<void> {
-  if (!isOpfsAvailable()) return;
+export async function flushEncrypted(s3: Sqlite3, database: OO1Db, cryptoKey: CryptoKey, encryptedFileName: string): Promise<boolean> {
+  if (!isOpfsAvailable()) return false;
   const dbBytes: Uint8Array = (s3.capi as any).sqlite3_js_db_export(database.pointer, 'main');
   const iv = crypto.getRandomValues(new Uint8Array(12));
   const ciphertext = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, cryptoKey, dbBytes as Uint8Array<ArrayBuffer>);
@@ -82,13 +86,13 @@ export async function flushEncrypted(s3: Sqlite3, database: OO1Db, cryptoKey: Cr
       console.warn('[mxdb-worker] Orphaned OPFS swap file — renamed and retrying flush', { encryptedFileName, backupSwapName });
     } catch (cleanupErr) {
       console.error('[mxdb-worker] OPFS flush failed; swap cleanup also failed', { encryptedFileName, error: (cleanupErr as Error)?.message ?? String(cleanupErr) });
-      return;
+      return false;
     }
     try {
       writable = await (fh as any).createWritable({ keepExistingData: false });
     } catch (retryErr) {
       console.error('[mxdb-worker] OPFS flush failed again after swap cleanup — giving up', { encryptedFileName, error: (retryErr as Error)?.message ?? String(retryErr) });
-      return;
+      return false;
     }
   }
 
@@ -98,6 +102,7 @@ export async function flushEncrypted(s3: Sqlite3, database: OO1Db, cryptoKey: Cr
   } finally {
     await writable.close();
   }
+  return true;
 }
 
 /**

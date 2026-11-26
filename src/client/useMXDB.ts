@@ -19,8 +19,8 @@ type UseMXDBResult = Pick<ReturnType<typeof useNexus>, 'onConnectionStateChanged
    * Resolves once every local change has reached the server, or false if it has not within ten seconds (a client that
    * is offline, or whose change the server keeps refusing, must not hang its caller).
    *
-   * Await this before asking the server to read something just written locally: an upsert resolves as soon as it is in
-   * memory, so without it the server reads the version before the edit. `isSynchronising` cannot be used for this --
+   * Await this before asking the server to read something just written locally: an upsert resolves once it is stored on the
+   * device, not on the server, so without it the server reads the version before the edit. `isSynchronising` cannot be used for this --
    * it is false both before the dispatcher picks a change up and after it has sent one.
    */
   whenSynchronised(): Promise<boolean>;

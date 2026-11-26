@@ -12,4 +12,5 @@ export const WORKER_FILES = [
   'sqlite-worker-shared.ts',
   'worker-messages.ts',
   'encryptedFlushScheduler.ts',
+  'encryptedWriteAheadLog.ts',
 ];
